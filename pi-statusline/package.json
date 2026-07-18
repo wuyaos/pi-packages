@@ -1,0 +1,10 @@
+{
+  "name": "pi-statusline",
+  "version": "1.0.0",
+  "description": "omp 风格状态栏：模型名、项目路径、git 状态（staged/修改/未跟踪）、上下文 token、输出指示",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/statusline.ts"]
+  }
+}
