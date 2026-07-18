@@ -48,15 +48,6 @@ $n.ShowBalloonTip(5000, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "'
 Start-Sleep -Seconds 6
 $n.Dispose()
 `;
-    const script = `
-Add-Type -AssemblyName System.Windows.Forms
-$n = New-Object System.Windows.Forms.NotifyIcon
-$n.Icon = [System.Drawing.SystemIcons]::Information
-$n.Visible = $true
-$n.ShowBalloonTip(5000, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}', [System.Windows.Forms.ToolTipIcon]::Info)
-Start-Sleep -Seconds 6
-$n.Dispose()
-`;
     try {
       execFile(ps, ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000 }, () => {});
       return true;

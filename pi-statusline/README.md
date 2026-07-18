@@ -23,9 +23,9 @@ glm-5.2  ~/project  main +2 ~3 ?1  12k/128k  ↑5.2k
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `PI_STATUSLINE_GIT` | `1` | `0` 关闭 git 状态统计 |
+| `PI_STATUSLINE_GIT` | `0` | `1` 开启 git 状态统计（默认关闭） |
 
-关闭 git 统计后只显示分支名，不跑 `git status --porcelain`，适合 WSL `/mnt/c` 等慢路径。
+默认关闭 git 统计，只显示分支名。WSL `/mnt/c` 等慢路径建议保持关闭。设 `PI_STATUSLINE_GIT=1` 开启。
 
 ## 命令
 

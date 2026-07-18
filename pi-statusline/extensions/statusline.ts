@@ -60,7 +60,7 @@ function fmtPath(p: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
-  const gitEnabled = process.env.PI_STATUSLINE_GIT !== "0";
+  const gitEnabled = process.env.PI_STATUSLINE_GIT === "1";
   let gitStats: GitStats | null = null;
   let gitTimer: ReturnType<typeof setInterval> | null = null;
 
