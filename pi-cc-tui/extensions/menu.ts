@@ -161,3 +161,5 @@ export class ConfigMenuComponent implements Focusable {
 	invalidate(): void {}
 	dispose(): void {}
 }
+
+export default function () {}
