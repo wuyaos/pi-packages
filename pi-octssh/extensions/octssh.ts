@@ -287,7 +287,7 @@ export default function (pi: ExtensionAPI) {
     if (registered) return;
     registered = true;
     try {
-      bridge = new McpBridge(cmd, args, () => {});
+      bridge = new McpBridge(cmd, baseArgs, () => {});
       await bridge.init();
       registerTools();
       ctx?.ui?.notify?.(`octssh: ${TOOLS.length} 工具已加载`, "info");
