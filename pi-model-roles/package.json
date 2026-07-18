@@ -1,0 +1,34 @@
+{
+  "name": "pi-model-roles",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "模型角色路由 — 为不同任务分配不同模型+thinking level (fork from @d3ara1n/pi-model-roles)",
+  "main": "src/index.ts",
+  "types": "src/types.ts",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "dependencies": {},
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "license": "MIT",
+  "originalAuthor": "d3ara1n",
+  "originalRepo": "https://github.com/d3ara1n/pi-extensions"
+}

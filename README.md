@@ -48,3 +48,40 @@ cd pi-<name>
 ```
 
 每个子包独立 `package.json`，依赖各自声明，npm workspaces 会 hoist 到根 `node_modules/`。
+
+## pi-model-roles
+
+模型角色路由 — 为不同任务分配不同模型+thinking level。
+
+Fork from [@d3ara1n/pi-model-roles](https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-model-roles) (MIT)
+
+内置角色：default(medium) / heavy(high) / fast(low) / utility(off)
+
+配置 `~/.pi/agent/settings.json`:
+```json
+{
+  "modelRoles": {
+    "roles": {
+      "heavy": { "model": "cpa-openai-completions/gpt-5.6-sol", "thinking": "high" },
+      "fast": { "model": "cpa-openai-completions/glm-5.2", "thinking": "low" }
+    }
+  }
+}
+```
+
+## pi-advisor
+
+顾问模型 — 第二个模型审查每轮输出，注入建议/警告。
+
+Fork from [@hk_net/pi-advisor](https://github.com/hknet/pi-extensions/tree/main/packages/pi-advisor) (EUPL-1.2)
+
+配置 `~/.pi/agent/advisor.json`:
+```json
+{
+  "model": "cpa-openai-completions/gpt-5.6-sol",
+  "thinking": "high",
+  "onDone": false,
+  "whenStuck": 0,
+  "timeoutMs": 120000
+}
+```

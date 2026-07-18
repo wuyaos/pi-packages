@@ -1,0 +1,25 @@
+{
+  "name": "pi-advisor",
+  "version": "0.1.3",
+  "type": "module",
+  "description": "顾问模型 — 第二个模型审查每轮输出 (fork from @hk_net/pi-advisor)",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "advisor"
+  ],
+  "license": "EUPL-1.2",
+  "originalAuthor": "hknet",
+  "originalRepo": "https://github.com/hknet/pi-extensions",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.80.2",
+    "@earendil-works/pi-coding-agent": ">=0.80.2",
+    "@earendil-works/pi-tui": ">=0.80.2"
+  },
+  "pi": {
+    "extensions": [
+      "./advisor.ts"
+    ]
+  }
+}
