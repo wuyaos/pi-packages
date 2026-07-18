@@ -1,5 +1,9 @@
 /**
- * pi-cc-tui 状态栏：模型、thinking、git、上下文、速度、输出、花费和扩展状态。
+ * pi-cc-tui 状态栏：三行布局。
+ * 行 1 左: model | git
+ * 行 1 右: ctx(含 output) | tokens | cost
+ * 行 2: 📂 path
+ * 行 3: extensions
  * PI_STATUSLINE_GIT=1 时启用 git status --porcelain 统计，默认关闭。
  */
 
@@ -20,15 +24,14 @@ interface GitStats {
 	untracked: number;
 }
 
+/** 可配置段。thinking 已并入 model，output 已并入 context。 */
 interface SegmentConfig {
 	model: boolean;
-	path: boolean;
 	git: boolean;
 	context: boolean;
-	output: boolean;
-	cost: boolean;
 	tokens: boolean;
-	thinking: boolean;
+	cost: boolean;
+	path: boolean;
 	extensions: boolean;
 }
 
@@ -39,34 +42,18 @@ const SEGMENT_NAMES: SegmentName[] = [
 	"path",
 	"git",
 	"context",
-	"output",
-	"cost",
 	"tokens",
-	"thinking",
-	"extensions",
-];
-
-const RENDER_ORDER: SegmentName[] = [
-	"model",
-	"thinking",
-	"path",
-	"git",
-	"context",
-	"tokens",
-	"output",
 	"cost",
 	"extensions",
 ];
 
 const DEFAULT_CONFIG: SegmentConfig = {
 	model: true,
-	path: true,
 	git: true,
 	context: true,
-	output: true,
-	cost: false,
 	tokens: false,
-	thinking: false,
+	cost: false,
+	path: true,
 	extensions: true,
 };
 
@@ -164,6 +151,11 @@ function configSummary(): string {
 	return SEGMENT_NAMES.map((name) => `${name}:${segmentConfig[name] ? "on" : "off"}`).join(" · ");
 }
 
+/** 组装分隔的段字符串 */
+function joinSegments(parts: string[], theme: { fg: (token: string, text: string) => string }): string {
+	return parts.join(`${theme.fg("dim", " | ")}`);
+}
+
 export function applyStatusline(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
 	clearGitTimer();
@@ -193,34 +185,23 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (gitEnabled) void refreshGit();
 			},
 			render(width: number): string[] {
-				const segments = new Map<SegmentName, string>();
-
+				// ── model (含 thinking 级别) ──
+				let modelStr: string | null = null;
 				if (segmentConfig.model) {
-					const model = (ctx.model as any)?.id || "no-model";
-					segments.set("model", theme.fg("accent", model));
-				}
-
-				if (segmentConfig.thinking) {
+					const modelId = (ctx.model as any)?.id || "no-model";
 					const level = activePi?.getThinkingLevel() || "off";
-					let value = theme.fg("accent", `think:${level}`);
-					if (level === "off") value = theme.fg("dim", `think:${level}`);
-					else if (level === "low" || level === "minimal") value = theme.fg("success", `think:${level}`);
-					else if (level === "high") value = theme.fg("warning", `think:${level}`);
-					else if (level === "xhigh" || level === "max") value = theme.bold(theme.fg("error", `think:${level}`));
-					segments.set("thinking", value);
+					modelStr = theme.fg("accent", `model:${modelId}[${level}]`);
 				}
 
-				if (segmentConfig.path) {
-					segments.set("path", theme.fg("dim", fmtPath(ctx.sessionManager.getCwd())));
-				}
-
+				// ── git ──
+				let gitStr: string | null = null;
 				if (segmentConfig.git) {
 					const branch = footerData.getGitBranch();
 					if (branch) {
 						const hasChanges = Boolean(
 							gitStats && (gitStats.staged || gitStats.modified || gitStats.untracked),
 						);
-						let value = theme.fg(hasChanges ? "warning" : "success", branch);
+						let value = theme.fg(hasChanges ? "warning" : "success", `git:${branch}`);
 						if (gitEnabled && gitStats) {
 							const gitParts: string[] = [];
 							if (gitStats.staged > 0) gitParts.push(theme.fg("success", `+${gitStats.staged}`));
@@ -228,32 +209,14 @@ export function applyStatusline(ctx: ExtensionContext): void {
 							if (gitStats.untracked > 0) gitParts.push(theme.fg("error", `?${gitStats.untracked}`));
 							if (gitParts.length > 0) value += ` ${gitParts.join(" ")}`;
 						}
-						segments.set("git", value);
+						gitStr = value;
 					}
 				}
 
-				if (segmentConfig.context) {
-					try {
-						const usage = ctx.getContextUsage();
-						if (usage && typeof usage.tokens === "number") {
-							const contextWindow = (ctx.model as any)?.context_window || 128000;
-							const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
-							const label = `${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
-							let value: string;
-							if (percent < 70) value = theme.fg("success", label);
-							else if (percent < 85) value = theme.fg("warning", label);
-							else if (percent <= 95) value = theme.fg("error", label);
-							else value = theme.bold(theme.fg("error", label));
-							segments.set("context", value);
-						}
-					} catch {
-						// Context usage is optional while a session is initializing.
-					}
-				}
-
+				// ── 累计 output / cost ──
 				let output = 0;
 				let cost = 0;
-				if (segmentConfig.output || segmentConfig.cost) {
+				if (segmentConfig.context || segmentConfig.cost) {
 					for (const entry of ctx.sessionManager.getBranch()) {
 						if (entry.type === "message" && (entry.message as any).role === "assistant") {
 							const usage = (entry.message as any).usage;
@@ -263,43 +226,95 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					}
 				}
 
+				// ── context (含 output) ──
+				let ctxStr: string | null = null;
+				if (segmentConfig.context) {
+					try {
+						const usage = ctx.getContextUsage();
+						if (usage && typeof usage.tokens === "number") {
+							const contextWindow = (ctx.model as any)?.context_window || 128000;
+							const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
+							const label = `▤ ${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
+							let value: string;
+							if (percent < 70) value = theme.fg("success", label);
+							else if (percent < 85) value = theme.fg("warning", label);
+							else if (percent <= 95) value = theme.fg("error", label);
+							else value = theme.bold(theme.fg("error", label));
+							// 合并 output
+							value += ` ${theme.fg("muted", `↑${fmtTokens(output)}`)}`;
+							ctxStr = value;
+						}
+					} catch {
+						// Context usage is optional while a session is initializing.
+					}
+				}
+
+				// ── tokens (TTFT/TPS) ──
+				let tokensStr: string | null = null;
 				if (segmentConfig.tokens && (lastTTFT !== null || lastTPS !== null)) {
 					const tokenParts: string[] = [];
 					if (lastTTFT !== null) {
-						const label = `TTFT ${lastTTFT.toFixed(1)}s`;
+						const label = `TTFT:${lastTTFT.toFixed(1)}s`;
 						tokenParts.push(theme.fg(lastTTFT > 3 ? "error" : "success", label));
 					}
 					if (lastTPS !== null) {
 						const label = `${Math.round(lastTPS)} TPS`;
 						tokenParts.push(theme.fg(lastTPS < 10 ? "error" : "success", label));
 					}
-					segments.set("tokens", tokenParts.join("/"));
+					tokensStr = tokenParts.join(" ");
 				}
 
-				if (segmentConfig.output) {
-					segments.set("output", theme.fg("muted", `↑${fmtTokens(output)}`));
-				}
-
+				// ── cost ──
+				let costStr: string | null = null;
 				if (segmentConfig.cost) {
-					const label = `$${cost.toFixed(3)}`;
+					const label = `cost:$${cost.toFixed(3)}`;
 					const color = cost < 0.1 ? "muted" : cost <= 1 ? "dim" : "warning";
-					segments.set("cost", theme.fg(color, label));
+					costStr = theme.fg(color, label);
 				}
 
+				// ── 行 1: 左右对齐 ──
+				const leftParts = [modelStr, gitStr].filter(Boolean) as string[];
+				const rightParts = [ctxStr, tokensStr, costStr].filter(Boolean) as string[];
+
+				const leftStr = joinSegments(leftParts, theme);
+				const rightStr = joinSegments(rightParts, theme);
+
+				let line1: string;
+				if (leftStr && rightStr) {
+					const gap = width - visibleWidth(leftStr) - visibleWidth(rightStr);
+					if (gap >= 2) {
+						line1 = leftStr + " ".repeat(gap) + rightStr;
+					} else {
+						// 不够放，合并用分隔符
+						line1 = truncateToWidth(`${leftStr}${theme.fg("dim", " | ")}${rightStr}`, width);
+					}
+				} else if (leftStr) {
+					line1 = leftStr;
+				} else if (rightStr) {
+					line1 = rightStr;
+				} else {
+					line1 = "";
+				}
+
+				const lines: string[] = [];
+				if (line1) lines.push(line1);
+
+				// ── 行 2: path ──
+				if (segmentConfig.path) {
+					const pathStr = theme.fg("dim", `📂 ${fmtPath(ctx.sessionManager.getCwd())}`);
+					lines.push(visibleWidth(pathStr) <= width ? pathStr : truncateToWidth(pathStr, width));
+				}
+
+				// ── 行 3: extensions ──
 				if (segmentConfig.extensions) {
 					const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
 					if (statuses.length > 0) {
-						segments.set("extensions", theme.fg("dim", statuses.join(" ")));
+						const extStr = theme.fg("dim", statuses.join(" "));
+						lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
 					}
 				}
 
-				const visibleSegments = RENDER_ORDER.flatMap((name) => {
-					const value = segmentConfig[name] ? segments.get(name) : undefined;
-					return value ? [value] : [];
-				});
-				const separator = ` ${theme.fg("dim", "❯")} `;
-				const line = visibleSegments.join(separator);
-				return [visibleWidth(line) <= width ? line : truncateToWidth(line, width)];
+				return lines;
 			},
 		};
 	});
