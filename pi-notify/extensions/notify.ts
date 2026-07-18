@@ -44,6 +44,7 @@ $n = New-Object System.Windows.Forms.NotifyIcon
 $n.Icon = [System.Drawing.SystemIcons]::Information
 $n.Visible = $true
 $n.ShowBalloonTip(5000, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}', [System.Windows.Forms.ToolTipIcon]::Info)
+[System.Console]::Beep(800, 200)
 Start-Sleep -Seconds 6
 $n.Dispose()
 `;
