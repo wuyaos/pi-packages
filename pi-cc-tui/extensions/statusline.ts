@@ -408,9 +408,11 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				// ── model (含 thinking 级别) ──
 				let modelStr: string | null = null;
 				if (segmentConfig.model) {
-					const modelId = (ctx.model as any)?.id || "no-model";
+					const model = ctx.model as any;
+					const modelId = model?.id || "no-model";
+					const provider = model?.provider || "?";
 					let level = cachedThinkingLevel;
-					modelStr = theme.fg("accent", `model:${modelId}[${level}]`);
+					modelStr = theme.fg("accent", `model:${provider}/${modelId}[${level}]`);
 				}
 
 				// ── git ──
