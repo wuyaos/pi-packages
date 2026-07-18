@@ -22,6 +22,7 @@ interface GitStats {
 
 interface SegmentConfig {
 	model: boolean;
+	path: boolean;
 	git: boolean;
 	context: boolean;
 	output: boolean;
@@ -35,6 +36,7 @@ type SegmentName = keyof SegmentConfig;
 
 const SEGMENT_NAMES: SegmentName[] = [
 	"model",
+	"path",
 	"git",
 	"context",
 	"output",
@@ -47,6 +49,7 @@ const SEGMENT_NAMES: SegmentName[] = [
 const RENDER_ORDER: SegmentName[] = [
 	"model",
 	"thinking",
+	"path",
 	"git",
 	"context",
 	"tokens",
@@ -57,6 +60,7 @@ const RENDER_ORDER: SegmentName[] = [
 
 const DEFAULT_CONFIG: SegmentConfig = {
 	model: true,
+	path: true,
 	git: true,
 	context: true,
 	output: true,
@@ -147,6 +151,11 @@ function fmtTokens(value: number): string {
 	return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
+function fmtPath(p: string): string {
+	const home = homedir();
+	return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
 function isSegmentName(value: string): value is SegmentName {
 	return SEGMENT_NAMES.includes(value as SegmentName);
 }
@@ -199,6 +208,10 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					else if (level === "high") value = theme.fg("warning", `think:${level}`);
 					else if (level === "xhigh" || level === "max") value = theme.bold(theme.fg("error", `think:${level}`));
 					segments.set("thinking", value);
+				}
+
+				if (segmentConfig.path) {
+					segments.set("path", theme.fg("dim", fmtPath(ctx.sessionManager.getCwd())));
 				}
 
 				if (segmentConfig.git) {
