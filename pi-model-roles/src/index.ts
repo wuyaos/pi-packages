@@ -60,9 +60,9 @@ export default function registerModelRolesExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({
       role: Type.String({ description: "Role name to switch to (e.g. primary, architect, think, codegen, audit, quick, backup)" }),
     }),
-    async execute(args) {
+    async execute(_toolCallId, params) {
       const api = getModelRolesAPI();
-      const roleName = args.role;
+      const roleName = params.role;
       const roleConfig = api.getRole(roleName);
       if (!roleConfig) {
         return {
