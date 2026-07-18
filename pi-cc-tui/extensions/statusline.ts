@@ -573,6 +573,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => applyStatusline(ctx));
 	pi.on("agent_end", (_event, ctx) => applyStatusline(ctx));
+	pi.on("agent_settled", (_event, ctx) => applyStatusline(ctx));
+	pi.on("turn_end", (_event, ctx) => applyStatusline(ctx));
+	pi.on("message_end", (_event, ctx) => applyStatusline(ctx));
 	pi.on("model_select", (_event, ctx) => applyStatusline(ctx));
 	pi.on("thinking_level_select", (event: any, ctx) => { cachedThinkingLevel = event.level; applyStatusline(ctx); });
 	pi.on("session_compact", (_event, ctx) => applyStatusline(ctx));
