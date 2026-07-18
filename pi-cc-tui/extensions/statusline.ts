@@ -237,7 +237,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					try {
 						const usage = ctx.getContextUsage();
 						if (usage && typeof usage.tokens === "number") {
-							const contextWindow = (ctx.model as any)?.context_window || 128000;
+							const contextWindow = (usage as any)?.contextWindow || (ctx.model as any)?.contextWindow || 128000;
 							const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
 							const label = `▤ ${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
 							let value: string;
