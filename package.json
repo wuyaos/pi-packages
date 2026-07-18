@@ -2,11 +2,12 @@
   "name": "pi-packages",
   "version": "0.1.0",
   "private": true,
-  "description": "个人 pi 包集合：octssh SSH 桥接、桌面通知等",
+  "description": "个人 pi 包集合：Claude Code 风格 TUI、octssh SSH 桥接、桌面通知",
   "keywords": [],
   "license": "MIT",
   "workspaces": ["pi-*"],
   "pi": {
-    "extensions": ["pi-*/extensions/*.ts"]
+    "extensions": ["pi-*/extensions/*.ts"],
+    "themes": ["pi-*/themes/*.json"]
   }
 }
