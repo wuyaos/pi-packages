@@ -264,3 +264,5 @@ export function applyRoundedEditorBorders(
 
 	return result.map((line) => padRight(truncateToWidth(line, width, ""), width));
 }
+
+export default function() {}
