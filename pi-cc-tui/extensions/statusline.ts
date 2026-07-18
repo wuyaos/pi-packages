@@ -191,7 +191,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					const modelId = (ctx.model as any)?.id || "no-model";
 					let level = "off";
 				try {
-					level = activePi?.getThinkingLevel() || "off";
+					level = (ctx as any)?.thinkingLevel || activePi?.getThinkingLevel() || "off";
 				} catch {
 					level = "off";
 				}
@@ -334,6 +334,11 @@ export default function (pi: ExtensionAPI) {
 	activePi = pi;
 
 	pi.on("session_start", (_event, ctx) => applyStatusline(ctx));
+	pi.on("agent_end", (_event, ctx) => applyStatusline(ctx));
+	pi.on("model_select", (_event, ctx) => applyStatusline(ctx));
+	pi.on("thinking_level_select", (_event, ctx) => applyStatusline(ctx));
+	pi.on("session_compact", (_event, ctx) => applyStatusline(ctx));
+	pi.on("session_tree", (_event, ctx) => applyStatusline(ctx));
 	pi.on("session_shutdown", () => clearGitTimer());
 
 	pi.on("before_provider_request", () => {
