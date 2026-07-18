@@ -7,7 +7,11 @@
   "license": "MIT",
   "workspaces": ["pi-*"],
   "pi": {
-    "extensions": ["pi-*/extensions/*.ts"],
+    "extensions": [
+      "pi-*/extensions/*.ts",
+      "pi-model-roles/src/index.ts",
+      "pi-advisor/advisor.ts"
+    ],
     "themes": ["pi-*/themes/*.json"]
   }
 }
