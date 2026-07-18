@@ -108,11 +108,6 @@ export class ConfigMenuComponent implements Focusable {
 			this.selected = Math.max(0, this.selected - 1);
 		} else if (matchesKey(data, "down")) {
 			this.selected = Math.min(this.rows.length - 1, this.selected + 1);
-		} else if (matchesKey(data, " ")) {
-			const row = this.rows[this.selected];
-			if (row?.kind === "toggle") {
-				this.toggleSegment(row.name);
-			}
 		}
 	}
 
@@ -152,7 +147,7 @@ export class ConfigMenuComponent implements Focusable {
 		}
 
 		lines.push(row(""));
-		lines.push(row(` ${th.fg("dim", "↑↓ 移动 • Space/Enter 切换 • Esc 退出")}`));
+		lines.push(row(` ${th.fg("dim", "↑↓ 移动 • Enter 切换 • Esc 退出")}`));
 		lines.push(th.fg("border", `╰${"─".repeat(innerW)}╯`));
 
 		return lines;

@@ -201,7 +201,7 @@ class PiStartupHeader implements Component {
 	) {
 		const pool = collectPiCommandNames(this.pi.getCommands());
 		this.tipCommands = pickSlashCommandTips(pool, {
-			fixed: ["use-default-tui"],
+			fixed: ["cc-tui"],
 			count: 3,
 		});
 
