@@ -53,6 +53,47 @@ export default function registerModelRolesExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: "use_role",
+    label: "Switch model role",
+    description: "Switch the current model + thinking level to a named role. Use this to pick the right model for the task. Available roles: primary (daily coding), architect (architecture/security, deep reasoning), think (extreme reasoning, cross-file migration), codegen (complex code generation), audit (independent code review, second opinion), quick (simple edits, formatting, git), backup (fallback when primary unavailable). Role definitions are in settings.json modelRoles.",
+    parameters: Type.Object({
+      role: Type.String({ description: "Role name to switch to (e.g. primary, architect, think, codegen, audit, quick, backup)" }),
+    }),
+    async execute(args) {
+      const api = getModelRolesAPI();
+      const roleName = args.role;
+      const roleConfig = api.getRole(roleName);
+      if (!roleConfig) {
+        return {
+          content: [{ type: "text", text: `Unknown role: ${roleName}. Available: ${Object.keys(api.getRoles()).join(", ")}` }],
+          details: undefined as any,
+        };
+      }
+      const resolved = api.resolveRole(roleName);
+      if (!resolved.model) {
+        return {
+          content: [{ type: "text", text: `Role "${roleName}" model not available: ${roleConfig.model}` }],
+          details: undefined as any,
+        };
+      }
+      const success = await pi.setModel(resolved.model);
+      if (!success) {
+        return {
+          content: [{ type: "text", text: `No API key for ${resolved.model.provider}/${resolved.model.id}` }],
+          details: undefined as any,
+        };
+      }
+      if (roleConfig.thinking) {
+        pi.setThinkingLevel(roleConfig.thinking as any);
+      }
+      return {
+        content: [{ type: "text", text: `Switched to role "${roleName}": ${resolved.model.provider}/${resolved.model.id} [${roleConfig.thinking ?? "off"}]` }],
+        details: undefined as any,
+      };
+    },
+  });
+
   pi.registerCommand("roles", {
     description: "Show model role definitions and resolved models",
     handler: async (_args, ctx) => {
