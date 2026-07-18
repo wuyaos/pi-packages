@@ -1,0 +1,13 @@
+{
+  "name": "pi-octssh",
+  "version": "1.1.0",
+  "description": "pi extension bridging the octssh MCP server (SSH deployment tools) into native pi tools",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/octssh.ts"]
+  },
+  "dependencies": {
+    "@aliyahzombie/octssh": "*"
+  }
+}
