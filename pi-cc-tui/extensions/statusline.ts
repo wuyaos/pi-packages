@@ -60,7 +60,7 @@ interface GitStats {
 }
 
 /** 可配置段。thinking 已并入 model，output 已并入 context。 */
-interface SegmentConfig {
+export interface SegmentConfig {
 	model: boolean;
 	git: boolean;
 	context: boolean;
@@ -71,7 +71,7 @@ interface SegmentConfig {
 	bar: boolean;
 }
 
-type SegmentName = keyof SegmentConfig;
+export type SegmentName = keyof SegmentConfig;
 
 export const SEGMENT_NAMES: SegmentName[] = [
 	"model",
