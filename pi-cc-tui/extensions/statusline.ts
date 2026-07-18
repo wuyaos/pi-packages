@@ -189,7 +189,12 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				let modelStr: string | null = null;
 				if (segmentConfig.model) {
 					const modelId = (ctx.model as any)?.id || "no-model";
-					const level = activePi?.getThinkingLevel() || "off";
+					let level = "off";
+				try {
+					level = activePi?.getThinkingLevel() || "off";
+				} catch {
+					level = "off";
+				}
 					modelStr = theme.fg("accent", `model:${modelId}[${level}]`);
 				}
 
