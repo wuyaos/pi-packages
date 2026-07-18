@@ -126,6 +126,7 @@ let firstTokenTime: number | null = null;
 let tokenCount = 0;
 let lastTTFT: number | null = null;
 let lastTPS: number | null = null;
+let cachedThinkingLevel = "medium";
 
 function clearGitTimer(): void {
 	if (gitTimer) {
@@ -402,12 +403,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				let modelStr: string | null = null;
 				if (segmentConfig.model) {
 					const modelId = (ctx.model as any)?.id || "no-model";
-					let level = "off";
-					try {
-						level = (ctx as any)?.thinkingLevel || activePi?.getThinkingLevel() || "off";
-					} catch {
-						level = "off";
-					}
+					let level = cachedThinkingLevel;
 					modelStr = theme.fg("accent", `model:${modelId}[${level}]`);
 				}
 
@@ -590,7 +586,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => applyStatusline(ctx));
 	pi.on("agent_end", (_event, ctx) => applyStatusline(ctx));
 	pi.on("model_select", (_event, ctx) => applyStatusline(ctx));
-	pi.on("thinking_level_select", (_event, ctx) => applyStatusline(ctx));
+	pi.on("thinking_level_select", (event: any, ctx) => { cachedThinkingLevel = event.level; applyStatusline(ctx); });
 	pi.on("session_compact", (_event, ctx) => applyStatusline(ctx));
 	pi.on("session_tree", (_event, ctx) => applyStatusline(ctx));
 	pi.on("context", (_event, ctx) => applyStatusline(ctx));
