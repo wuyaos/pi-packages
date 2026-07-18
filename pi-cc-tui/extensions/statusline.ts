@@ -1,9 +1,10 @@
 /**
- * pi-cc-tui 状态栏：三行布局。
- * 行 1 左: model | git
- * 行 1 右: ctx(含 output) | tokens | cost
- * 行 2: 📂 path
- * 行 3: extensions
+ * pi-cc-tui 状态栏（含 context bar，合并自 pi-nano-context）。
+ *
+ * 行 1: model | git (左) ... ctx(含output) | tokens | cost (右)
+ * 行 2: 📂 path (左) ... 色条 (右, bar 开启时)
+ * 行 3: extensions (左) ... ■ 图例 (右, bar 开启时)
+ *
  * PI_STATUSLINE_GIT=1 时启用 git status --porcelain 统计，默认关闭。
  */
 
@@ -17,6 +18,40 @@ import { dirname } from "node:path";
 const GIT_REFRESH_MS = 2000;
 const gitEnabled = process.env.PI_STATUSLINE_GIT === "1";
 const CONFIG_PATH = `${homedir()}/.pi/agent/config/cc-tui.json`;
+
+// ── Context bar 配色 (合并自 pi-nano-context) ──
+const CHARACTERS_PER_TOKEN = 4;
+const IMAGE_TOKEN_ESTIMATE = 1200;
+
+interface ContextSegment {
+	key: "system" | "prompt" | "assistant" | "thinking" | "tools";
+	color: string;
+	labels: string[];
+}
+
+const CONTEXT_SEGMENTS: ContextSegment[] = [
+	{ key: "system", color: "#82CA7A", labels: ["system", "sys", "s"] },
+	{ key: "prompt", color: "#E89BC1", labels: ["prompt", "pr", "p"] },
+	{ key: "assistant", color: "#8BC7C2", labels: ["assistant", "ast", "a"] },
+	{ key: "thinking", color: "#73D0D2", labels: ["think", "th", "t"] },
+	{ key: "tools", color: "#D8A657", labels: ["tools", "tl", "x"] },
+];
+
+const FREE_SEGMENT_FILL = "#242731";
+
+interface ContextSnapshot {
+	segments: Record<string, number>;
+	usedTokens: number;
+	contextWindow: number;
+	usageIsEstimated: boolean;
+}
+
+let contextSnapshot: ContextSnapshot = {
+	segments: { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 },
+	usedTokens: 0,
+	contextWindow: 0,
+	usageIsEstimated: false,
+};
 
 interface GitStats {
 	staged: number;
@@ -33,6 +68,7 @@ interface SegmentConfig {
 	cost: boolean;
 	path: boolean;
 	extensions: boolean;
+	bar: boolean;
 }
 
 type SegmentName = keyof SegmentConfig;
@@ -45,6 +81,7 @@ const SEGMENT_NAMES: SegmentName[] = [
 	"tokens",
 	"cost",
 	"extensions",
+	"bar",
 ];
 
 const DEFAULT_CONFIG: SegmentConfig = {
@@ -55,6 +92,7 @@ const DEFAULT_CONFIG: SegmentConfig = {
 	cost: false,
 	path: true,
 	extensions: true,
+	bar: false,
 };
 
 function loadConfig(): SegmentConfig {
@@ -156,9 +194,182 @@ function joinSegments(parts: string[], theme: { fg: (token: string, text: string
 	return parts.join(`${theme.fg("dim", " | ")}`);
 }
 
+// ── ANSI 颜色 (用于 context bar 色条) ──
+function ansiColor(mode: 38 | 48, hex: string, text: string): string {
+	const value = Number.parseInt(hex.replace(/^#/, ""), 16);
+	const r = (value >> 16) & 0xff;
+	const g = (value >> 8) & 0xff;
+	const b = value & 0xff;
+	const reset = mode === 38 ? 39 : 49;
+	return `\x1b[${mode};2;${r};${g};${b}m${text}\x1b[${reset}m`;
+}
+
+function bgHex(hex: string, text: string): string {
+	return ansiColor(48, hex, text);
+}
+
+function fgHex(hex: string, text: string): string {
+	return ansiColor(38, hex, text);
+}
+
+// ── Context snapshot 计算 (合并自 pi-nano-context) ──
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / CHARACTERS_PER_TOKEN);
+}
+
+function contentRecords(content: unknown): readonly Record<string, unknown>[] {
+	return Array.isArray(content) ? content.filter((v): v is Record<string, unknown> => !!v && typeof v === "object") : [];
+}
+
+function textFromContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	return contentRecords(content)
+		.map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+		.join("");
+}
+
+function imageCount(content: unknown): number {
+	return contentRecords(content).filter((part) => part.type === "image").length;
+}
+
+function estimateContentTokens(content: unknown): number {
+	return estimateTextTokens(textFromContent(content)) + imageCount(content) * IMAGE_TOKEN_ESTIMATE;
+}
+
+function estimateToolCallTokens(part: Record<string, unknown>): number {
+	const name = typeof part.name === "string" ? part.name : "";
+	const input = JSON.stringify(part.arguments ?? {});
+	return estimateTextTokens(`${name}${input}`);
+}
+
+function addAssistantTokens(segments: Record<string, number>, content: unknown): void {
+	for (const part of contentRecords(content)) {
+		if (part.type === "text" && typeof part.text === "string") {
+			segments.assistant += estimateTextTokens(part.text);
+		}
+		if (part.type === "thinking" && typeof part.thinking === "string") {
+			segments.thinking += estimateTextTokens(part.thinking);
+		}
+		if (part.type === "toolCall") {
+			segments.assistant += estimateToolCallTokens(part);
+		}
+	}
+}
+
+function segmentSessionMessages(messages: readonly unknown[], systemPrompt: string): Record<string, number> {
+	const segments: Record<string, number> = { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
+	segments.system = estimateTextTokens(systemPrompt);
+	for (const message of messages) {
+		if (!message || typeof message !== "object") continue;
+		const msg = message as Record<string, unknown>;
+		if (msg.role === "user") segments.prompt += estimateContentTokens(msg.content);
+		if (msg.role === "assistant") addAssistantTokens(segments, msg.content);
+		if (msg.role === "toolResult") segments.tools += estimateContentTokens(msg.content);
+	}
+	return segments;
+}
+
+function segmentTotal(segments: Record<string, number>): number {
+	return CONTEXT_SEGMENTS.reduce((total, seg) => total + (segments[seg.key] || 0), 0);
+}
+
+function allocateProportionally(values: readonly number[], columns: number): number[] {
+	if (columns <= 0) return values.map(() => 0);
+	const total = values.reduce((sum, v) => sum + v, 0);
+	if (total <= 0) return values.map(() => 0);
+	const raw = values.map((v) => (v / total) * columns);
+	const allocated = raw.map(Math.floor);
+	let remaining = columns - allocated.reduce((sum, v) => sum + v, 0);
+	const remainders = raw
+		.map((v, i) => ({ i, r: v - Math.floor(v) }))
+		.sort((a, b) => b.r - a.r);
+	for (let i = 0; i < remainders.length && remaining > 0; i++, remaining--) {
+		allocated[remainders[i]!.i]!++;
+	}
+	return allocated;
+}
+
+function scaleSegments(segments: Record<string, number>, usedTokens: number): Record<string, number> {
+	if (usedTokens <= 0 || segmentTotal(segments) <= 0) return segments;
+	const values = CONTEXT_SEGMENTS.map((s) => segments[s.key] || 0);
+	const scaled = allocateProportionally(values, Math.round(usedTokens));
+	const result: Record<string, number> = { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
+	for (const [i, seg] of CONTEXT_SEGMENTS.entries()) result[seg.key] = scaled[i] ?? 0;
+	return result;
+}
+
+function updateContextSnapshot(ctx: ExtensionContext): void {
+	try {
+		const entries = ctx.sessionManager.getEntries();
+		const messages: unknown[] = [];
+		for (const entry of entries) {
+			if (entry.type === "message") messages.push(entry.message);
+		}
+		const systemPrompt = (ctx as any)?.getSystemPrompt?.() || "";
+		const rawSegments = segmentSessionMessages(messages, systemPrompt);
+		const usage = ctx.getContextUsage();
+		const measuredTokens = typeof usage?.tokens === "number" && usage.tokens > 0 ? usage.tokens : undefined;
+		const estimatedTokens = segmentTotal(rawSegments);
+		const usedTokens = measuredTokens ?? estimatedTokens;
+		const contextWindow = (usage as any)?.contextWindow || (ctx.model as any)?.contextWindow || 0;
+		contextSnapshot = {
+			segments: scaleSegments(rawSegments, usedTokens),
+			usedTokens,
+			contextWindow,
+			usageIsEstimated: measuredTokens === undefined,
+		};
+	} catch {
+		// keep last snapshot
+	}
+}
+
+// ── 色条渲染 ──
+function renderContextBar(snapshot: ContextSnapshot, width: number): string {
+	if (snapshot.contextWindow <= 0 || width <= 0) return "";
+	const freeTokens = Math.max(0, snapshot.contextWindow - snapshot.usedTokens);
+	const values = [...CONTEXT_SEGMENTS.map((s) => snapshot.segments[s.key] || 0), freeTokens];
+
+	// 可见段（token > 0）
+	const visibleIndices = values.map((v, i) => v > 0 ? i : -1).filter((i) => i >= 0);
+	const minColumns = new Array(values.length).fill(0);
+	for (const i of visibleIndices) minColumns[i] = 1;
+	const remaining = allocateProportionally(values, width - visibleIndices.length);
+	const columns = minColumns.map((m, i) => m + (remaining[i] ?? 0));
+
+	const parts: string[] = [];
+	for (const [i, seg] of CONTEXT_SEGMENTS.entries()) {
+		const col = columns[i] ?? 0;
+		if (col > 0 && values[i]! > 0) {
+			parts.push(bgHex(seg.color, " ".repeat(col)));
+		}
+	}
+	const freeCol = columns[CONTEXT_SEGMENTS.length] ?? 0;
+	if (freeCol > 0) {
+		parts.push(bgHex(FREE_SEGMENT_FILL, " ".repeat(freeCol)));
+	}
+	return parts.join("");
+}
+
+// ── 图例渲染 ──
+function renderLegend(snapshot: ContextSnapshot): string {
+	const parts: string[] = [];
+	for (const seg of CONTEXT_SEGMENTS) {
+		const tokens = snapshot.segments[seg.key] || 0;
+		if (tokens > 0) {
+			parts.push(`${fgHex(seg.color, "■")} ${theme_dim}${seg.labels[0]}${theme_reset}`);
+		}
+	}
+	return parts.join("  ");
+}
+
+// dim/reset 常量 (避免在渲染函数里频繁调 theme)
+const theme_dim = "\x1b[2m";
+const theme_reset = "\x1b[0m";
+
 export function applyStatusline(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
 	clearGitTimer();
+	updateContextSnapshot(ctx);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
 		const refreshGit = async () => {
@@ -185,16 +396,18 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (gitEnabled) void refreshGit();
 			},
 			render(width: number): string[] {
+				updateContextSnapshot(ctx);
+
 				// ── model (含 thinking 级别) ──
 				let modelStr: string | null = null;
 				if (segmentConfig.model) {
 					const modelId = (ctx.model as any)?.id || "no-model";
 					let level = "off";
-				try {
-					level = (ctx as any)?.thinkingLevel || activePi?.getThinkingLevel() || "off";
-				} catch {
-					level = "off";
-				}
+					try {
+						level = (ctx as any)?.thinkingLevel || activePi?.getThinkingLevel() || "off";
+					} catch {
+						level = "off";
+					}
 					modelStr = theme.fg("accent", `model:${modelId}[${level}]`);
 				}
 
@@ -245,7 +458,6 @@ export function applyStatusline(ctx: ExtensionContext): void {
 							else if (percent < 85) value = theme.fg("warning", label);
 							else if (percent <= 95) value = theme.fg("error", label);
 							else value = theme.bold(theme.fg("error", label));
-							// 合并 output
 							value += ` ${theme.fg("muted", `↑${fmtTokens(output)}`)}`;
 							ctxStr = value;
 						}
@@ -290,7 +502,6 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					if (gap >= 2) {
 						line1 = leftStr + " ".repeat(gap) + rightStr;
 					} else {
-						// 不够放，合并用分隔符
 						line1 = truncateToWidth(`${leftStr}${theme.fg("dim", " | ")}${rightStr}`, width);
 					}
 				} else if (leftStr) {
@@ -304,19 +515,62 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				const lines: string[] = [];
 				if (line1) lines.push(line1);
 
-				// ── 行 2: path ──
-				if (segmentConfig.path) {
-					const pathStr = theme.fg("dim", `📂 ${fmtPath(ctx.sessionManager.getCwd())}`);
-					lines.push(visibleWidth(pathStr) <= width ? pathStr : truncateToWidth(pathStr, width));
+				// ── 行 2: path (左) + 色条 (右, bar 开启时) ──
+				if (segmentConfig.path || segmentConfig.bar) {
+					let pathStr = "";
+					if (segmentConfig.path) {
+						pathStr = theme.fg("dim", `📂 ${fmtPath(ctx.sessionManager.getCwd())}`);
+					}
+
+					if (segmentConfig.bar) {
+						const barWidth = Math.max(10, width - visibleWidth(pathStr) - 2);
+						const bar = renderContextBar(contextSnapshot, barWidth);
+						if (pathStr) {
+							const gap = width - visibleWidth(pathStr) - visibleWidth(bar);
+							if (gap >= 1) {
+								lines.push(pathStr + " ".repeat(gap) + bar);
+							} else {
+								lines.push(truncateToWidth(pathStr, width));
+							}
+						} else {
+							lines.push(bar);
+						}
+					} else if (pathStr) {
+						lines.push(visibleWidth(pathStr) <= width ? pathStr : truncateToWidth(pathStr, width));
+					}
 				}
 
-				// ── 行 3: extensions ──
+				// ── 行 3: extensions (左) + 图例 (右, bar 开启时) ──
+				let extStr = "";
 				if (segmentConfig.extensions) {
 					const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
 					if (statuses.length > 0) {
-						const extStr = theme.fg("dim", statuses.join(" "));
+						extStr = theme.fg("dim", statuses.join(theme.fg("dim", " · ")));
+					}
+				}
+
+				if (segmentConfig.bar) {
+					const legend = renderLegend(contextSnapshot);
+					if (extStr && legend) {
+						const gap = width - visibleWidth(extStr) - visibleWidth(legend);
+						if (gap >= 2) {
+							lines.push(extStr + " ".repeat(gap) + legend);
+						} else {
+							// 先截图例，再截 extensions
+							const legendAvail = Math.max(0, width - visibleWidth(extStr) - 2);
+							if (legendAvail > 0) {
+								lines.push(extStr + " ".repeat(2) + truncateToWidth(legend, legendAvail));
+							} else {
+								lines.push(truncateToWidth(extStr, width));
+							}
+						}
+					} else if (legend) {
+						lines.push(legend);
+					} else if (extStr) {
 						lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
 					}
+				} else if (extStr) {
+					lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
 				}
 
 				return lines;
@@ -339,6 +593,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("thinking_level_select", (_event, ctx) => applyStatusline(ctx));
 	pi.on("session_compact", (_event, ctx) => applyStatusline(ctx));
 	pi.on("session_tree", (_event, ctx) => applyStatusline(ctx));
+	pi.on("context", (_event, ctx) => applyStatusline(ctx));
 	pi.on("session_shutdown", () => clearGitTimer());
 
 	pi.on("before_provider_request", () => {
