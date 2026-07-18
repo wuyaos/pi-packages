@@ -56,7 +56,7 @@ export default function registerModelRolesExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "use_role",
     label: "Switch model role",
-    description: "Switch the current model + thinking level to a named role. Use this to pick the right model for the task. Available roles: primary (daily coding), architect (architecture/security, deep reasoning), think (extreme reasoning, cross-file migration), codegen (complex code generation), audit (independent code review, second opinion), quick (simple edits, formatting, git), backup (fallback when primary unavailable). Role definitions are in settings.json modelRoles.",
+    description: "Switch the current model + thinking level to a named role. Use this to pick the right model for the task. Available roles: primary (daily coding, glm-5.2), architect (architecture/security, claude-opus-4.8 high), think (extreme reasoning, claude-opus-4.8 xhigh), codegen (complex code generation, gpt-5.6-sol high), audit (independent code review, deepseek-v4-pro high), quick (simple edits, deepseek-v4-flash low), backup (fallback, gpt-5.6-terra), compact (context compression, deepseek-v4-flash off), image (image generation, gpt-image-2 off), lite (lightweight tasks, gpt-5.6-luna off). Role definitions are in settings.json modelRoles.",
     parameters: Type.Object({
       role: Type.String({ description: "Role name to switch to (e.g. primary, architect, think, codegen, audit, quick, backup)" }),
     }),
