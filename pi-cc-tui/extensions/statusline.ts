@@ -63,7 +63,7 @@ const DEFAULT_CONFIG: SegmentConfig = {
 	cost: false,
 	tokens: false,
 	thinking: false,
-	extensions: false,
+	extensions: true,
 };
 
 function loadConfig(): SegmentConfig {
