@@ -1,0 +1,178 @@
+{
+  "runId": "93f676ae",
+  "agent": "worker",
+  "task": "You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.\n\nTask:\n升级 pi-cc-tui 状态栏，加入 7 项新特性。工作目录: /mnt/d/work/project/person/pi-packages\n\n## 当前文件\npi-cc-tui/extensions/statusline.ts 已存在，需要重写升级。\n\n## 要加入的 7 项特性\n\n### 第一优先（4 项）\n\n#### 1. context 阈值变色\ncontext 段根据使用百分比变色:\n- <70%: success (绿)\n- 70-85%: warning (黄)\n- 85-95%: error (橙)\n- >95%: error (红，加粗)\n显示格式: `12k/128k (9%)` 或 `12k/128k` 都行，百分比可选。\n计算: usage.tokens / contextWindow * 100\n\n#### 2. `❯` 分隔符\n所有段之间用 ` ❯ ` 分隔（注意前后有空格），替换当前的 `  `（双空格）。\n示例: `glm-5.2 ❯ ~/project ❯ main +2 ~3 ?1 ❯ 12k/128k ❯ ↑5.2k`\n分隔符用 theme.fg(\"dim\", \"❯\") 着色\n\n#### 3. `/cc-tui` 段配置器\n注册 `/cc-tui` 命令，交互式 show/hide 各段:\n- `/cc-tui` 或 `/cc-tui list` — 列出所有段及当前状态\n- `/cc-tui only model git context` — 只显示指定段\n- `/cc-tui show model` — 显示某段\n- `/cc-tui hide model` — 隐藏某段\n- `/cc-tui all` — 显示全部\n- `/cc-tui none` — 全部隐藏\n段名: model, git, context, output, cost, tokens, thinking, extensions\n配置持久化到 ~/.pi/agent/config/cc-tui.json:\n```json\n{\n  \"segments\": {\n    \"model\": true,\n    \"git\": true,\n    \"context\": true,\n    \"output\": true,\n    \"cost\": false,\n    \"tokens\": false,\n    \"thinking\": false,\n    \"extensions\": false\n  }\n}\n```\n默认: model/git/context/output 为 true，其余 false\n\n#### 4. thinking 级别段\n显示当前 thinking 级别: `think:medium` 或 `think:med` 缩写\n通过 pi.getThinkingLevel() 获取\n颜色: 用 theme.fg(\"accent\", ...) 或根据级别着色\n\n### 第二优先（3 项）\n\n#### 5. cost($) 段\n累计花费: `$0.123`\n从 sessionManager.getBranch() 累加 message.usage.cost.total\n颜色: 按金额梯度变色:\n- <$0.10: muted\n- $0.10-$1.00: dim\n- >$1.00: warning\n\n#### 6. TTFT + TPS 段\n- TTFT (Time To First Token): 首 token 延迟秒数\n- TPS (Tokens Per Second): 实时生成速度\n实现:\n- 在 before_provider_request 事件记录 startTime\n- 在 message_update 事件检测第一个 output token 到达，计算 TTFT = now - startTime\n- 在 message_update 持续更新 tokenCount，TPS = (currentTokens - firstTokenTime) / (now - firstTokenTime)\n显示: `TTFT 2.7s ❯ 62 TPS` 或合并为一段 `2.7s/62tps`\n颜色: TTFT >3s 红色, TPS <10 红色\n\n#### 7. 扩展状态段\n显示其他扩展通过 ctx.ui.setStatus() 发布的状态:\n通过 footerData.getExtensionStatuses() 获取，返回 Map<string, string>\n显示: 各状态用空格分隔\n颜色: dim\n\n## 实现要求\n\n### 文件结构\n只改 pi-cc-tui/extensions/statusline.ts，不需要新文件。\n\n### 导出\n保持现有导出不变:\n- applyStatusline(ctx)\n- restoreDefaultFooter(ctx)\n- default function(pi)\n\n### 配置加载/保存\n```typescript\nimport { readFileSync, writeFileSync, mkdirSync, existsSync } from \"node:fs\";\nimport { dirname } from \"node:path\";\n\nconst CONFIG_PATH = `${homedir()}/.pi/agent/config/cc-tui.json`;\n\ninterface SegmentConfig {\n  model: boolean; git: boolean; context: boolean; output: boolean;\n  cost: boolean; tokens: boolean; thinking: boolean; extensions: boolean;\n}\n\nconst DEFAULT_CONFIG: SegmentConfig = {\n  model: true, git: true, context: true, output: true,\n  cost: false, tokens: false, thinking: false, extensions: false,\n};\n\nfunction loadConfig(): SegmentConfig {\n  try {\n    if (existsSync(CONFIG_PATH)) {\n      const raw = JSON.parse(readFileSync(CONFIG_PATH, \"utf8\"));\n      return { ...DEFAULT_CONFIG, ...raw.segments };\n    }\n  } catch {}\n  return { ...DEFAULT_CONFIG };\n}\n\nfunction saveConfig(cfg: SegmentConfig): void {\n  try {\n    mkdirSync(dirname(CONFIG_PATH), { recursive: true });\n    writeFileSync(CONFIG_PATH, JSON.stringify({ segments: cfg }, null, 2));\n  } catch {}\n}\n```\n注意: 配置要在模块加载时读取一次（因为 render 是同步的高频调用），命令修改后重新读取。\n\n### TTFT/TPS 状态变量（模块级）\n```typescript\nlet providerStartTime: number | null = null;\nlet firstTokenTime: number | null = null;\nlet tokenCount = 0;\nlet lastTTFT: number | null = null;\nlet lastTPS: number | null = null;\n```\n\n### 事件监听（在 default function(pi) 里）\n```typescript\npi.on(\"before_provider_request\", () => {\n  providerStartTime = Date.now();\n  firstTokenTime = null;\n  tokenCount = 0;\n});\n\npi.on(\"message_update\", (event, ctx) => {\n  if (!providerStartTime) return;\n  // 检测 output token 增长\n  const msg = (event as any).message;\n  if (msg?.role === \"assistant\") {\n    const output = msg.usage?.output || 0;\n    if (output > 0) {\n      if (!firstTokenTime) {\n        firstTokenTime = Date.now();\n        lastTTFT = (firstTokenTime - providerStartTime) / 1000;\n      }\n      tokenCount = output;\n      if (firstTokenTime) {\n        const elapsed = (Date.now() - firstTokenTime) / 1000;\n        if (elapsed > 0.1) lastTPS = tokenCount / elapsed;\n      }\n    }\n  }\n});\n```\n\n### render 函数段组装\nrender 里按配置顺序组装段，每段如果配置为 false 就跳过。\n顺序: model, thinking, git, context, tokens, output, cost, extensions\n用 ` ❯ ` 分隔（dim 着色）\n\n### /cc-tui 命令\n保留原来的 /statusline-git 命令不变。\n新增 /cc-tui 命令处理段配置。\n\n### 命令处理\n对于 `/cc-tui` 无参数或 list，用 ctx.ui.notify() 通知当前配置状态。\n对于 show/hide/only/all/none，修改配置后 saveConfig，然后 tui.requestRender()（如果拿到 tui 的话，或通过 setFooter 重新注册）。\n注意: 命令 handler 里没有 tui 引用。可以在 applyStatusline 时把 setFooter 的 factory 返回的对象存到模块级变量，命令修改配置后调用 setFooter 重新注册。或者更简单: 命令修改配置后调 ctx.ui.notify 提示\"重启后生效\"或直接重新 setFooter。\n最简单方案: 命令修改配置后，直接重新调用 applyStatusline(ctx) 重新注册 footer。\n\n## 完成后\n1. 检查语法: node --check 无法检查 TS，但可以目视检查\n2. git add -A\n3. git -c user.name=wuya -c user.email=wuya@local commit -m \"feat(pi-cc-tui): 状态栏升级 — 7 项新特性\n\n- context 阈值变色 (绿→黄→橙→红)\n- ❯ 分隔符\n- /cc-tui 段配置器 (持久化 JSON)\n- thinking 级别段\n- cost($) 累计花费段\n- TTFT + TPS 段\n- 扩展状态段\"\n4. git push\n\n## 重要约束\n- 不修改 ~/.pi/agent/ 下任何文件\n- 保持现有 applyStatusline/restoreDefaultFooter/default 导出\n- 配置文件路径 ~/.pi/agent/config/cc-tui.json\n- git 默认关闭 (PI_STATUSLINE_GIT=1 开启) 不变",
+  "exitCode": 0,
+  "usage": {
+    "input": 177919,
+    "output": 9968,
+    "cacheRead": 1476608,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 20
+  },
+  "model": "cpa-openai-responses/gpt-5.6-sol:high",
+  "attemptedModels": [
+    "cpa-openai-responses/gpt-5.6-sol:high"
+  ],
+  "modelAttempts": [
+    {
+      "model": "cpa-openai-responses/gpt-5.6-sol:high",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 177919,
+        "output": 9968,
+        "cacheRead": 1476608,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 20
+      }
+    }
+  ],
+  "durationMs": 713851,
+  "toolCount": 19,
+  "acceptance": {
+    "status": "checked",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "checked",
+      "explicit": false,
+      "inferredReason": [
+        "write-capable worker/task"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Implement the requested change without widening scope",
+          "evidence": [
+            "changed-files",
+            "tests-added",
+            "commands-run",
+            "residual-risks",
+            "no-staged-files"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "changed-files",
+        "tests-added",
+        "commands-run",
+        "residual-risks",
+        "no-staged-files"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "write-capable worker/task"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Implement the requested change without widening scope",
+        "evidence": [
+          "changed-files",
+          "tests-added",
+          "commands-run",
+          "residual-risks",
+          "no-staged-files"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [
+      {
+        "id": "criterion:criterion-1",
+        "status": "passed",
+        "message": "Required criterion 'criterion-1' satisfied."
+      },
+      {
+        "id": "evidence:changed-files",
+        "status": "passed",
+        "message": "changed-files evidence present."
+      },
+      {
+        "id": "evidence:tests-added",
+        "status": "not-applicable",
+        "message": "tests-added evidence explicitly reported as not applicable."
+      },
+      {
+        "id": "evidence:commands-run",
+        "status": "passed",
+        "message": "commands-run evidence present."
+      },
+      {
+        "id": "evidence:residual-risks",
+        "status": "passed",
+        "message": "residual-risks evidence present."
+      },
+      {
+        "id": "evidence:no-staged-files",
+        "status": "passed",
+        "message": "no-staged-files evidence present."
+      },
+      {
+        "id": "no-staged-files",
+        "status": "passed",
+        "message": "No staged files detected."
+      }
+    ],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Only pi-cc-tui/extensions/statusline.ts was changed; it now implements context thresholds, separators, persistent segment configuration, thinking, cost, TTFT/TPS, and extension-status segments."
+        }
+      ],
+      "changedFiles": [
+        "pi-cc-tui/extensions/statusline.ts"
+      ],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "node --experimental-strip-types --check pi-cc-tui/extensions/statusline.ts",
+          "result": "passed",
+          "summary": "TypeScript syntax parsed successfully."
+        },
+        {
+          "command": "git diff --check",
+          "result": "passed",
+          "summary": "No whitespace errors."
+        },
+        {
+          "command": "git commit -m \"feat(pi-cc-tui): 状态栏升级 — 7 项新特性\"",
+          "result": "passed",
+          "summary": "Created commit 6c54ffa."
+        },
+        {
+          "command": "git push",
+          "result": "passed",
+          "summary": "Pushed commit 6c54ffa to origin/master after one transient SSH failure."
+        }
+      ],
+      "validationOutput": [
+        "Statusline supports /cc-tui list|only|show|hide|all|none.",
+        "Configuration persists to ~/.pi/agent/config/cc-tui.json.",
+        "PI_STATUSLINE_GIT remains opt-in via PI_STATUSLINE_GIT=1.",
+        "Local master matches origin/master."
+      ],
+      "residualRisks": [
+        "Theme API exposes error rather than distinct orange/red tokens; >95% context is distinguished with bold.",
+        "TTFT/TPS accuracy depends on provider streaming usage updates.",
+        "Pre-existing untracked .pi-subagents/artifacts files remain in the working tree."
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "248 insertions and 41 deletions in the existing statusline implementation.",
+      "reviewFindings": [
+        "no blockers"
+      ],
+      "manualNotes": "No files under ~/.pi/agent were modified."
+    }
+  },
+  "transcriptPath": "/mnt/d/work/project/person/pi-packages/.pi-subagents/artifacts/93f676ae_worker_0_transcript.jsonl",
+  "timestamp": 1784384164535
+}
