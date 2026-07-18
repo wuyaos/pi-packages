@@ -3,22 +3,26 @@
  *
  * Monkey-patches AssistantMessageComponent.prototype.updateContent so that
  * the "hidden" state (hideThinkingBlock=true) renders only the first
- * PREVIEW_LINES lines of each thinking block plus an expand hint, instead
+ * previewLines lines of each thinking block plus an expand hint, instead
  * of pi's default single static label. The expanded state (Ctrl+T) still
  * shows the full thinking via the original renderer.
  *
  * No dist source files are modified. Pair with `hideThinkingBlock: true`
  * in settings.json so pi starts collapsed.
- *
- * Commands:
- *   /claude-thinking-preview <n>   Set preview line count (default 5)
- *   /claude-thinking-preview      Reset to default (5)
  */
 
 import { AssistantMessageComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_PREVIEW = 5;
 let previewLines = DEFAULT_PREVIEW;
+
+export function getPreviewLines(): number {
+	return previewLines;
+}
+
+export function setPreviewLines(n: number): void {
+	previewLines = n;
+}
 
 // Type alias for the internal message shape (avoids importing private types).
 type AnyMessage = {
@@ -80,20 +84,6 @@ export default function (pi: ExtensionAPI) {
 		// Ctrl+T expand re-renders the full thinking, not the truncated copy.
 		this.lastMessage = message;
 	};
-
-	pi.registerCommand("claude-thinking-preview", {
-		description: `Set collapsed thinking preview line count (default ${DEFAULT_PREVIEW}). No args resets.`,
-		handler: async (args, ctx) => {
-			const n = parseInt(args.trim(), 10);
-			if (!Number.isFinite(n) || n < 0) {
-				ctx.ui.notify(`Invalid count; reset to ${DEFAULT_PREVIEW}`, "warning");
-				previewLines = DEFAULT_PREVIEW;
-				return;
-			}
-			previewLines = n;
-			ctx.ui.notify(`Thinking preview: ${previewLines} line${previewLines === 1 ? "" : "s"}`, "info");
-		},
-	});
 
 	pi.on("session_shutdown", () => {
 		// Best-effort restore; pi tears down the process anyway.

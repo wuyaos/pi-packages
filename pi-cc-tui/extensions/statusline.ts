@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { dirname } from "node:path";
 
 const GIT_REFRESH_MS = 2000;
-const gitEnabled = process.env.PI_STATUSLINE_GIT === "1";
+export const gitEnabled = process.env.PI_STATUSLINE_GIT === "1";
 const CONFIG_PATH = `${homedir()}/.pi/agent/config/cc-tui.json`;
 
 // ── Context bar 配色 (合并自 pi-nano-context) ──
@@ -73,7 +73,7 @@ interface SegmentConfig {
 
 type SegmentName = keyof SegmentConfig;
 
-const SEGMENT_NAMES: SegmentName[] = [
+export const SEGMENT_NAMES: SegmentName[] = [
 	"model",
 	"path",
 	"git",
@@ -95,7 +95,7 @@ const DEFAULT_CONFIG: SegmentConfig = {
 	bar: false,
 };
 
-function loadConfig(): SegmentConfig {
+export function loadConfig(): SegmentConfig {
 	try {
 		if (existsSync(CONFIG_PATH)) {
 			const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
@@ -107,7 +107,7 @@ function loadConfig(): SegmentConfig {
 	return { ...DEFAULT_CONFIG };
 }
 
-function saveConfig(config: SegmentConfig): void {
+export function saveConfig(config: SegmentConfig): void {
 	try {
 		mkdirSync(dirname(CONFIG_PATH), { recursive: true });
 		writeFileSync(CONFIG_PATH, JSON.stringify({ segments: config }, null, 2));
@@ -116,7 +116,7 @@ function saveConfig(config: SegmentConfig): void {
 	}
 }
 
-let segmentConfig = loadConfig();
+export let segmentConfig = loadConfig();
 let gitStats: GitStats | null = null;
 let gitTimer: ReturnType<typeof setInterval> | null = null;
 let activePi: ExtensionAPI | null = null;
@@ -182,11 +182,11 @@ function fmtPath(p: string): string {
 	return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-function isSegmentName(value: string): value is SegmentName {
+export function isSegmentName(value: string): value is SegmentName {
 	return SEGMENT_NAMES.includes(value as SegmentName);
 }
 
-function configSummary(): string {
+export function configSummary(): string {
 	return SEGMENT_NAMES.map((name) => `${name}:${segmentConfig[name] ? "on" : "off"}`).join(" · ");
 }
 
@@ -357,15 +357,11 @@ function renderLegend(snapshot: ContextSnapshot): string {
 	for (const seg of CONTEXT_SEGMENTS) {
 		const tokens = snapshot.segments[seg.key] || 0;
 		if (tokens > 0) {
-			parts.push(`${fgHex(seg.color, "■")} ${theme_dim}${seg.labels[0]}${theme_reset}`);
+			parts.push(fgHex(seg.color, `■ ${seg.labels[0]}`));
 		}
 	}
 	return parts.join("  ");
 }
-
-// dim/reset 常量 (避免在渲染函数里频繁调 theme)
-const theme_dim = "\x1b[2m";
-const theme_reset = "\x1b[0m";
 
 export function applyStatusline(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
@@ -612,60 +608,5 @@ export default function (pi: ExtensionAPI) {
 		tokenCount = output;
 		const elapsed = (Date.now() - firstTokenTime) / 1000;
 		if (elapsed > 0.1) lastTPS = tokenCount / elapsed;
-	});
-
-	pi.registerCommand("cc-tui", {
-		description: "配置 pi-cc-tui 状态栏段",
-		handler: async (args, ctx) => {
-			const tokens = args.trim().split(/\s+/).filter(Boolean);
-			const action = tokens[0] || "list";
-
-			if (action === "list") {
-				ctx.ui.notify(configSummary(), "info");
-				return;
-			}
-
-			if (action === "all" || action === "none") {
-				const enabled = action === "all";
-				for (const name of SEGMENT_NAMES) segmentConfig[name] = enabled;
-			} else if (action === "only") {
-				const names = tokens.slice(1);
-				const invalid = names.filter((name) => !isSegmentName(name));
-				if (invalid.length > 0) {
-					ctx.ui.notify(`未知段: ${invalid.join(", ")}`, "warning");
-					return;
-				}
-				for (const name of SEGMENT_NAMES) segmentConfig[name] = false;
-				for (const name of names) segmentConfig[name as SegmentName] = true;
-			} else if (action === "show" || action === "hide") {
-				const names = tokens.slice(1);
-				if (names.length === 0) {
-					ctx.ui.notify(`用法: /cc-tui ${action} <${SEGMENT_NAMES.join("|")}>`, "warning");
-					return;
-				}
-				const invalid = names.filter((name) => !isSegmentName(name));
-				if (invalid.length > 0) {
-					ctx.ui.notify(`未知段: ${invalid.join(", ")}`, "warning");
-					return;
-				}
-				for (const name of names) segmentConfig[name as SegmentName] = action === "show";
-			} else {
-				ctx.ui.notify("用法: /cc-tui [list|all|none|only|show|hide]", "warning");
-				return;
-			}
-
-			saveConfig(segmentConfig);
-			segmentConfig = loadConfig();
-			applyStatusline(ctx);
-			ctx.ui.notify(configSummary(), "info");
-		},
-	});
-
-	pi.registerCommand("statusline-git", {
-		description: "显示 git 状态统计开关的重启配置",
-		handler: async (_args, ctx) => {
-			const next = gitEnabled ? "0" : "1";
-			ctx.ui.notify(`重启 pi 后生效: PI_STATUSLINE_GIT=${next}`, "info");
-		},
 	});
 }
