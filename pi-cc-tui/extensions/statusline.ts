@@ -554,11 +554,8 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (extStr) {
 					lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
 				}
-			} else if (extStr) {
-				lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
-			}
 
-				return lines;
+			return lines;
 			},
 		};
 	});
