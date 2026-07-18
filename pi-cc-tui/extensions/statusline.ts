@@ -324,7 +324,25 @@ function updateContextSnapshot(ctx: ExtensionContext): void {
 	}
 }
 
-// ── 色条渲染 ──
+// 色条内文字颜色 (深色背景上的浅色文字)
+const BAR_TEXT_COLOR = "#15181D";
+
+function centerText(text: string, width: number): string {
+	if (width <= 0) return "";
+	const textLen = Array.from(text).length;
+	if (textLen > width) return "".repeat(width);
+	const left = Math.floor((width - textLen) / 2);
+	return " ".repeat(left) + text + " ".repeat(width - textLen - left);
+}
+
+function chooseLabel(labels: readonly string[], width: number): string {
+	for (const label of labels) {
+		if (Array.from(label).length <= width) return label;
+	}
+	return "";
+}
+
+// ── 色条渲染 (带文字) ──
 function renderContextBar(snapshot: ContextSnapshot, width: number): string {
 	if (snapshot.contextWindow <= 0 || width <= 0) return "";
 	const freeTokens = Math.max(0, snapshot.contextWindow - snapshot.usedTokens);
@@ -341,26 +359,18 @@ function renderContextBar(snapshot: ContextSnapshot, width: number): string {
 	for (const [i, seg] of CONTEXT_SEGMENTS.entries()) {
 		const col = columns[i] ?? 0;
 		if (col > 0 && values[i]! > 0) {
-			parts.push(bgHex(seg.color, " ".repeat(col)));
+			const label = chooseLabel(seg.labels, col);
+			const text = label ? centerText(label, col) : " ".repeat(col);
+			parts.push(bgHex(seg.color, fgHex(BAR_TEXT_COLOR, text)));
 		}
 	}
 	const freeCol = columns[CONTEXT_SEGMENTS.length] ?? 0;
 	if (freeCol > 0) {
-		parts.push(bgHex(FREE_SEGMENT_FILL, " ".repeat(freeCol)));
+		const freeLabel = chooseLabel(["free", "fr", "f"], freeCol);
+		const text = freeLabel ? centerText(freeLabel, freeCol) : " ".repeat(freeCol);
+		parts.push(bgHex(FREE_SEGMENT_FILL, fgHex("#C7D46A", text)));
 	}
 	return parts.join("");
-}
-
-// ── 图例渲染 ──
-function renderLegend(snapshot: ContextSnapshot): string {
-	const parts: string[] = [];
-	for (const seg of CONTEXT_SEGMENTS) {
-		const tokens = snapshot.segments[seg.key] || 0;
-		if (tokens > 0) {
-			parts.push(fgHex(seg.color, `■ ${seg.labels[0]}`));
-		}
-	}
-	return parts.join("  ");
 }
 
 export function applyStatusline(ctx: ExtensionContext): void {
@@ -541,29 +551,12 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					}
 				}
 
-				if (segmentConfig.bar) {
-					const legend = renderLegend(contextSnapshot);
-					if (extStr && legend) {
-						const gap = width - visibleWidth(extStr) - visibleWidth(legend);
-						if (gap >= 2) {
-							lines.push(extStr + " ".repeat(gap) + legend);
-						} else {
-							// 先截图例，再截 extensions
-							const legendAvail = Math.max(0, width - visibleWidth(extStr) - 2);
-							if (legendAvail > 0) {
-								lines.push(extStr + " ".repeat(2) + truncateToWidth(legend, legendAvail));
-							} else {
-								lines.push(truncateToWidth(extStr, width));
-							}
-						}
-					} else if (legend) {
-						lines.push(legend);
-					} else if (extStr) {
-						lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
-					}
-				} else if (extStr) {
+				if (extStr) {
 					lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
 				}
+			} else if (extStr) {
+				lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
+			}
 
 				return lines;
 			},
