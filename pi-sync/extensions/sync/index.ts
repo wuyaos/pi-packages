@@ -1,6 +1,6 @@
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { loadConfig } from "./config";
+import { loadConfig, refreshFooterStatusFromConfig } from "./config";
 import { registerSyncCommand } from "./menus";
 import {
   clearLiveBackupTimer,
@@ -23,6 +23,7 @@ export default function (pi: ExtensionAPI): void {
   // Capture the active session file/project dir for live backup and interval sync.
   pi.on("session_start", async (_event, ctx) => {
     setSessionContext(ctx.sessionManager.getSessionFile() ?? undefined, ctx.sessionManager.getSessionDir());
+    refreshFooterStatusFromConfig(ctx, loadConfig());
   });
 
   // Refresh the session path (compaction/fork may change it) and schedule a debounced live backup.

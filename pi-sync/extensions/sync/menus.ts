@@ -52,7 +52,8 @@ export async function showSetupWizard(ctx: ExtensionCommandContext): Promise<boo
   const url = await ctx.ui.input("WebDAV URL:", config.webdavUrl); if (!url) return false;
   const user = await ctx.ui.input("WebDAV username:", config.webdavUser); if (!user) return false;
   const pass = await ctx.ui.input("WebDAV token (or $ENV_VAR):", config.webdavPass); if (!pass) return false;
-  saveConfig({ ...config, webdavUrl: url.trim(), webdavUser: user.trim(), webdavPass: pass.trim() });
+  const merged = { ...config, webdavUrl: url.trim(), webdavUser: user.trim(), webdavPass: pass.trim() };
+  saveConfig(merged, ctx);
   return true;
 }
 
@@ -77,7 +78,7 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       "s Save", "x Back",
     ]);
     if (!choice || choice === "x Back") return;
-    if (choice === "s Save") { saveConfig(config); ctx.ui.notify("Sync configuration updated.", "info"); return; }
+    if (choice === "s Save") { saveConfig(config, ctx); ctx.ui.notify("Sync configuration updated.", "info"); return; }
     if (choice.startsWith("WebDAV URL:")) { const value = await ctx.ui.input("WebDAV URL:", config.webdavUrl); if (value) config.webdavUrl = value.trim(); continue; }
     if (choice.startsWith("WebDAV Username:")) { const value = await ctx.ui.input("WebDAV username:", config.webdavUser); if (value) config.webdavUser = value.trim(); continue; }
     if (choice.startsWith("WebDAV Password")) { const value = await ctx.ui.input("WebDAV token (or $ENV_VAR):", config.webdavPass); if (value) config.webdavPass = value.trim(); continue; }

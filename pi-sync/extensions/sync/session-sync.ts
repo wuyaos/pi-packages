@@ -194,14 +194,14 @@ export async function showSessionProjectSelect(ctx: ExtensionCommandContext, con
     items.push("───────────────", `m Switch to ${config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist"} mode`, "a Select All", "r Reset list (empty = all)", "x Back");
     const label = config.sessionProjectMode === "whitelist" ? "白名单模式" : "黑名单模式";
     const choice = await enhancedSelect(ctx, `Select Session Projects [${label}]`, items, { fuzzy: true });
-    if (!choice || choice === "x Back") { saveConfig(config); return; }
-    if (choice.startsWith("m Switch")) { config.sessionProjectMode = config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist"; saveConfig(config); continue; }
-    if (choice === "a Select All") { config.sessionProjects = [...projects]; saveConfig(config); continue; }
-    if (choice.startsWith("r Reset")) { config.sessionProjects = []; saveConfig(config); continue; }
+    if (!choice || choice === "x Back") { saveConfig(config, ctx); return; }
+    if (choice.startsWith("m Switch")) { config.sessionProjectMode = config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist"; saveConfig(config, ctx); continue; }
+    if (choice === "a Select All") { config.sessionProjects = [...projects]; saveConfig(config, ctx); continue; }
+    if (choice.startsWith("r Reset")) { config.sessionProjects = []; saveConfig(config, ctx); continue; }
     const match = choice.match(/^\[[ x]\]\s+(.*)$/); if (!match) continue;
     const dir = projects.find((candidate) => sessionDirToPath(candidate) === match[1]); if (!dir) continue;
     config.sessionProjects = selected.has(dir) ? config.sessionProjects.filter((item) => item !== dir) : [...config.sessionProjects, dir];
-    saveConfig(config);
+    saveConfig(config, ctx);
   }
 }
 
@@ -218,10 +218,10 @@ export async function showSessionSyncMenu(ctx: ExtensionCommandContext): Promise
       "📥 Restore Latest Session", "📥 Restore Sessions", "🌿 Fork Remote Session", "x Back",
     ]);
     if (!choice || choice === "x Back") return;
-    if (choice.startsWith("⚡")) { config.liveSessionBackup = !config.liveSessionBackup; saveConfig(config); continue; }
-    if (choice.startsWith("  ↳")) { const value = await ctx.ui.input("Debounce ms:", String(config.liveBackupDebounceMs)); const n = value ? parseInt(value, 10) : NaN; if (n > 0) { config.liveBackupDebounceMs = n; saveConfig(config); } continue; }
-    if (choice.startsWith("🔄")) { const value = await ctx.ui.input("Upload every N turns (0 = off):", String(config.syncIntervalTurns)); const n = value ? parseInt(value, 10) : NaN; if (n >= 0) { config.syncIntervalTurns = n; saveConfig(config); } continue; }
-    if (choice.startsWith("📤")) { config.syncSessionOnExit = !config.syncSessionOnExit; saveConfig(config); continue; }
+    if (choice.startsWith("⚡")) { config.liveSessionBackup = !config.liveSessionBackup; saveConfig(config, ctx); continue; }
+    if (choice.startsWith("  ↳")) { const value = await ctx.ui.input("Debounce ms:", String(config.liveBackupDebounceMs)); const n = value ? parseInt(value, 10) : NaN; if (n > 0) { config.liveBackupDebounceMs = n; saveConfig(config, ctx); } continue; }
+    if (choice.startsWith("🔄")) { const value = await ctx.ui.input("Upload every N turns (0 = off):", String(config.syncIntervalTurns)); const n = value ? parseInt(value, 10) : NaN; if (n >= 0) { config.syncIntervalTurns = n; saveConfig(config, ctx); } continue; }
+    if (choice.startsWith("📤")) { config.syncSessionOnExit = !config.syncSessionOnExit; saveConfig(config, ctx); continue; }
     if (choice.startsWith("☁️")) { await uploadCurrentSession(ctx); continue; }
     if (choice.startsWith("📥 Restore Latest")) { await showRestoreLatest(ctx); continue; }
     if (choice.startsWith("📥 Restore Sessions")) { await showRestoreSessions(ctx); continue; }

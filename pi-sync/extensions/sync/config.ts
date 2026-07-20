@@ -1,3 +1,4 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -64,9 +65,19 @@ export function loadConfig(): SyncConfig {
   };
 }
 
-export function saveConfig(config: SyncConfig): void {
+export function saveConfig(config: SyncConfig, ctx?: Pick<ExtensionContext, "ui">): void {
   ensureDir(path.dirname(SYNC_CONFIG_PATH));
   writeJsonAtomic(SYNC_CONFIG_PATH, config, { backup: true });
+  if (ctx) refreshFooterStatusFromConfig(ctx, config);
+}
+
+/** Refresh footer status from an already-loaded config (avoids re-reading the file). */
+export function refreshFooterStatusFromConfig(ctx: Pick<ExtensionContext, "ui">, config: SyncConfig): void {
+  const parts: string[] = [];
+  if (config.liveSessionBackup) parts.push("⚡");
+  if (config.syncIntervalTurns > 0) parts.push(`🔄${config.syncIntervalTurns}`);
+  if (config.syncSessionOnExit) parts.push("📤");
+  ctx.ui.setStatus("pi-sync", parts.length ? `sync:${parts.join("")}` : undefined);
 }
 
 export function isProjectAllowed(projectDir: string | undefined, config: SyncConfig): boolean {
