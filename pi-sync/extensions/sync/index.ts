@@ -144,7 +144,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function validateArchiveEntries(entries: string[]): void {
-    const allowedTopLevel = new Set(["config", "skills", "extensions", "sessions"]);
+    const allowedTopLevel = new Set(["config", "skills", "extensions", "sessions", "manifest.json"]);
     const allowedConfigFiles = new Set(["models.json", "settings.json", "auth.json"]);
 
     if (entries.length === 0) {
@@ -358,6 +358,24 @@ export default function (pi: ExtensionAPI) {
     fs.mkdirSync(tempDir, { recursive: true });
 
     const contents: string[] = [];
+    // manifest records every archived file with its source path relative to
+    // ~/.pi/agent/, so restores and audits can trace where each file came
+    // from and the manifest stays portable across machines.
+    const manifestFiles: Array<{ archive: string; source: string }> = [];
+
+    /** Recursively collect files under `dir` into manifestFiles. */
+    function collectManifest(dir: string, archivePrefix: string, sourcePrefix: string): void {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const rel = archivePrefix ? `${archivePrefix}/${entry.name}` : entry.name;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          collectManifest(full, rel, `${sourcePrefix}/${entry.name}`);
+        } else {
+          manifestFiles.push({ archive: rel, source: `${sourcePrefix}/${entry.name}` });
+        }
+      }
+    }
 
     try {
       // 1. Providers / Configuration (models.json, settings.json, auth.json)
@@ -369,6 +387,7 @@ export default function (pi: ExtensionAPI) {
           const src = path.join(agentDir, file);
           if (fs.existsSync(src)) {
             fs.copyFileSync(src, path.join(confDir, file));
+            manifestFiles.push({ archive: `config/${file}`, source: file });
             contents.push(`Config: ${file}`);
           }
         }
@@ -382,6 +401,7 @@ export default function (pi: ExtensionAPI) {
           fs.mkdirSync(skillsDest, { recursive: true });
           copyRecursiveSync(skillsSrc, skillsDest);
           await yieldToUI();
+          collectManifest(skillsDest, "skills", "skills");
           contents.push(`Skills Directory`);
         }
       }
@@ -400,6 +420,7 @@ export default function (pi: ExtensionAPI) {
           if (fs.existsSync(syncInBackup)) {
             fs.rmSync(syncInBackup, { recursive: true, force: true });
           }
+          collectManifest(extDest, "extensions", "extensions");
           contents.push(`Extensions Directory`);
         }
       }
@@ -424,6 +445,7 @@ export default function (pi: ExtensionAPI) {
           }
           if (added > 0) {
             await yieldToUI();
+            collectManifest(path.join(tempDir, "sessions"), "sessions", "sessions");
             const scope = selectAll ? "all" : `${added} selected`;
             contents.push(`Sessions (${scope} project${added === 1 ? "" : "s"})`);
           }
@@ -433,6 +455,18 @@ export default function (pi: ExtensionAPI) {
       if (contents.length === 0) {
         throw new Error("No components selected or found to backup!");
       }
+
+      // Write manifest.json at archive root: documents every file's archive path
+      // and its original source path (relative to ~/.pi/agent/) on this machine.
+      const manifest = {
+        version: 1,
+        createdAt: new Date().toISOString(),
+        agentDir,
+        fileCount: manifestFiles.length,
+        files: manifestFiles,
+      };
+      fs.writeFileSync(path.join(tempDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+      contents.push(`Manifest: manifest.json (${manifestFiles.length} entries)`);
 
       // Pack the temp directory as tar.xz. xz gives ~20x compression on jsonl sessions
       // (vs tar's zip backend which stores uncompressed). tar auto-detects format on -x.
