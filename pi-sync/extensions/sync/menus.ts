@@ -134,22 +134,47 @@ async function showUploadSessionsArchive(ctx: ExtensionCommandContext): Promise<
   finally { fs.rmSync(archive, { force: true }); }
 }
 
-async function showRestorePackage(ctx: ExtensionCommandContext, kind: BackupKind): Promise<void> {
+async function showRestorePackage(ctx: ExtensionCommandContext, kind: BackupKind, autoLatest = false): Promise<boolean> {
   const config = loadConfig();
   const meta = kind === "config" ? { dir: WEBDAV_CONFIG_DIR, prefix: "pi_config_" } : kind === "memory" ? { dir: WEBDAV_MEMORY_DIR, prefix: "memory_" } : { dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" };
   try {
     const files = (await listWebdavDir(meta.dir, config, ctx)).filter((name) => name.startsWith(meta.prefix) && name.endsWith(".tar.xz")).sort().reverse();
-    if (!files.length) { ctx.ui.notify(`No ${kind} archives found.`, "warning"); return; }
-    const selected = await enhancedSelect(ctx, `Restore ${kind} archive`, [...files, "❌ Cancel"], { fuzzy: true }); if (!selected || selected.includes("Cancel")) return;
-    if (kind === "agent-skills" && !await ctx.ui.confirm("Replace shared skills?", "The current ~/.agents/skills will be moved to a timestamped backup.")) return;
+    if (!files.length) { ctx.ui.notify(`No ${kind} archives found.`, "warning"); return false; }
+    let selected: string | undefined;
+    if (autoLatest) selected = files[0];
+    else { selected = await enhancedSelect(ctx, `Restore ${kind} archive`, [...files, "❌ Cancel"], { fuzzy: true }); if (!selected || selected.includes("Cancel")) return false; }
+    if (kind === "agent-skills" && !await ctx.ui.confirm("Replace shared skills?", "The current ~/.agents/skills will be moved to a timestamped backup.")) return false;
     const local = path.join(os.tmpdir(), path.basename(selected));
     try {
       await downloadFromWebdavDir(selected, meta.dir, local, config, ctx);
       const restored = kind === "config" ? await extractConfigZip(local, config) : kind === "memory" ? await extractMemoryZip(local) : await extractAgentSkillsZip(local);
-      ctx.ui.notify(`🎉 Restored:\n${restored.join("\n")}`, "info");
-      if (kind !== "memory" && await ctx.ui.confirm("Reload Runtime?", "Reload Pi to apply the restored data?")) await ctx.reload();
+      ctx.ui.notify(`🎉 Restored ${kind}:\n${restored.join("\n")}`, "info");
+      return true;
     } finally { fs.rmSync(local, { force: true }); }
-  } catch (error) { ctx.ui.notify(`❌ ${kind} restore failed: ${error instanceof Error ? error.message : String(error)}`, "error"); }
+  } catch (error) { ctx.ui.notify(`❌ ${kind} restore failed: ${error instanceof Error ? error.message : String(error)}`, "error"); return false; }
+}
+
+async function showUploadAll(ctx: ExtensionCommandContext): Promise<void> {
+  const results: string[] = [];
+  for (const kind of ["config", "memory", "agent-skills"] as BackupKind[]) {
+    const config = loadConfig();
+    if (kind === "config" && !config.backupProviders) { results.push(`⏭️  config (disabled)`); continue; }
+    if (kind === "memory" && !config.backupMemory) { results.push(`⏭️  memory (disabled)`); continue; }
+    if (kind === "agent-skills" && !config.backupAgentSkills) { results.push(`⏭️  agent-skills (disabled)`); continue; }
+    await showUploadPackage(ctx, kind);
+    results.push(`✅ ${kind}`);
+  }
+  ctx.ui.notify(`Upload All complete:\n${results.join("\n")}\n\n💡 Sessions: use 🗂️ Upload Sessions Archive or 🔄 Session Sync.`, "info");
+}
+
+async function showRestoreAll(ctx: ExtensionCommandContext): Promise<void> {
+  const results: string[] = [];
+  for (const kind of ["config", "memory", "agent-skills"] as BackupKind[]) {
+    const ok = await showRestorePackage(ctx, kind, true);
+    results.push(ok ? `✅ ${kind}` : `⏭️  ${kind} (skipped)`);
+  }
+  ctx.ui.notify(`Restore All complete:\n${results.join("\n")}`, "info");
+  if (results.some((r) => r.startsWith("✅")) && await ctx.ui.confirm("Reload Runtime?", "Reload Pi to apply the restored data?")) await ctx.reload();
 }
 
 async function showRestoreSessionsArchive(ctx: ExtensionCommandContext): Promise<void> {
@@ -198,11 +223,14 @@ export async function handleSyncCommand(ctx: ExtensionCommandContext): Promise<v
   let config = loadConfig();
   if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) { if (!await showSetupWizard(ctx)) return; config = loadConfig(); }
   const choice = await enhancedSelect(ctx, "Pi WebDAV Synchronization", [
+    "⬆️  Upload All (config + memory + skills)", "⬇️  Restore All (latest)",
     "☁️  Upload Config Backup", "🧠 Upload Memory Backup", "📦 Upload Skills Snapshot", "🗂️  Upload Sessions Archive",
     "📥 Restore Config Backup", "📥 Restore Memory Backup", "📥 Restore Skills Snapshot", "📥 Restore Sessions Archive",
     "🔄 Session Sync", "🧰 Legacy Monolithic Backup/Restore", "⚙️  Configure Sync Settings", "❌  Cancel",
   ]);
   if (!choice || choice.includes("Cancel")) return;
+  if (choice.startsWith("⬆️  Upload All")) return showUploadAll(ctx);
+  if (choice.startsWith("⬇️  Restore All")) return showRestoreAll(ctx);
   if (choice.includes("Configure")) return showConfigureSettings(ctx);
   if (choice === "☁️  Upload Config Backup") return showUploadPackage(ctx, "config");
   if (choice === "🧠 Upload Memory Backup") return showUploadPackage(ctx, "memory");
