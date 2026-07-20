@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -44,8 +44,12 @@ interface SyncConfig {
   backupSkills: boolean;
   backupExtensions: boolean;
   backupSessions: boolean;
-  /** Selected session project directory names (e.g. "--mnt-c-Users-wff19-Desktop-222--"). Empty = none. */
+  /** Selected session project directory names (e.g. "--mnt-c-Users-wff19-Desktop-222--"). Empty = all. */
   sessionProjects: string[];
+  /** Real-time per-file session backup after each agent turn. */
+  liveSessionBackup: boolean;
+  /** Debounce window (ms) for live session backup after agent_settled. */
+  liveBackupDebounceMs: number;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -63,6 +67,8 @@ export default function (pi: ExtensionAPI) {
       backupExtensions: data.backupExtensions !== false,
       backupSessions: data.backupSessions === true,
       sessionProjects: normalizeList(data.sessionProjects),
+      liveSessionBackup: data.liveSessionBackup === true,
+      liveBackupDebounceMs: typeof data.liveBackupDebounceMs === "number" && data.liveBackupDebounceMs > 0 ? data.liveBackupDebounceMs : 3000,
     };
   }
 
@@ -531,6 +537,266 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // ── Session sync helpers (real-time backup / restore / fork) ───────────
+  //
+  // Remote layout mirrors local:
+  //   <webdavUrl>/sessions/<projectDir>/<timestamp_uuid>.jsonl
+  //
+  // Real-time backup uploads a single .jsonl after each agent turn (debounced).
+  // Restore merges remote files into the matching local project dir (unique names → no overwrite).
+  // Fork downloads a remote session and uses SessionManager.forkFrom to bring it into the
+  // *current* project (handles cross-path / cross-machine continuation).
+
+  /** Current session file path + project dir, captured at session_start. */
+  let currentSessionFile: string | undefined;
+  let currentProjectDir: string | undefined;
+  let liveBackupTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function projectDirFromCwd(cwd: string): string {
+    // pi encodes cwd as "--" + cwd.replace(/\//g, "-") + "--"
+    return "--" + cwd.replace(/\//g, "-") + "--";
+  }
+
+  function ensureTrailingSlash(url: string): string {
+    return url.endsWith("/") ? url : url + "/";
+  }
+
+  function sessionsWebdavBase(config: SyncConfig): string {
+    return ensureTrailingSlash(config.webdavUrl) + "sessions/";
+  }
+
+  function webdavAuth(config: SyncConfig): string {
+    const pass = resolvePassword(config.webdavPass);
+    return "Basic " + Buffer.from(`${config.webdavUser}:${pass}`).toString("base64");
+  }
+
+  /** PROPFIND a WebDAV collection, return child displayname or href-derived names. */
+  async function webdavList(url: string, auth: string, ctx: ExtensionContext, filter?: (name: string) => boolean): Promise<string[]> {
+    const response = await fetchWithTimeout(url, {
+      method: "PROPFIND",
+      headers: { Authorization: auth, Depth: "1", "Content-Type": "application/xml" },
+    }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
+    if (!response.ok) throw new Error(`WebDAV PROPFIND HTTP ${response.status}: ${response.statusText}`);
+    const text = await response.text();
+    const names = new Set<string>();
+    let m: RegExpExecArray | null;
+    const dn = /<[a-zA-Z0-9:-]*displayname>([^<]+)<\/[a-zA-Z0-9:-]*displayname>/g;
+    while ((m = dn.exec(text)) !== null) {
+      const n = m[1]!.trim();
+      if (n && n !== "sessions") names.add(n);
+    }
+    if (names.size === 0) {
+      const hr = /<[a-zA-Z0-9:-]*href>([^<]+)<\/[a-zA-Z0-9:-]*href>/g;
+      while ((m = hr.exec(text)) !== null) {
+        const name = path.basename(decodeURIComponent(m[1]!.trim()));
+        if (name && name !== "sessions") names.add(name);
+      }
+    }
+    let arr = [...names];
+    if (filter) arr = arr.filter(filter);
+    return arr.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  }
+
+  async function webdavPutFile(localPath: string, remoteUrl: string, auth: string, ctx: ExtensionContext) {
+    const buf = fs.readFileSync(localPath);
+    const response = await fetchWithTimeout(remoteUrl, {
+      method: "PUT",
+      headers: { Authorization: auth, "Content-Type": "application/octet-stream" },
+      body: buf,
+    }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
+    if (!response.ok) throw new Error(`WebDAV PUT HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  async function webdavGetFile(remoteUrl: string, destPath: string, auth: string, ctx: ExtensionContext) {
+    const response = await fetchWithTimeout(remoteUrl, {
+      method: "GET",
+      headers: { Authorization: auth },
+    }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
+    if (!response.ok) throw new Error(`WebDAV GET HTTP ${response.status}: ${response.statusText}`);
+    fs.writeFileSync(destPath, Buffer.from(await response.arrayBuffer()));
+  }
+
+  /** Ensure a WebDAV collection exists (MKCOL, ignore 405/409 = already exists). */
+  async function webdavMkcol(url: string, auth: string, ctx: ExtensionContext) {
+    try {
+      const response = await fetchWithTimeout(url, {
+        method: "MKCOL",
+        headers: { Authorization: auth },
+      }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
+      // 201 created, 405 method not allowed (exists), 409 conflict (parent missing) — treat 405 as ok
+      if (!response.ok && response.status !== 405) {
+        throw new Error(`WebDAV MKCOL HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (e) {
+      // Best-effort: ignore collection-exists errors
+      if (e instanceof Error && !/405/.test(e.message)) throw e;
+    }
+  }
+
+  /** Upload the current session file (single .jsonl) to the cloud. */
+  async function uploadCurrentSession(ctx: ExtensionContext, silent = false): Promise<boolean> {
+    const config = loadConfig();
+    if (!currentSessionFile || !currentProjectDir) {
+      if (!silent) ctx.ui.notify("No active session file to upload.", "warning");
+      return false;
+    }
+    if (!fs.existsSync(currentSessionFile)) {
+      if (!silent) ctx.ui.notify(`Session file missing: ${currentSessionFile}`, "warning");
+      return false;
+    }
+    try {
+      const base = sessionsWebdavBase(config);
+      const auth = webdavAuth(config);
+      await webdavMkcol(base, auth, ctx);
+      await webdavMkcol(base + currentProjectDir + "/", auth, ctx);
+      const remote = base + currentProjectDir + "/" + encodeURIComponent(path.basename(currentSessionFile));
+      await webdavPutFile(currentSessionFile, remote, auth, ctx);
+      if (!silent) ctx.ui.notify(`☁️  Session uploaded: ${path.basename(currentSessionFile)}`, "info");
+      return true;
+    } catch (e) {
+      if (!silent) ctx.ui.notify(`❌ Session upload failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+      return false;
+    }
+  }
+
+  /** Debounced live backup, triggered by agent_settled. */
+  function scheduleLiveBackup(ctx: ExtensionContext) {
+    const config = loadConfig();
+    if (!config.liveSessionBackup) return;
+    if (liveBackupTimer) clearTimeout(liveBackupTimer);
+    liveBackupTimer = setTimeout(() => {
+      liveBackupTimer = undefined;
+      // fire-and-forget; use a throwaway ctx-like signal-free call
+      uploadCurrentSession(ctx, true).catch(() => { /* silent */ });
+    }, config.liveBackupDebounceMs);
+  }
+
+  /** Restore: merge remote session files into local ~/.pi/agent/sessions/<projectDir>/. */
+  async function showRestoreSessions(ctx: ExtensionCommandContext): Promise<void> {
+    const config = loadConfig();
+    const base = sessionsWebdavBase(config);
+    const auth = webdavAuth(config);
+    ctx.ui.notify("Listing remote session projects...", "info");
+    try {
+      const projectDirs = await webdavList(base, auth, ctx, (n) => n.startsWith("--") && n.endsWith("--"));
+      if (projectDirs.length === 0) {
+        ctx.ui.notify("No remote session projects found under sessions/.", "warning");
+        return;
+      }
+      const projChoice = await enhancedSelect(ctx, "Select remote project to restore", [...projectDirs, "❌ Cancel"], { fuzzy: true });
+      if (!projChoice || projChoice.includes("Cancel")) return;
+
+      ctx.ui.notify(`Listing sessions in ${projChoice}...`, "info");
+      const files = await webdavList(base + projChoice + "/", auth, ctx, (n) => n.endsWith(".jsonl"));
+      if (files.length === 0) {
+        ctx.ui.notify(`No .jsonl files in ${projChoice}.`, "warning");
+        return;
+      }
+      const fileChoice = await enhancedSelect(ctx, `Restore from ${projChoice} (${files.length} files)`, [...files, "═══════════════", "a Restore ALL into local project dir", "❌ Cancel"], { fuzzy: true });
+      if (!fileChoice || fileChoice.includes("Cancel")) return;
+
+      const targets = fileChoice.startsWith("a Restore ALL") ? files : [fileChoice];
+      const localDir = path.join(SESSIONS_DIR, projChoice);
+      fs.mkdirSync(localDir, { recursive: true });
+      let done = 0;
+      for (const f of targets) {
+        const remote = base + projChoice + "/" + encodeURIComponent(f);
+        const localPath = path.join(localDir, f);
+        await webdavGetFile(remote, localPath, auth, ctx);
+        done++;
+      }
+      ctx.ui.notify(`🎉 Restored ${done} session(s) into ${localDir}\nUse /resume in that project to continue.`, "info");
+    } catch (e) {
+      ctx.ui.notify(`❌ Restore failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }
+
+  /** Fork: download a remote session and forkFrom into the *current* project. */
+  async function showForkSession(ctx: ExtensionCommandContext): Promise<void> {
+    const config = loadConfig();
+    const base = sessionsWebdavBase(config);
+    const auth = webdavAuth(config);
+    ctx.ui.notify("Listing remote session projects...", "info");
+    try {
+      const projectDirs = await webdavList(base, auth, ctx, (n) => n.startsWith("--") && n.endsWith("--"));
+      if (projectDirs.length === 0) {
+        ctx.ui.notify("No remote session projects found under sessions/.", "warning");
+        return;
+      }
+      const projChoice = await enhancedSelect(ctx, "Fork: select source project", [...projectDirs, "❌ Cancel"], { fuzzy: true });
+      if (!projChoice || projChoice.includes("Cancel")) return;
+
+      ctx.ui.notify(`Listing sessions in ${projChoice}...`, "info");
+      const files = await webdavList(base + projChoice + "/", auth, ctx, (n) => n.endsWith(".jsonl"));
+      if (files.length === 0) {
+        ctx.ui.notify(`No .jsonl files in ${projChoice}.`, "warning");
+        return;
+      }
+      const fileChoice = await enhancedSelect(ctx, `Fork: select session (${files.length})`, [...files, "❌ Cancel"], { fuzzy: true });
+      if (!fileChoice || fileChoice.includes("Cancel")) return;
+
+      const tmpPath = path.join(os.tmpdir(), `pi_fork_${Date.now()}.jsonl`);
+      const remote = base + projChoice + "/" + encodeURIComponent(fileChoice);
+      ctx.ui.notify(`Downloading ${fileChoice}...`, "info");
+      await webdavGetFile(remote, tmpPath, auth, ctx);
+
+      const targetCwd = process.cwd();
+      ctx.ui.notify(`Forking into current project (${targetCwd})...`, "info");
+      const mgr = SessionManager.forkFrom(tmpPath, targetCwd);
+      const newFile = mgr.getSessionFile();
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      ctx.ui.notify(`🎉 Forked into: ${newFile ?? "(unknown)"}\nRun /resume to continue from this session.`, "info");
+    } catch (e) {
+      ctx.ui.notify(`❌ Fork failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }
+
+  /** Session Sync submenu. */
+  async function showSessionSyncMenu(ctx: ExtensionCommandContext): Promise<void> {
+    while (true) {
+      const config = loadConfig();
+      const cur = currentSessionFile ? path.basename(currentSessionFile) : "(none)";
+      const sel = await enhancedSelect(ctx, "Session Sync", [
+        `⚡ Live Backup: ${config.liveSessionBackup ? "ON" : "OFF"}`,
+        `  ↳ Debounce: ${config.liveBackupDebounceMs}ms`,
+        `☁️  Upload Current Session Now  (cur: ${cur})`,
+        `📥 Restore Sessions (merge into local project dir)`,
+        `🌿 Fork Remote Session into Current Project`,
+        "───────────────",
+        "x Back",
+      ]);
+      if (!sel || sel === "x Back") return;
+      if (sel.startsWith("⚡ Live Backup:")) { config.liveSessionBackup = !config.liveSessionBackup; saveConfig(config); continue; }
+      if (sel.startsWith("  ↳ Debounce:")) {
+        const v = await ctx.ui.input("Debounce ms (e.g. 3000):", String(config.liveBackupDebounceMs));
+        const n = v ? parseInt(v.trim(), 10) : NaN;
+        if (Number.isFinite(n) && n > 0) { config.liveBackupDebounceMs = n; saveConfig(config); }
+        continue;
+      }
+      if (sel.startsWith("☁️  Upload Current")) { await uploadCurrentSession(ctx); continue; }
+      if (sel.startsWith("📥 Restore Sessions")) { await showRestoreSessions(ctx); continue; }
+      if (sel.startsWith("🌿 Fork Remote")) { await showForkSession(ctx); continue; }
+    }
+  }
+
+  // ── Live backup event wiring ─────────────────────────────────────────
+  pi.on("session_start", async (_event, ctx) => {
+    currentSessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
+    currentProjectDir = ctx.sessionManager.getSessionDir();
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    // refresh path (may change after compaction/fork within same session runtime)
+    currentSessionFile = ctx.sessionManager.getSessionFile() ?? currentSessionFile;
+    scheduleLiveBackup(ctx);
+  });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    // flush before switching/exiting
+    if (liveBackupTimer) { clearTimeout(liveBackupTimer); liveBackupTimer = undefined; }
+    if (loadConfig().liveSessionBackup && currentSessionFile) {
+      await uploadCurrentSession(ctx, true).catch(() => { /* silent */ });
+    }
+  });
+
   /** Run the initial WebDAV setup wizard (prompts for URL/user/pass). Returns true if config was saved. */
   async function showSetupWizard(ctx: ExtensionCommandContext): Promise<boolean> {
     const wizConfig = loadConfig();
@@ -746,7 +1012,7 @@ export default function (pi: ExtensionAPI) {
 
   // Register command `/sync`
   pi.registerCommand("sync", {
-    description: "Sync configurations, skills, and extensions via WebDAV",
+    description: "Sync configurations, skills, extensions, and sessions via WebDAV",
     getArgumentCompletions: (prefix) => {
       // /sync takes no sub-actions; interactive menu handles everything.
       return null;
@@ -764,6 +1030,7 @@ export default function (pi: ExtensionAPI) {
       const menuOptions = [
         "☁️  Upload Backup (Backup to cloud)",
         "📥  Download Backup (Restore from cloud)",
+        "🔄 Session Sync (live backup / restore / fork)",
         "⚙️  Configure Sync Settings",
         "❌  Cancel",
       ];
@@ -773,6 +1040,7 @@ export default function (pi: ExtensionAPI) {
       if (choice.includes("Configure Sync Settings")) return showConfigureSettings(ctx);
       if (choice.includes("Upload Backup")) return showUploadBackup(ctx);
       if (choice.includes("Download Backup")) return showDownloadBackup(ctx);
+      if (choice.includes("Session Sync")) return showSessionSyncMenu(ctx);
     },
   });
 }
