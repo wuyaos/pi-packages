@@ -9,6 +9,7 @@
   "pi": {
     "extensions": [
       "pi-*/extensions/*.ts",
+      "pi-sync/extensions/sync/index.ts",
       "pi-model-roles/src/index.ts",
       "pi-advisor/advisor.ts"
     ],

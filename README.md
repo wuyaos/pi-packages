@@ -9,6 +9,7 @@
 | [pi-cc-tui](./pi-cc-tui) | 99 个主题、Pi 动画启动头、Codex 输入框、thinking 折叠和状态栏 |
 | [pi-octssh](./pi-octssh) | 桥接 octssh MCP server，SSH 部署工具（exec/upload/async 等） |
 | [pi-notify](./pi-notify) | pi 任务完成后的桌面通知 |
+| [pi-sync](./pi-sync) | WebDAV 配置/技能/扩展/会话项目同步备份（fork from [BevalZ/pi-sync](https://github.com/BevalZ/pi-sync)，MIT） |
 
 ## 安装
 
