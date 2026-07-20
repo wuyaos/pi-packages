@@ -50,6 +50,8 @@ interface SyncConfig {
   liveSessionBackup: boolean;
   /** Debounce window (ms) for live session backup after agent_settled. */
   liveBackupDebounceMs: number;
+  /** Keep at most N cloud full backups (0 = keep all). Prune runs after each upload. */
+  maxBackups: number;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -69,6 +71,7 @@ export default function (pi: ExtensionAPI) {
       sessionProjects: normalizeList(data.sessionProjects),
       liveSessionBackup: data.liveSessionBackup === true,
       liveBackupDebounceMs: typeof data.liveBackupDebounceMs === "number" && data.liveBackupDebounceMs > 0 ? data.liveBackupDebounceMs : 3000,
+      maxBackups: typeof data.maxBackups === "number" && data.maxBackups >= 0 ? data.maxBackups : 10,
     };
   }
 
@@ -280,6 +283,36 @@ export default function (pi: ExtensionAPI) {
     if (!response.ok) {
       throw new Error(`WebDAV PUT returns HTTP ${response.status}: ${response.statusText}`);
     }
+  }
+
+  // Delete a file from WebDAV (used for backup retention / prune)
+  async function deleteFromWebdav(filename: string, config: SyncConfig, ctx: ExtensionContext) {
+    const pass = resolvePassword(config.webdavPass);
+    const auth = Buffer.from(`${config.webdavUser}:${pass}`).toString("base64");
+    let url = config.webdavUrl;
+    if (!url.endsWith("/")) url += "/";
+    url += encodeURIComponent(filename);
+    const response = await fetchWithTimeout(url, {
+      method: "DELETE",
+      headers: { Authorization: auth },
+    }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
+    // 204 deleted, 404 already gone — both OK
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`WebDAV DELETE HTTP ${response.status}: ${response.statusText}`);
+    }
+  }
+
+  /** Prune old cloud backups, keeping only the newest maxBackups (0 = keep all). Returns deleted names. */
+  async function pruneOldBackups(config: SyncConfig, ctx: ExtensionContext): Promise<string[]> {
+    if (config.maxBackups <= 0) return [];
+    const backups = await listCloudBackups(config, ctx as ExtensionCommandContext);
+    // listCloudBackups returns newest-first (reverse sorted). Keep the first maxBackups, delete the rest.
+    if (backups.length <= config.maxBackups) return [];
+    const toDelete = backups.slice(config.maxBackups);
+    for (const name of toDelete) {
+      try { await deleteFromWebdav(name, config, ctx); } catch { /* best-effort, continue */ }
+    }
+    return toDelete;
   }
 
   // Download file from WebDAV
@@ -892,6 +925,7 @@ export default function (pi: ExtensionAPI) {
         `Backup Extensions: ${cfgConfig.backupExtensions ? "ON" : "OFF"}`,
         `Backup Sessions: ${cfgConfig.backupSessions ? "ON" : "OFF"}`,
         `  ↳ Session Projects: ${describeSessionSelection(cfgConfig)}`,
+        `Max Cloud Backups: ${cfgConfig.maxBackups === 0 ? "keep all" : cfgConfig.maxBackups}`,
         "───────────────",
         "s Save",
         "x Back",
@@ -922,6 +956,12 @@ export default function (pi: ExtensionAPI) {
       if (selected.startsWith("Backup Extensions:")) { cfgConfig.backupExtensions = !cfgConfig.backupExtensions; continue; }
       if (selected.startsWith("Backup Sessions:")) { cfgConfig.backupSessions = !cfgConfig.backupSessions; continue; }
       if (selected.startsWith("  ↳ Session Projects:")) { await showSessionProjectSelect(ctx, cfgConfig); continue; }
+      if (selected.startsWith("Max Cloud Backups:")) {
+        const val = await ctx.ui.input("Max cloud backups to keep (0 = keep all):", String(cfgConfig.maxBackups));
+        const n = val ? parseInt(val.trim(), 10) : NaN;
+        if (Number.isFinite(n) && n >= 0) cfgConfig.maxBackups = n; else ctx.ui.notify("Invalid number, keeping current value.", "warning");
+        continue;
+      }
     }
   }
 
@@ -943,6 +983,15 @@ export default function (pi: ExtensionAPI) {
       await yieldToUI();
       await uploadToWebdav(tempZipPath, ulConfig, ctx);
       ctx.ui.notify(`🎉 Backup uploaded successfully as:\n${zipFilename}`, "info");
+      // Retention: prune oldest cloud backups beyond maxBackups (0 = keep all).
+      try {
+        const deleted = await pruneOldBackups(ulConfig, ctx);
+        if (deleted.length > 0) {
+          ctx.ui.notify(`🧹 Pruned ${deleted.length} old backup(s) (keeping newest ${ulConfig.maxBackups}).`, "info");
+        }
+      } catch (e) {
+        ctx.ui.notify(`⚠️ Retention prune skipped: ${e instanceof Error ? e.message : String(e)}`, "warning");
+      }
     } catch (e) {
       ctx.ui.notify(`❌ Backup upload failed: ${e instanceof Error ? e.message : String(e)}`, "error");
     } finally {
