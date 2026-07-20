@@ -13,6 +13,7 @@
       "pi-model-roles/src/index.ts",
       "pi-advisor/advisor.ts"
     ],
-    "themes": ["pi-*/themes/*.json"]
+    "themes": ["pi-*/themes/*.json"],
+    "skills": ["pi-*/skills"]
   }
 }

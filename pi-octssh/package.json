@@ -5,7 +5,8 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions/octssh.ts"]
+    "extensions": ["./extensions/octssh.ts"],
+    "skills": ["./skills"]
   },
   "dependencies": {
     "@aliyahzombie/octssh": "*"
