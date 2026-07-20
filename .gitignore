@@ -2,3 +2,13 @@ node_modules/
 package-lock.json
 *.log
 .DS_Store
+
+# pi-sync 重构编排产物（subagent 工作记录，不入库）
+pi-sync/.refactor-out/
+pi-sync/.pi-subagents/
+pi-sync/REFACTOR_SPEC.md
+
+# pi-i18n 脚本产物（运行时生成，不入库）
+pi-i18n/i18n.template.json
+pi-i18n/i18n.translated.json
+pi-i18n/.extract.tmp.json*
