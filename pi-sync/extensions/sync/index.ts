@@ -220,13 +220,15 @@ export default function (pi: ExtensionAPI) {
       const text = await response.text();
       
       // Super lightweight XML parsing for file names containing "pi_sync_backup_"
-      // Looking for <d:displayname> or <displayname> elements
+      // Accept both new .tar.xz and legacy .zip backups.
+      const isBackupName = (n: string) =>
+        n.startsWith("pi_sync_backup_") && (n.endsWith(".tar.xz") || n.endsWith(".zip"));
       const backups: string[] = [];
       const regex = /<[a-zA-Z0-9:-]*displayname>([^<]+)<\/[a-zA-Z0-9:-]*displayname>/g;
       let match;
       while ((match = regex.exec(text)) !== null) {
         const name = match[1].trim();
-        if (name.startsWith("pi_sync_backup_") && name.endsWith(".zip")) {
+        if (isBackupName(name)) {
           backups.push(name);
         }
       }
@@ -238,7 +240,7 @@ export default function (pi: ExtensionAPI) {
           const href = match[1].trim();
           const decodedHref = decodeURIComponent(href);
           const filename = path.basename(decodedHref);
-          if (filename.startsWith("pi_sync_backup_") && filename.endsWith(".zip")) {
+          if (isBackupName(filename)) {
             if (!backups.includes(filename)) {
               backups.push(filename);
             }
@@ -306,8 +308,8 @@ export default function (pi: ExtensionAPI) {
     fs.writeFileSync(destPath, Buffer.from(arrayBuffer));
   }
 
-  // Create Zip Archive
-  async function createZip(config: SyncConfig, tempZipPath: string): Promise<string[]> {
+  // Create tar.xz Archive
+  async function createZip(config: SyncConfig, tempArchivePath: string): Promise<string[]> {
     const agentDir = path.join(os.homedir(), ".pi", "agent");
     const tempDir = path.join(os.tmpdir(), `pi_sync_temp_${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
@@ -389,13 +391,12 @@ export default function (pi: ExtensionAPI) {
         throw new Error("No components selected or found to backup!");
       }
 
-      // Zip the temp directory using tar (since Node doesn't bundle zip but tar is universally available in modern systems)
-      // On Windows/Linux/macOS, modern tar handles zip extraction if given .zip format or can create gzip/zip.
-      // Wait, let's use standard zip format or tar with gzip! Since zip is requested, let's use `tar -a -cf` which auto-detects by extension on Windows and Linux!
-      // 'tar -a -cf archive.zip -C <dir> .'
-      // Let's verify and execute:
+      // Pack the temp directory as tar.xz. xz gives ~20x compression on jsonl sessions
+      // (vs tar's zip backend which stores uncompressed). tar auto-detects format on -x.
+      // 'tar -Jcf archive.tar.xz -C <dir> .' — -J selects xz, universally available on
+      // modern Linux/macOS/Windows(bsdtar).
       await yieldToUI();
-      await runTar(["-a", "-c", "-f", tempZipPath, "-C", tempDir, "."]);
+      await runTar(["-J", "-c", "-f", tempArchivePath, "-C", tempDir, "."]);
 
       return contents;
     } finally {
@@ -931,7 +932,7 @@ export default function (pi: ExtensionAPI) {
     await yieldToUI();
     const timestamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
     const dateStr = new Date().toLocaleDateString("zh-CN").replace(/\//g, "-");
-    const zipFilename = `pi_sync_backup_${dateStr}_${timestamp}_${platformTag()}.zip`;
+    const zipFilename = `pi_sync_backup_${dateStr}_${timestamp}_${platformTag()}.tar.xz`;
     const tempZipPath = path.join(os.tmpdir(), zipFilename);
 
     try {
@@ -958,7 +959,7 @@ export default function (pi: ExtensionAPI) {
     try {
       const backups = await listCloudBackups(dlConfig, ctx);
       if (backups.length === 0) {
-        ctx.ui.notify("No cloud backups found on WebDAV server starting with 'pi_sync_backup_'.", "warning");
+        ctx.ui.notify("No cloud backups found on WebDAV server starting with 'pi_sync_backup_' (.tar.xz or .zip).", "warning");
         return;
       }
 
