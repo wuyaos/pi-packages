@@ -8,7 +8,7 @@ pi-sync/.refactor-out/
 pi-sync/.pi-subagents/
 pi-sync/REFACTOR_SPEC.md
 
-# pi-i18n 脚本产物（运行时生成，不入库）
-pi-i18n/i18n.template.json
-pi-i18n/i18n.translated.json
-pi-i18n/.extract.tmp.json*
+# pi-i18n 运行时中间文件在 ~/.pi/agent/，不在仓库，无需 ignore
+# 防止误在仓库根产生污染
+/i18n.template.json
+/i18n.translated.json

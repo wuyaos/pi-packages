@@ -1,0 +1,18 @@
+{
+  "name": "pi-i18n",
+  "version": "0.1.0",
+  "description": "pi 菜单汉化：autocomplete 包装显示中文 + /i18n-translate 命令导出模板并注入指令驱动 LLM 翻译",
+  "keywords": ["pi-package", "i18n", "chinese", "localization"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuyaos/pi-packages.git"
+  },
+  "pi": {
+    "extensions": ["./extensions/*.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

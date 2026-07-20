@@ -87,3 +87,13 @@ Fork from [@hk_net/pi-advisor](https://github.com/hknet/pi-extensions/tree/main/
   "timeoutMs": 120000
 }
 ```
+
+## pi-i18n
+
+pi `/` 菜单汉化 — autocomplete 包装显示中文 + 命令导出模板 + 注入指令驱动 LLM 翻译。
+
+- 扩展包装 autocomplete，`/` 菜单触发时读 `~/.pi/agent/i18n.json` 替换英文说明为中文，保留 `[sourceTag]` 来源前缀，实时读文件无需 reload
+- `/i18n-translate` 唯一命令：合并内置命令与 `pi.getCommands()`（扩展+prompt+skill）导出英文原文到 `~/.pi/agent/i18n.template.json`，再读 `instructions/i18n-translate.md` 作为指令注入当前会话模型完成翻译
+- 不注册 skill（package.json 无 `pi.skills`），故菜单只有 `/i18n-translate` 一个命令
+- 脚本（固定流程，不调模型）：`apply.mjs` 校验合并并替换 `${APP_NAME}` 占位符后写回 `~/.pi/agent/i18n.json` / `validate.mjs` 校验格式
+- 中间文件都在 `~/.pi/agent/`，不污染用户项目或开发目录
