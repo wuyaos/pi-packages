@@ -353,15 +353,18 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      // 4. Sessions (only the selected project directories)
+      // 4. Sessions
+      //    sessionProjects empty  → back up ALL project directories (default: all)
+      //    sessionProjects non-empty → back up only the listed project directories
       if (config.backupSessions) {
         const sessionsSrc = path.join(agentDir, "sessions");
         const wanted = new Set(config.sessionProjects);
-        if (fs.existsSync(sessionsSrc) && wanted.size > 0) {
+        const selectAll = wanted.size === 0;
+        if (fs.existsSync(sessionsSrc)) {
           let added = 0;
           for (const projDir of fs.readdirSync(sessionsSrc, { withFileTypes: true })) {
             if (!projDir.isDirectory()) continue;
-            if (!wanted.has(projDir.name)) continue;
+            if (!selectAll && !wanted.has(projDir.name)) continue;
             const src = path.join(sessionsSrc, projDir.name);
             const dest = path.join(tempDir, "sessions", projDir.name);
             fs.mkdirSync(dest, { recursive: true });
@@ -370,7 +373,8 @@ export default function (pi: ExtensionAPI) {
           }
           if (added > 0) {
             await yieldToUI();
-            contents.push(`Sessions (${added} project${added === 1 ? "" : "s"})`);
+            const scope = selectAll ? "all" : `${added} selected`;
+            contents.push(`Sessions (${scope} project${added === 1 ? "" : "s"})`);
           }
         }
       }
@@ -553,7 +557,7 @@ export default function (pi: ExtensionAPI) {
   function describeSessionSelection(config: SyncConfig): string {
     if (!config.backupSessions) return "(sessions backup is OFF)";
     const n = config.sessionProjects.length;
-    if (n === 0) return "(none selected — nothing will sync)";
+    if (n === 0) return "ALL projects (default)";
     return `${n} project${n === 1 ? "" : "s"} selected`;
   }
 
@@ -577,17 +581,19 @@ export default function (pi: ExtensionAPI) {
       });
       items.push("───────────────");
       items.push("a Select All");
-      items.push("n Select None");
+      items.push("r Reset to All (default — empty = sync everything)");
       items.push("x Back");
 
-      const choice = await enhancedSelect(ctx, `Select Session Projects (${selectedSet.size}/${projects.length} selected)`, items, { fuzzy: true });
+      const allSelected = selectedSet.size === projects.length;
+      const mode = selectedSet.size === 0 ? "ALL (empty=default)" : `${selectedSet.size}/${projects.length} selected`;
+      const choice = await enhancedSelect(ctx, `Select Session Projects — ${mode}${allSelected ? " (all)" : ""}`, items, { fuzzy: true });
       if (!choice) return;
       if (choice === "x Back") return;
       if (choice === "a Select All") {
         config.sessionProjects = [...projects];
         continue;
       }
-      if (choice === "n Select None") {
+      if (choice.startsWith("r Reset to All")) {
         config.sessionProjects = [];
         continue;
       }
