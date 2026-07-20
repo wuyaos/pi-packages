@@ -31,8 +31,11 @@ function yieldToUI(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-// Default settings file to store user configuration
-const SYNC_CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "sync_config.json");
+// Config lives under ~/.pi/agent/config/ (same convention as tool-gate.json).
+// Legacy path ~/.pi/agent/sync_config.json is auto-migrated on first read.
+const SYNC_CONFIG_DIR = path.join(os.homedir(), ".pi", "agent", "config");
+const SYNC_CONFIG_PATH = path.join(SYNC_CONFIG_DIR, "sync.json");
+const LEGACY_SYNC_CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "sync_config.json");
 const TAR_TIMEOUT_MS = 300_000;
 const WEBDAV_FETCH_TIMEOUT_MS = 120_000;
 
@@ -57,6 +60,13 @@ interface SyncConfig {
 export default function (pi: ExtensionAPI) {
   // Read and write config helpers
   function loadConfig(): SyncConfig {
+    // Auto-migrate legacy ~/.pi/agent/sync_config.json → config/sync.json
+    if (!fs.existsSync(SYNC_CONFIG_PATH) && fs.existsSync(LEGACY_SYNC_CONFIG_PATH)) {
+      ensureDir(SYNC_CONFIG_DIR);
+      try {
+        fs.copyFileSync(LEGACY_SYNC_CONFIG_PATH, SYNC_CONFIG_PATH);
+      } catch { /* best-effort migration */ }
+    }
     const data = readJsonSafe<Partial<SyncConfig>>(SYNC_CONFIG_PATH, {});
     const normalizeList = (v: unknown): string[] =>
       Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : [];
@@ -947,7 +957,7 @@ export default function (pi: ExtensionAPI) {
         continue;
       }
       if (selected.startsWith("WebDAV Password/Token:")) {
-        const val = await ctx.ui.input("WebDAV Password/Token (recommended: $ENV_VAR such as $PI_WEBDAV_TOKEN; plaintext is stored in sync_config.json):", cfgConfig.webdavPass);
+        const val = await ctx.ui.input("WebDAV Password/Token (recommended: $ENV_VAR such as $PI_WEBDAV_TOKEN; plaintext is stored in config/sync.json):", cfgConfig.webdavPass);
         if (val) cfgConfig.webdavPass = val.trim();
         continue;
       }
