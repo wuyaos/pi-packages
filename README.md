@@ -10,6 +10,7 @@
 | [pi-octssh](./pi-octssh) | 桥接 octssh MCP server，SSH 部署工具（exec/upload/async 等） |
 | [pi-notify](./pi-notify) | pi 任务完成后的桌面通知 |
 | [pi-sync](./pi-sync) | WebDAV 配置/技能/扩展/会话项目同步备份（fork from [BevalZ/pi-sync](https://github.com/BevalZ/pi-sync)，MIT） |
+| [pi-tool-gate](./pi-tool-gate) | 按需工具开关：重 schema 工具默认 inactive，gate_tools loader + /tool-gate 命令，降低每轮 tools[] token 占用 |
 
 ## 安装
 

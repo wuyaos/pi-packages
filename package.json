@@ -11,7 +11,8 @@
       "pi-*/extensions/*.ts",
       "pi-sync/extensions/sync/index.ts",
       "pi-model-roles/src/index.ts",
-      "pi-advisor/advisor.ts"
+      "pi-advisor/advisor.ts",
+      "pi-tool-gate/index.ts"
     ],
     "themes": ["pi-*/themes/*.json"],
     "skills": ["pi-*/skills"]

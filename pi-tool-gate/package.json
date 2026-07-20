@@ -1,0 +1,33 @@
+{
+  "name": "pi-tool-gate",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "按需工具开关 — 把重 schema 工具默认 inactive，提供 gate_tools loader（模型自取）和 /tool-gate 命令（用户手动管），降低每轮请求 tools[] 的固定 token 占用",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "tool-gate",
+    "context",
+    "token",
+    "deferred-loading"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.80.2",
+    "@earendil-works/pi-coding-agent": ">=0.80.2"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
