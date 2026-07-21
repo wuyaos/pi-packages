@@ -63,7 +63,8 @@ export function projectDirFromCwd(cwd: string): string {
 
 export function describeSessionSelection(config: SyncConfig): string {
   const count = config.sessionProjects.length;
-  return count === 0 ? `ALL projects (${config.sessionProjectMode}, empty list)` : `${config.sessionProjectMode}: ${count} project${count === 1 ? "" : "s"}`;
+  if (count === 0) return config.sessionProjectMode === "whitelist" ? `whitelist: 0 projects (none)` : `blacklist: ALL projects (empty = all)`;
+  return `${config.sessionProjectMode}: ${count} project${count === 1 ? "" : "s"}`;
 }
 
 export async function updateLatestMarker(ctx: ExtensionContext, config: SyncConfig, projectDir: string, sessionFile: string): Promise<void> {
@@ -191,7 +192,7 @@ export async function showSessionProjectSelect(ctx: ExtensionCommandContext, con
     if (!projects.length) { ctx.ui.notify("No local session projects found.", "warning"); return; }
     const selected = new Set(config.sessionProjects);
     const items = projects.map((dir) => `${selected.has(dir) ? "[x]" : "[ ]"} ${sessionDirToPath(dir)}`);
-    items.push("───────────────", `m Switch to ${config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist"} mode`, "a Select All", "r Reset list (empty = all)", "x Back");
+    items.push("───────────────", `m Switch to ${config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist"} mode`, "a Select All", "r Reset list", "x Back");
     const label = config.sessionProjectMode === "whitelist" ? "白名单模式" : "黑名单模式";
     const choice = await enhancedSelect(ctx, `Select Session Projects [${label}]`, items, { fuzzy: true });
     if (!choice || choice === "x Back") { saveConfig(config, ctx); return; }

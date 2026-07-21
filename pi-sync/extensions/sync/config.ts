@@ -82,8 +82,9 @@ export function refreshFooterStatusFromConfig(ctx: Pick<ExtensionContext, "ui">,
 
 export function isProjectAllowed(projectDir: string | undefined, config: SyncConfig): boolean {
   if (!projectDir) return false;
-  if (config.sessionProjects.length === 0) return true;
   const listed = config.sessionProjects.includes(projectDir);
+  // whitelist: only listed projects are backed up (empty = none)
+  // blacklist: listed projects are skipped (empty = all)
   return config.sessionProjectMode === "blacklist" ? !listed : listed;
 }
 

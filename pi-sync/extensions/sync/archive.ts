@@ -9,6 +9,7 @@ import {
   MEMORY_MARKDOWN_FILES,
   SESSIONS_DIR,
   ensureDir,
+  isProjectAllowed,
   type ManifestFile,
   type SyncConfig,
 } from "./config";
@@ -248,8 +249,7 @@ export async function createLegacyZip(config: SyncConfig, archivePath: string): 
     if (config.backupSessions) {
       for (const entry of fs.existsSync(SESSIONS_DIR) ? fs.readdirSync(SESSIONS_DIR, { withFileTypes: true }) : []) {
         if (!entry.isDirectory()) continue;
-        const listed = config.sessionProjects.includes(entry.name);
-        if (config.sessionProjects.length && (config.sessionProjectMode === "whitelist" ? !listed : listed)) continue;
+        if (!isProjectAllowed(entry.name, config)) continue;
         const dest = path.join(tempDir, "sessions", entry.name);
         copyRecursiveSync(path.join(SESSIONS_DIR, entry.name), dest);
       }

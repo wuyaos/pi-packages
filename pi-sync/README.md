@@ -92,7 +92,10 @@ Toggle any of these under **Configure Sync Settings**.
 Session history is organized by project cwd under `~/.pi/agent/sessions/<projectDir>/`. The **Session Projects** submenu lists every project directory found on this machine and lets you check the ones you want to back up.
 
 - Turn on **Backup Sessions** in **Configure Sync Settings**.
-- Open **Session Projects** and toggle projects on/off (use **Select All** / **Select None** for convenience).
+- Open **Session Projects** and toggle projects on/off (use **Select All** / **Reset list** for convenience).
+- List mode (toggleable):
+  - **Whitelist**: only checked projects are backed up; an empty list backs up **nothing**.
+  - **Blacklist**: checked projects are skipped; an empty list backs up **everything**.
 - On restore, session files are *merged* into the local `~/.pi/agent/sessions/` — session file names are unique (timestamp + uuid), so restoring never overwrites or deletes your local sessions.
 
 > Note: project directory names encode the project path, so a backup made on one machine only restores into the same project path on another machine.

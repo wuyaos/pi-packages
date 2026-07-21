@@ -92,7 +92,10 @@ pi install git:github.com/wuyaos/pi-packages
 会话历史按项目 cwd 存放在 `~/.pi/agent/sessions/<projectDir>/`。**Session Projects** 子菜单会列出本机所有项目目录，勾选你想备份的那些。
 
 - 在 **Configure Sync Settings** 中打开 **Backup Sessions**。
-- 打开 **Session Projects** 逐个勾选项目（可用 **Select All** / **Select None** 快捷全选/清空）。
+- 打开 **Session Projects** 逐个勾选项目（可用 **Select All** / **Reset list** 快捷全选/清空）。
+- 列表模式（可切换）：
+  - **白名单模式**：只备份勾选的项目，空列表 = 全部不备份。
+  - **黑名单模式**：跳过勾选的项目，空列表 = 全部备份。
 - 恢复时会以 *合并* 方式写入本地 `~/.pi/agent/sessions/`——会话文件名为唯一的时间戳+uuid，不会覆盖或删除本地已有会话。
 
 > 注意：项目目录名由项目路径编码而来，备份在 A 机器上制作，恢复到 B 机器时只会落到相同项目路径对应的项目目录中。
