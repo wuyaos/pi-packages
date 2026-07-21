@@ -1,6 +1,6 @@
 {
   "name": "pi-notify",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "pi 桌面通知扩展：任务完成时弹通知（WSL/Windows/Linux/macOS）",
   "keywords": ["pi-package"],
   "license": "MIT",
