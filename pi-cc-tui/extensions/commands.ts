@@ -91,6 +91,17 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// ── 段配置 ──
+			// ── diag: 诊断 extension statuses ──
+			if (action === "diag") {
+				const statuses = ctx.ui.getExtensionStatuses ? ctx.ui.getExtensionStatuses() : [];
+				const lines = [`Extension statuses (${statuses.length}):`];
+				for (const s of statuses) {
+					lines.push(`  ${JSON.stringify(s)}`);
+				}
+				ctx.ui.notify(lines.join("\n"), "info");
+				return;
+			}
+
 			if (action === "list") {
 				ctx.ui.notify(configSummary(), "info");
 				return;
