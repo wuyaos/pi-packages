@@ -81,9 +81,16 @@ export default function (pi: ExtensionAPI) {
   const minSeconds = parseInt(process.env.PI_NOTIFY_MIN_SECONDS ?? "10", 10);
   const defaultTitle = process.env.PI_NOTIFY_TITLE ?? "pi";
   let runStart = 0;
+  let lastErrorTool: string | null = null;
 
   pi.on("agent_start", async () => {
     runStart = Date.now();
+    lastErrorTool = null;
+  });
+
+  // 跟踪本轮工具执行错误（如 bash 命令失败、文件不存在等）
+  pi.on("tool_execution_end", async (event) => {
+    if (event.isError && event.toolName) lastErrorTool = event.toolName;
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
