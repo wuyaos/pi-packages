@@ -96,7 +96,15 @@ export default function (pi: ExtensionAPI) {
     const mins = Math.floor(elapsed / 60);
     const secs = Math.floor(elapsed % 60);
     const dur = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
-    tryNotify(defaultTitle, `任务完成 (${dur})`);
+    // 标题用项目名（cwd 目录名），正文带会话名 + 时长 + 错误状态
+    const cwd = ctx.cwd || process.cwd();
+    const projectName = cwd.split(/[\/]/).filter(Boolean).pop() || "pi";
+    const sessionName = ctx.sessionManager?.getSessionName?.();
+    const prefix = lastErrorTool ? `⚠️ ${lastErrorTool} 出错` : "完成";
+    const body = sessionName
+      ? `会话「${sessionName}」${prefix} (${dur})`
+      : `任务${prefix} (${dur})`;
+    tryNotify(projectName, body);
   });
 
   pi.registerCommand("notify-test", {
