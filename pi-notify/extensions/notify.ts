@@ -93,6 +93,25 @@ export default function (pi: ExtensionAPI) {
     if (event.isError && event.toolName) lastErrorTool = event.toolName;
   });
 
+  /** 提取一条消息的纯文本（content 可能是 string 或 TextContent[] 等） */
+  function extractText(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((part: any) => {
+        if (typeof part === "string") return part;
+        if (part?.type === "text" && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .join("");
+  }
+
+  /** 把摘要裁剪到单行、限定长度，避免通知正文被系统截断看不全 */
+  function summarize(text: string, max = 80): string {
+    const oneLine = text.replace(/\s+/g, " ").trim();
+    return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
+  }
+
   pi.on("agent_settled", async (_event, ctx) => {
     if (disabled) return;
     if (!ctx.isIdle()) return; // 还有后续 run，不打扰
@@ -103,15 +122,29 @@ export default function (pi: ExtensionAPI) {
     const mins = Math.floor(elapsed / 60);
     const secs = Math.floor(elapsed % 60);
     const dur = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
-    // 标题用项目名（cwd 目录名），正文带会话名 + 时长 + 错误状态
+    // 标题用会话名（无则退回项目目录名，再无则默认标题）
     const cwd = ctx.cwd || process.cwd();
     const projectName = cwd.split(/[\/]/).filter(Boolean).pop() || "pi";
     const sessionName = ctx.sessionManager?.getSessionName?.();
-    const prefix = lastErrorTool ? `⚠️ ${lastErrorTool} 出错` : "完成";
-    const body = sessionName
-      ? `会话「${sessionName}」${prefix} (${dur})`
-      : `任务${prefix} (${dur})`;
-    tryNotify(projectName, body);
+    const title = sessionName || projectName || defaultTitle;
+    // 正文：目录名 + 状态/时长 + 最后一条助手回复摘要
+    const status = lastErrorTool ? `⚠️ ${lastErrorTool} 出错` : "完成";
+    // 从当前分支倒序找最后一条助手消息
+    let summary = "";
+    try {
+      const entries = ctx.sessionManager?.getBranch?.() ?? [];
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const e: any = entries[i];
+        if (e?.type === "message" && e.message?.role === "assistant") {
+          summary = summarize(extractText(e.message.content));
+          break;
+        }
+      }
+    } catch {}
+    const body = summary
+      ? `${projectName} · ${status} (${dur})\n${summary}`
+      : `${projectName} · ${status} (${dur})`;
+    tryNotify(title, body);
   });
 
   pi.registerCommand("notify-test", {

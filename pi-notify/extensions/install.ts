@@ -18,6 +18,11 @@
 
 import { execFileSync, execFile } from "node:child_process";
 import { existsSync, readFileSync, copyFileSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+
+// 本文件是 notify.ts 的辅助模块，并非扩展入口。
+// 根目录 package.json 用 glob `pi-*/extensions/*.ts` 扫描扩展，
+// 会把本文件也当入口加载，故提供一个空默认工厂避免报错。
+export default function () {}
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { PI_AUMID } from "./winrt-toast.js";
