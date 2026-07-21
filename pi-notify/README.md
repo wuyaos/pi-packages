@@ -10,9 +10,31 @@
 
 ## 通知方式（按优先级 fallback）
 
-1. `notify-send`（Linux / WSLg）
-2. `powershell.exe` BalloonTip（Windows / WSL）
-3. `osascript`（macOS）
+**Windows / WSL**：
+1. **WinRT Toast**（现代 Toast，带 pi 图标）— 需先运行 `/notify-install` 注册 AUMID
+2. `powershell.exe` BalloonTip（老式保底，无需注册）
+
+**Linux / WSLg**：
+1. `notify-send`
+
+**macOS**：
+1. `osascript`
+
+## 首次安装（Windows / WSL）
+
+Windows 11 默认会把未注册身份的 Toast 静默进通知中心（不弹横幅）。
+安装后请运行一次：
+
+```
+/notify-install
+```
+
+它会完成（幂等，可重复运行）：
+1. 部署 pi 图标到 `~/.pi/agent/assets/pi-logo.png`
+2. 注册 AUMID `PiCodingAgent.Notify` 到注册表
+3. 创建开始菜单快捷方式「Pi Coding Agent」（AUMID 载体）
+
+之后 `/notify-test` 发的 Toast 才会弹成右下角横幅。
 
 ## 配置
 
@@ -24,6 +46,7 @@
 
 ## 命令
 
+- `/notify-install` — 注册 Windows Toast AUMID（首次安装后运行一次）
 - `/notify-test` — 测试通知
 - `/notify <标题> [正文]` — 自定义通知
 

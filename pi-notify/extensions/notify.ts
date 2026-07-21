@@ -5,9 +5,11 @@
  * ≥ PI_NOTIFY_MIN_SECONDS（默认 10s）则弹桌面通知。短任务不打扰。
  *
  * 跨平台通知（按优先级 fallback）：
- * 1. notify-send（Linux / WSLg）
- * 2. powershell.exe BalloonTip（Windows / WSL）
- * 3. osascript（macOS）
+ * Windows/WSL：
+ *   1. WinRT Toast（现代 Toast，带 pi 图标；需先运行 /notify-install 注册 AUMID）
+ *   2. powershell.exe BalloonTip（老式，无需注册，保底）
+ * Linux：notify-send（WSLg 也走这条）
+ * macOS：osascript
  *
  * 配置：
  *   PI_NOTIFY_MIN_SECONDS — 最小运行秒数才通知（默认 10）
@@ -18,6 +20,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { sendWinrtToast } from "./winrt-toast.js";
+import { runInstall } from "./install.js";
 
 function isWSL(): boolean {
   try {
@@ -57,14 +61,13 @@ $n.Dispose()
 }
 
 function tryNotify(title: string, body: string) {
-  // WSL: powershell.exe 最可靠（notify-send 缺 dbus）
-  if (isWSL()) {
-    if (powershellToast(title, body)) return true;
-    if (notifySend(title, body)) return true;
-  } else {
-    if (notifySend(title, body)) return true;
+  // Windows / WSL：优先 WinRT Toast（带图标、现代样式），失败回退 BalloonTip
+  if (isWSL() || process.platform === "win32") {
+    if (sendWinrtToast(title, body)) return true;
     if (powershellToast(title, body)) return true;
   }
+  // Linux / WSLg：notify-send
+  if (notifySend(title, body)) return true;
   // macOS
   if (existsSync("/usr/bin/osascript")) {
     execFile("osascript", ["-e", `display notification "${body}" with title "${title}"`], () => {});
@@ -101,6 +104,16 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const ok = tryNotify(defaultTitle, "pi-notify 测试");
       ctx.ui.notify(ok ? "已发送测试通知" : "未找到可用通知方式", ok ? "info" : "warning");
+    },
+  });
+
+  pi.registerCommand("notify-install", {
+    description: "注册 Windows Toast AUMID（首次安装后运行一次，让 Toast 能弹横幅）",
+    handler: async (args, ctx) => {
+      const force = (args || "").includes("--force");
+      ctx.ui.notify("正在注册 AUMID...", "info");
+      const result = await runInstall(force);
+      ctx.ui.notify(result, "info");
     },
   });
 

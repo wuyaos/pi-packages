@@ -5,6 +5,12 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions/notify.ts"]
-  }
+    "extensions": ["./extensions/notify.ts"],
+    "assets": ["./assets/pi-logo.png"]
+  },
+  "files": [
+    "extensions",
+    "assets",
+    "README.md"
+  ]
 }
