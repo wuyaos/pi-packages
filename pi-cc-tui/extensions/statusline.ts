@@ -436,13 +436,19 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				}
 
 				// ── 累计 output / cost ──
+				let input = 0;
 				let output = 0;
+				let cacheRead = 0;
+				let cacheWrite = 0;
 				let cost = 0;
 				if (segmentConfig.context || segmentConfig.cost) {
 					for (const entry of ctx.sessionManager.getBranch()) {
 						if (entry.type === "message" && (entry.message as any).role === "assistant") {
 							const usage = (entry.message as any).usage;
+							input += usage?.input || 0;
 							output += usage?.output || 0;
+							cacheRead += usage?.cacheRead || 0;
+							cacheWrite += usage?.cacheWrite || 0;
 							cost += usage?.cost?.total || 0;
 						}
 					}
@@ -462,7 +468,20 @@ export function applyStatusline(ctx: ExtensionContext): void {
 							else if (percent < 85) value = theme.fg("warning", label);
 							else if (percent <= 95) value = theme.fg("error", label);
 							else value = theme.bold(theme.fg("error", label));
-							value += ` ${theme.fg("muted", `↑ ${fmtTokens(output)}`)}`;
+							// token breakdown（借鉴 pi-hud-footer）：↑in ↓out R cacheRead W cacheWrite ⚡ hitRate
+							// R / W 为 0 时隐藏；命中率 = cacheRead / (input + cacheRead + cacheWrite)
+							const tkParts: string[] = [];
+							tkParts.push(theme.fg("muted", `↑ ${fmtTokens(input)}`));
+							tkParts.push(theme.fg("muted", `↓ ${fmtTokens(output)}`));
+							if (cacheRead > 0) tkParts.push(theme.fg("muted", `R ${fmtTokens(cacheRead)}`));
+							if (cacheWrite > 0) tkParts.push(theme.fg("muted", `W ${fmtTokens(cacheWrite)}`));
+							const inputTotal = input + cacheRead + cacheWrite;
+							if (inputTotal > 0 && cacheRead > 0) {
+								const hitRate = cacheRead / inputTotal;
+								const hitColor = hitRate >= 0.5 ? "success" : hitRate > 0 ? "warning" : "muted";
+								tkParts.push(theme.fg(hitColor, `⚡ ${Math.round(hitRate * 100)}%`));
+							}
+							value += ` ${tkParts.join(theme.fg("dim", " "))}`;
 							ctxStr = value;
 						}
 					} catch {
