@@ -1,9 +1,17 @@
 {
-  "name": "pi-notify",
+  "name": "@wuyaos/pi-notify",
   "version": "1.2.0",
   "description": "pi 桌面通知扩展：任务完成时弹通知（WSL/Windows/Linux/macOS）",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-notify"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": ["./extensions/notify.ts"],
     "assets": ["./assets/pi-logo.png"]

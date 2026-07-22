@@ -1,12 +1,25 @@
 {
-  "name": "pi-sync",
+  "name": "@wuyaos/pi-sync",
   "version": "1.1.0",
   "description": "WebDAV config sync for Pi coding agent — backup/restore models, settings, skills, extensions, and selected session projects",
   "keywords": ["pi-package", "webdav", "sync", "backup", "coding-agent"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/wuyaos/pi-packages.git"
+    "url": "https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-sync"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "extensions",
+    "docs",
+    "pi-bootstrap.ps1",
+    "README.md",
+    "README.zh-CN.md",
+    "PROMO.md",
+    "LICENSE"
+  ],
   "bugs": {
     "url": "https://github.com/wuyaos/pi-packages/issues"
   },

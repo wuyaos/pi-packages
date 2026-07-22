@@ -1,5 +1,5 @@
 {
-  "name": "pi-tool-gate",
+  "name": "@wuyaos/pi-tool-gate",
   "version": "0.1.0",
   "type": "module",
   "description": "按需工具开关 — 把重 schema 工具默认 inactive，提供 gate_tools loader（模型自取）和 /tool-gate 命令（用户手动管），降低每轮请求 tools[] 的固定 token 占用",
@@ -13,6 +13,19 @@
     "deferred-loading"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-tool-gate"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

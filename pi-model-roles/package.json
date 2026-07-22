@@ -1,5 +1,5 @@
 {
-  "name": "pi-model-roles",
+  "name": "@wuyaos/pi-model-roles",
   "version": "1.0.0",
   "type": "module",
   "description": "模型角色路由 — 为不同任务分配不同模型+thinking level (fork from @d3ara1n/pi-model-roles)",
@@ -29,6 +29,17 @@
     ]
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-model-roles"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src"
+  ],
   "originalAuthor": "d3ara1n",
   "originalRepo": "https://github.com/d3ara1n/pi-extensions"
 }
