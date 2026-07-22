@@ -4,21 +4,41 @@
 
 ## 包
 
-| 包 | 说明 |
-|---|---|
-| [pi-cc-tui](./pi-cc-tui) | 99 个主题、Pi 动画启动头、Codex 输入框、thinking 折叠和状态栏 |
-| [pi-octssh](./pi-octssh) | 桥接 octssh MCP server，SSH 部署工具（exec/upload/async 等） |
-| [pi-notify](./pi-notify) | pi 任务完成后的桌面通知 |
-| [pi-sync](./pi-sync) | WebDAV 配置/技能/扩展/会话项目同步备份（fork from [BevalZ/pi-sync](https://github.com/BevalZ/pi-sync)，MIT） |
-| [pi-tool-gate](./pi-tool-gate) | 按需工具开关：重 schema 工具默认 inactive，gate_tools loader + /tool-gate 命令，降低每轮 tools[] token 占用 |
+| 包 | npm | 说明 |
+|---|---|---|
+| [@wuyaos/pi-cc-tui](https://www.npmjs.com/package/@wuyaos/pi-cc-tui) | `npm:@wuyaos/pi-cc-tui` | 99 个主题、Pi 动画启动头、Codex 输入框、thinking 折叠和状态栏 |
+| [@wuyaos/pi-notify](https://www.npmjs.com/package/@wuyaos/pi-notify) | `npm:@wuyaos/pi-notify` | pi 任务完成后的桌面通知 |
+| [@wuyaos/pi-sync](https://www.npmjs.com/package/@wuyaos/pi-sync) | `npm:@wuyaos/pi-sync` | WebDAV 配置/技能/扩展/会话项目同步备份（fork from [BevalZ/pi-sync](https://github.com/BevalZ/pi-sync)，MIT） |
+| [@wuyaos/pi-tool-gate](https://www.npmjs.com/package/@wuyaos/pi-tool-gate) | `npm:@wuyaos/pi-tool-gate` | 按需工具开关：重 schema 工具默认 inactive，gate_tools loader + /tool-gate 命令，降低每轮 tools[] token 占用 |
+| [@wuyaos/pi-model-roles](https://www.npmjs.com/package/@wuyaos/pi-model-roles) | `npm:@wuyaos/pi-model-roles` | 模型角色路由 — 不同任务分配不同模型+thinking level |
+| [@wuyaos/pi-advisor](https://www.npmjs.com/package/@wuyaos/pi-advisor) | `npm:@wuyaos/pi-advisor` | 顾问模型 — 第二个模型审查每轮输出，注入建议/警告 |
+| [@wuyaos/pi-i18n](https://www.npmjs.com/package/@wuyaos/pi-i18n) | `npm:@wuyaos/pi-i18n` | pi `/` 菜单汉化 — autocomplete 中文显示 + 命令翻译模板 |
+
+> SSH 工具见独立仓库 [@wuyaos/pi-octssh](https://github.com/wuyaos/pi-octssh)：`pi install git:github.com/wuyaos/pi-octssh`
 
 ## 安装
 
-### 全部安装
+两种方式任选：
+
+### 方式一：全部安装（git 批量）
 
 ```bash
 pi install git:github.com/wuyaos/pi-packages
 ```
+
+### 方式二：单个原子安装（npm）
+
+```bash
+pi install npm:@wuyaos/pi-cc-tui
+pi install npm:@wuyaos/pi-notify
+pi install npm:@wuyaos/pi-sync
+pi install npm:@wuyaos/pi-tool-gate
+pi install npm:@wuyaos/pi-model-roles
+pi install npm:@wuyaos/pi-advisor
+pi install npm:@wuyaos/pi-i18n
+```
+
+npm 方式可带版本锁定：`pi install npm:@wuyaos/pi-cc-tui@1.0.0`
 
 ### 只加载某个子包（filter）
 
@@ -29,7 +49,7 @@ pi install git:github.com/wuyaos/pi-packages
   "packages": [
     {
       "source": "git:github.com/wuyaos/pi-packages",
-      "extensions": ["pi-octssh/extensions/*.ts"],
+      "extensions": ["pi-cc-tui/extensions/*.ts"],
       "themes": []
     }
   ]
