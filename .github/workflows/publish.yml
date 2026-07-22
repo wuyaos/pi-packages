@@ -3,13 +3,18 @@ name: Publish Package
 # tag 驱动: 打 tag `@wuyaos/<pkg>@<version>` 触发对应包发布
 # 例: git tag '@wuyaos/pi-cc-tui@1.0.0' && git push --tags
 #
-# 使用 npm Trusted Publishing (OIDC), 无需 NPM_TOKEN。
-# 前提: 每个包首次发布需手动 npm publish 一次, 然后在 npmjs.com 包设置页
-# 配置 Trusted Publisher (GitHub Actions):
-#   - Organization or user: wuyaos
-#   - Repository: pi-packages
-#   - Workflow filename: publish.yml
-#   - Allowed actions: npm publish
+# 双模式发布:
+# - 有 NPM_TOKEN secret → 用它发布(用于首次发布,包尚不存在时)
+# - 无 NPM_TOKEN secret → 用 OIDC Trusted Publishing(包已存在且配好 trusted publisher 后)
+#
+# 首次发布流程:
+#   1. 生成 npm token, 加到 GitHub Secrets: NPM_TOKEN
+#   2. 打 tag 推送, Action 用 token 发首次, 包创建到 npm
+#   3. 去 npmjs.com 该包 Settings → Trusted publishing, 配 GitHub Actions:
+#        Organization or user: wuyaos, Repository: pi-packages,
+#        Workflow filename: publish.yml, Allowed actions: npm publish
+#   4. 删除 GitHub 的 NPM_TOKEN secret
+#   5. 之后打 tag 即由 OIDC 自动发布, 无需任何 token
 
 on:
   push:
@@ -62,5 +67,30 @@ jobs:
             exit 1
           fi
 
-      - name: Publish
+      - name: Check if package already exists on npm
+        id: exists
+        run: |
+          pkg="${{ steps.tag.outputs.pkg }}"
+          if npm view "$pkg" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Package $pkg already exists on npm"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Package $pkg does not exist yet (first publish)"
+          fi
+
+      - name: Publish (OIDC, package already exists)
+        if: steps.exists.outputs.exists == 'true'
         run: npm publish --workspace "${{ steps.tag.outputs.pkg }}"
+
+      - name: Publish (NPM_TOKEN, first publish)
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::First publish of ${{ steps.tag.outputs.pkg }} requires NPM_TOKEN secret (package does not exist on npm yet). Add NPM_TOKEN to GitHub Secrets, or publish manually first, then configure Trusted Publisher and remove the token."
+            exit 1
+          fi
+          echo "::notice::First publish using NPM_TOKEN. After this succeeds, configure Trusted Publisher on npm and remove the NPM_TOKEN secret."
+          npm publish --workspace "${{ steps.tag.outputs.pkg }}"
