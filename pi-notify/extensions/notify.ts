@@ -1,8 +1,13 @@
 /**
- * pi-notify — 任务完成桌面通知。
+ * pi-notify — 任务完成桌面通知（带断路器 + 待答触发）。
  *
- * agent_start 记录运行开始，agent_settled（pi 空闲）时若运行时长
- * ≥ PI_NOTIFY_MIN_SECONDS（默认 10s）则弹桌面通知。短任务不打扰。
+ * 触发：agent_settled（pi 空闲）时，运行时长 ≥ PI_NOTIFY_MIN_SECONDS（默认 10s）则安排通知。
+ * （pi 停下来等你输入的所有场景——完成任务、问问题、权限确认——都走 agent_settled）
+ *
+ * 断路器（借鉴 pi-archimedes/notify）：
+ *   通知不是即时弹，而是延迟 PI_NOTIFY_DELAY_MS（默认 3s）后弹；
+ *   期间用户任何活动（input / 按键 / 新 run 开始）即取消 pending。
+ *   delay=0 退化为即时弹。
  *
  * 跨平台通知（按优先级 fallback）：
  * Windows/WSL：
@@ -12,9 +17,10 @@
  * macOS：osascript
  *
  * 配置：
- *   PI_NOTIFY_MIN_SECONDS — 最小运行秒数才通知（默认 10）
- *   PI_NOTIFY_TITLE       — 通知标题（默认 "pi"）
- *   PI_NOTIFY_DISABLE     — "1" 禁用
+ *   PI_NOTIFY_MIN_SECONDS   — 最小运行秒数才通知（默认 10）
+ *   PI_NOTIFY_DELAY_MS      — 通知延迟毫秒，期间可被取消（默认 3000；0=即时）
+ *   PI_NOTIFY_TITLE         — 通知标题（默认 "pi"）
+ *   PI_NOTIFY_DISABLE       — "1" 禁用
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -79,14 +85,47 @@ function tryNotify(title: string, body: string) {
 export default function (pi: ExtensionAPI) {
   const disabled = process.env.PI_NOTIFY_DISABLE === "1";
   const minSeconds = parseInt(process.env.PI_NOTIFY_MIN_SECONDS ?? "10", 10);
+  const delayMs = parseInt(process.env.PI_NOTIFY_DELAY_MS ?? "3000", 10);
   const defaultTitle = process.env.PI_NOTIFY_TITLE ?? "pi";
   let runStart = 0;
   let lastErrorTool: string | null = null;
 
+  // ── 断路器状态（借鉴 pi-archimedes/notify）──
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingNotify: { title: string; body: string } | null = null;
+
+  function cancelPending(): void {
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    pendingNotify = null;
+  }
+
+  /** 安排通知：delay>0 延迟弹（可被取消），delay=0 即时弹 */
+  function scheduleNotify(title: string, body: string): void {
+    cancelPending();
+    if (delayMs > 0) {
+      pendingNotify = { title, body };
+      pendingTimer = setTimeout(() => {
+        const n = pendingNotify;
+        pendingNotify = null;
+        pendingTimer = null;
+        if (n) tryNotify(n.title, n.body);
+      }, delayMs);
+      pendingTimer.unref?.();
+    } else {
+      tryNotify(title, body);
+    }
+  }
+
   pi.on("agent_start", async () => {
+    cancelPending();
     runStart = Date.now();
     lastErrorTool = null;
   });
+
+  // 用户发消息 / 新 run 开始 → 取消 pending（用户已回屏，不需打扰）
+  pi.on("input", () => cancelPending());
+  pi.on("before_agent_start", () => cancelPending());
+
 
   // 跟踪本轮工具执行错误（如 bash 命令失败、文件不存在等）
   pi.on("tool_execution_end", async (event) => {
@@ -144,8 +183,15 @@ export default function (pi: ExtensionAPI) {
     const body = summary
       ? `${projectName} · ${status} (${dur})\n${summary}`
       : `${projectName} · ${status} (${dur})`;
-    tryNotify(title, body);
+    scheduleNotify(title, body);
   });
+
+  // session_start 注册 terminal input 取消（任何按键 → 取消 pending）
+  pi.on("session_start", (_e, ctx: any) => {
+    ctx?.ui?.onTerminalInput?.(() => cancelPending());
+  });
+
+  pi.on("session_shutdown", () => cancelPending());
 
   pi.registerCommand("notify-test", {
     description: "测试桌面通知",

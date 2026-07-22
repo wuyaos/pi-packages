@@ -2,7 +2,7 @@
  * pi-cc-tui 状态栏（含 context bar，合并自 pi-nano-context）。
  *
  * 行 1: model | git (左) ... ctx(含output) | tokens | cost (右)
- * 行 2: 📂 path (左) ... 色条 (右, bar 开启时)
+ * 行 2: ⌂ path (左) ... 色条 (右, bar 开启时)
  * 行 3: extensions (左) ... ■ 图例 (右, bar 开启时)
  *
  * PI_STATUSLINE_GIT=1 时启用 git status --porcelain 统计，默认关闭。
@@ -412,7 +412,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					const modelId = model?.id || "no-model";
 					const provider = model?.provider || "?";
 					let level = cachedThinkingLevel;
-					modelStr = theme.fg("accent", `model:${provider}/${modelId}[${level}]`);
+					modelStr = theme.fg("accent", `◆ ${provider}/${modelId}[${level}]`);
 				}
 
 				// ── git ──
@@ -423,7 +423,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 						const hasChanges = Boolean(
 							gitStats && (gitStats.staged || gitStats.modified || gitStats.untracked),
 						);
-						let value = theme.fg(hasChanges ? "warning" : "success", `git:${branch}`);
+						let value = theme.fg(hasChanges ? "warning" : "success", `⎇ ${branch}`);
 						if (gitEnabled && gitStats) {
 							const gitParts: string[] = [];
 							if (gitStats.staged > 0) gitParts.push(theme.fg("success", `+${gitStats.staged}`));
@@ -462,7 +462,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 							else if (percent < 85) value = theme.fg("warning", label);
 							else if (percent <= 95) value = theme.fg("error", label);
 							else value = theme.bold(theme.fg("error", label));
-							value += ` ${theme.fg("muted", `↑${fmtTokens(output)}`)}`;
+							value += ` ${theme.fg("muted", `↑ ${fmtTokens(output)}`)}`;
 							ctxStr = value;
 						}
 					} catch {
@@ -488,7 +488,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				// ── cost ──
 				let costStr: string | null = null;
 				if (segmentConfig.cost) {
-					const label = `cost:$${cost.toFixed(3)}`;
+					const label = `$ ${cost.toFixed(3)}`;
 					const color = cost < 0.1 ? "muted" : cost <= 1 ? "dim" : "warning";
 					costStr = theme.fg(color, label);
 				}
@@ -523,7 +523,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (segmentConfig.path || segmentConfig.bar) {
 					let pathStr = "";
 					if (segmentConfig.path) {
-						pathStr = theme.fg("dim", `📂 ${fmtPath(ctx.sessionManager.getCwd())}`);
+						pathStr = theme.fg("dim", `⌂ ${fmtPath(ctx.sessionManager.getCwd())}`);
 					}
 
 					if (segmentConfig.bar) {
@@ -549,7 +549,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (segmentConfig.extensions) {
 					const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
 					if (statuses.length > 0) {
-						extStr = theme.fg("dim", statuses.join(theme.fg("dim", " · ")));
+						extStr = theme.fg("dim", `⊕ ${statuses.join(theme.fg("dim", " · "))}`);
 					}
 				}
 

@@ -54,7 +54,7 @@ export class ConfigMenuComponent implements Focusable {
 			{ kind: "action", label: "✕ 全部关闭", description: "关闭所有段" },
 			{ kind: "toggle", name: "model", label: "model", description: "模型名+thinking level" },
 			{ kind: "toggle", name: "git", label: "git", description: "git 分支+状态统计" },
-			{ kind: "toggle", name: "path", label: "path", description: "项目路径 📂" },
+			{ kind: "toggle", name: "path", label: "path", description: "项目路径 ⌂" },
 			{ kind: "toggle", name: "context", label: "context", description: "上下文 token 用量 ▤" },
 			{ kind: "toggle", name: "tokens", label: "tokens", description: "输出 token ↑" },
 			{ kind: "toggle", name: "ttft", label: "ttft/tps", description: "首 token 延迟+吞吐" },
