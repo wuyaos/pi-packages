@@ -1,28 +1,24 @@
-name: Publish Package
+name: Publish Packages
 
-# tag 驱动: 打 tag `@wuyaos/<pkg>@<version>` 触发对应包发布
-# 例: git tag '@wuyaos/pi-cc-tui@1.0.0' && git push --tags
+# 打总 tag 触发, workflow 内串行发布所有"版本号比 npm 上新"的包
+# 触发 tag: release* 或 publish-all*  (例: git tag publish-all && git push --tags)
 #
-# 双模式发布:
-# - 有 NPM_TOKEN secret → 用它发布(用于首次发布,包尚不存在时)
-# - 无 NPM_TOKEN secret → 用 OIDC Trusted Publishing(包已存在且配好 trusted publisher 后)
+# 每个包自动判断:
+# - npm 上不存在        → 首次发布, 需 NPM_TOKEN secret
+#                         (发完去 npm 配 Trusted Publisher, 之后可删 token)
+# - npm 上存在但版本不同 → OIDC Trusted Publishing (无需 token)
+# - 版本相同            → 跳过
 #
-# 首次发布流程:
-#   1. 生成 npm token, 加到 GitHub Secrets: NPM_TOKEN
-#   2. 打 tag 推送, Action 用 token 发首次, 包创建到 npm
-#   3. 去 npmjs.com 该包 Settings → Trusted publishing, 配 GitHub Actions:
-#        Organization or user: wuyaos, Repository: pi-packages,
-#        Workflow filename: publish.yml, Allowed actions: npm publish
-#   4. 删除 GitHub 的 NPM_TOKEN secret
-#   5. 之后打 tag 即由 OIDC 自动发布, 无需任何 token
+# 因此也能只发单个包: 只改一个包的 version + 打总 tag, 其余包版本不变会跳过
 
 on:
   push:
     tags:
-      - '@wuyaos/*@*'
+      - 'release*'
+      - 'publish-all*'
 
 permissions:
-  id-token: write  # OIDC trusted publishing 必需
+  id-token: write   # OIDC trusted publishing 必需
   contents: read
 
 jobs:
@@ -32,66 +28,58 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Parse tag
-        id: tag
-        # tag 格式: @wuyaos/<pkg>@<version>
-        # GITHUB_REF=refs/tags/@wuyaos/pi-cc-tui@1.0.0
-        run: |
-          ref="${GITHUB_REF#refs/tags/}"
-          # 拆分最后一个 @: pkg=@wuyaos/pi-cc-tui, version=1.0.0
-          pkg="${ref%@*}"
-          version="${ref##*@}"
-          echo "pkg=$pkg"
-          echo "version=$version"
-          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          package-manager-cache: false
 
       - name: Install dependencies
-        # 仓库根 package-lock.json 被 gitignore, 用 install 代替 ci
         run: npm install
 
-      - name: Verify package version matches tag
-        run: |
-          pkg="${{ steps.tag.outputs.pkg }}"
-          version="${{ steps.tag.outputs.version }}"
-          actual=$(npm pkg get version --workspace "$pkg" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(Object.values(JSON.parse(d))[0]))")
-          echo "Expected: $version  Actual: $actual"
-          if [ "$version" != "$actual" ]; then
-            echo "::error::Tag version $version does not match package.json version $actual"
-            exit 1
-          fi
-
-      - name: Check if package already exists on npm
-        id: exists
-        run: |
-          pkg="${{ steps.tag.outputs.pkg }}"
-          if npm view "$pkg" version >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Package $pkg already exists on npm"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Package $pkg does not exist yet (first publish)"
-          fi
-
-      - name: Publish (OIDC, package already exists)
-        if: steps.exists.outputs.exists == 'true'
-        run: npm publish --workspace "${{ steps.tag.outputs.pkg }}"
-
-      - name: Publish (NPM_TOKEN, first publish)
-        if: steps.exists.outputs.exists == 'false'
+      - name: Publish changed packages
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::First publish of ${{ steps.tag.outputs.pkg }} requires NPM_TOKEN secret (package does not exist on npm yet). Add NPM_TOKEN to GitHub Secrets, or publish manually first, then configure Trusted Publisher and remove the token."
-            exit 1
-          fi
-          echo "::notice::First publish using NPM_TOKEN. After this succeeds, configure Trusted Publisher on npm and remove the NPM_TOKEN secret."
-          npm publish --workspace "${{ steps.tag.outputs.pkg }}"
+          set -e
+          # 列出所有 pi-* workspace 包: name<TAB>version
+          mapfile -t pkgs < <(node -e '
+            const fs = require("fs");
+            for (const d of fs.readdirSync(".")) {
+              if (!d.startsWith("pi-")) continue;
+              const f = d + "/package.json";
+              if (!fs.existsSync(f)) continue;
+              const p = JSON.parse(fs.readFileSync(f, "utf8"));
+              if (p.private) continue;
+              console.log(p.name + "\t" + p.version);
+            }
+          ')
+
+          for line in "${pkgs[@]}"; do
+            IFS=$'\t' read -r name version <<< "$line"
+            echo ""
+            echo "=== $name @ $version ==="
+
+            # 1. 该版本是否已发布? → 跳过
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "  $name@$version already on npm, skip"
+              continue
+            fi
+
+            # 2. 包是否已存在? 决定首次(token) vs OIDC
+            if npm view "$name" version >/dev/null 2>&1; then
+              echo "  Package exists, publishing $version via OIDC"
+              npm publish --workspace "$name" --access public
+            else
+              if [ -z "$NPM_TOKEN" ]; then
+                echo "::error::$name does not exist on npm; first publish requires NPM_TOKEN secret"
+                exit 1
+              fi
+              echo "  First publish of $name, using NPM_TOKEN"
+              NODE_AUTH_TOKEN="$NPM_TOKEN" npm publish --workspace "$name" --access public
+              echo "::notice::$name first-published. Configure Trusted Publisher on npm, then remove NPM_TOKEN secret."
+            fi
+          done
+
+          echo ""
+          echo "=== Done ==="
