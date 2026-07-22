@@ -54,7 +54,8 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        run: npm ci
+        # 仓库根 package-lock.json 被 gitignore, 用 install 代替 ci
+        run: npm install
 
       - name: Verify package version matches tag
         run: |
