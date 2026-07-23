@@ -1,4 +1,4 @@
-/** Codex 风格圆角输入框，移植自 pi-claude-code-tui (MIT, Phoobobo)。 */
+/** 圆角输入框，移植自 pi-claude-code-tui (MIT, Phoobobo)。 */
 
 import {
 	CustomEditor,
@@ -13,7 +13,7 @@ import {
 	restyleEditorCursor,
 } from "./render-utils.ts";
 
-class CodexStyleEditor extends CustomEditor {
+class CcTuiEditor extends CustomEditor {
 	constructor(
 		tui: TUI,
 		theme: EditorTheme,
@@ -31,18 +31,18 @@ class CodexStyleEditor extends CustomEditor {
 	}
 }
 
-export function applyCodexEditor(ctx: ExtensionContext): void {
+export function applyEditor(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
 	ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 		const cursorOpen = () => cursorOpenFromFgAnsi(ctx.ui.theme.getFgAnsi("accent"));
-		return new CodexStyleEditor(tui, theme, keybindings, cursorOpen);
+		return new CcTuiEditor(tui, theme, keybindings, cursorOpen);
 	});
 }
 
-export function restoreDefaultEditor(ctx: ExtensionContext): void {
+export function restoreEditor(ctx: ExtensionContext): void {
 	ctx.ui.setEditorComponent(undefined);
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.on("session_start", (_event, ctx) => applyCodexEditor(ctx));
+	pi.on("session_start", (_event, ctx) => applyEditor(ctx));
 }

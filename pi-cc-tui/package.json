@@ -1,7 +1,7 @@
 {
   "name": "@wuyaos/pi-cc-tui",
-  "version": "1.1.0",
-  "description": "Claude Code 风格 pi 体验: 99 主题 + Pi 启动头 + Codex 输入框 + thinking 折叠 + 状态栏",
+  "version": "1.1.1",
+  "description": "Pi 主题与 TUI 组件：99 主题、启动头、圆角输入框、状态栏和诊断面板",
   "keywords": ["pi-package"],
   "license": "MIT",
   "repository": {

@@ -1,22 +1,19 @@
 /**
  * pi-cc-tui 状态栏（含 context bar，合并自 pi-nano-context）。
  *
- * 行 1: model | git (左) ... ctx(含output) | tokens | cost (右)
- * 行 2: ⌂ path (左) ... 色条 (右, bar 开启时)
- * 行 3: extensions (左) ... ■ 图例 (右, bar 开启时)
+ * 行 1: model | Context/Token | tools。
+ * 行 2: ⌂ path（约半宽）| context 色条（约半宽）。
+ * 行 3: extensions。
  *
  * PI_STATUSLINE_GIT=1 时启用 git status --porcelain 统计，默认关闭。
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { configureIcons, getIcons } from "../src/ui/icons.ts";
 import {
-	DEFAULT_SEGMENTS,
 	hasCcTuiIconConfiguration,
-	isSegmentName,
 	loadCcTuiConfig,
 	SEGMENT_NAMES,
 	saveCcTuiSegments,
@@ -30,18 +27,16 @@ import {
 	updateToolMetrics,
 	type ToolMetricsState,
 } from "../src/status/tool-metrics.ts";
+import { renderFooterEnds, renderPrimaryFooterBarLine } from "../src/status/footer-layout.ts";
 import {
-	createTpsTracker,
-	recordTpsTokens,
-	resetTpsTracker,
-	shortWindowTps,
-	type TpsTracker,
-} from "../src/status/tps-tracker.ts";
+	addAssistantEntryUsage,
+	createUsageTotals,
+	type UsageTotals,
+} from "../src/status/usage-totals.ts";
 
-const GIT_REFRESH_MS = 2000;
-export const gitEnabled = process.env.PI_STATUSLINE_GIT === "1";
 
-// ── Context bar 配色 (合并自 pi-nano-context) ──
+
+// ── Context bar 配色 (合并自 pi-nano-context，并适配 CC-TUI 暗色主题) ──
 const CHARACTERS_PER_TOKEN = 4;
 const IMAGE_TOKEN_ESTIMATE = 1200;
 
@@ -52,14 +47,15 @@ interface ContextSegment {
 }
 
 const CONTEXT_SEGMENTS: ContextSegment[] = [
-	{ key: "system", color: "#82CA7A", labels: ["system", "sys", "s"] },
-	{ key: "prompt", color: "#E89BC1", labels: ["prompt", "pr", "p"] },
-	{ key: "assistant", color: "#8BC7C2", labels: ["assistant", "ast", "a"] },
-	{ key: "thinking", color: "#73D0D2", labels: ["think", "th", "t"] },
-	{ key: "tools", color: "#D8A657", labels: ["tools", "tl", "x"] },
+	{ key: "system", color: "#355d4a", labels: ["sys", "s"] },
+	{ key: "prompt", color: "#5c4051", labels: ["pat", "p"] },
+	{ key: "assistant", color: "#35565b", labels: ["ast", "a"] },
+	{ key: "thinking", color: "#405965", labels: ["th", "t"] },
+	{ key: "tools", color: "#665739", labels: ["tools", "tl", "x"] },
 ];
 
-const FREE_SEGMENT_FILL = "#242731";
+// 与 dark-monochrome 的 gray2/gray3 保持接近，避免色条成为视觉焦点。
+const FREE_SEGMENT_FILL = "#2a2a2a";
 
 interface ContextSnapshot {
 	segments: Record<string, number>;
@@ -74,16 +70,12 @@ let contextSnapshot: ContextSnapshot = {
 	contextWindow: 0,
 	usageIsEstimated: false,
 };
-
-interface GitStats {
-	staged: number;
-	modified: number;
-	untracked: number;
-}
+let contextSnapshotRevision = 0;
+let renderedContextSnapshotRevision = -1;
 
 /** 可配置段。thinking 已并入 model，output 已并入 context。 */
 export type { SegmentConfig, SegmentName };
-export { isSegmentName, SEGMENT_NAMES };
+export { SEGMENT_NAMES };
 
 export function loadConfig(): SegmentConfig {
 	const config = loadCcTuiConfig();
@@ -99,27 +91,9 @@ export function saveConfig(config: SegmentConfig): void {
 }
 
 export let segmentConfig = loadConfig();
-let gitStats: GitStats | null = null;
-let gitTimer: ReturnType<typeof setInterval> | null = null;
-let activePi: ExtensionAPI | null = null;
-
-let providerStartTime: number | null = null;
-let firstTokenTime: number | null = null;
-let tokenCount = 0;
-let lastTTFT: number | null = null;
-let lastTPS: number | null = null;
 let cachedThinkingLevel = "medium";
-let tpsTracker: TpsTracker = createTpsTracker();
 
-interface UsageTotals {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	cost: number;
-}
-
-let usageTotals: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+let usageTotals: UsageTotals = createUsageTotals();
 let usageBranchLength = -1;
 let toolMetrics: ToolMetricsState = createToolMetricsState();
 
@@ -129,67 +103,17 @@ function updateUsageTotals(ctx: ExtensionContext): UsageTotals {
 		const branch = ctx.sessionManager.getBranch();
 		// A branch rewind/fork can shrink or replace history; rebuild only then.
 		if (usageBranchLength < 0 || branch.length < usageBranchLength) {
-			usageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+			usageTotals = createUsageTotals();
 			usageBranchLength = 0;
 		}
 		for (let index = usageBranchLength; index < branch.length; index += 1) {
-			const entry: any = branch[index];
-			if (entry?.type !== "message" || entry.message?.role !== "assistant") continue;
-			const usage = entry.message.usage;
-			usageTotals.input += usage?.input || 0;
-			usageTotals.output += usage?.output || 0;
-			usageTotals.cacheRead += usage?.cacheRead || 0;
-			usageTotals.cacheWrite += usage?.cacheWrite || 0;
-			usageTotals.cost += usage?.cost?.total || 0;
+			addAssistantEntryUsage(usageTotals, branch[index]);
 		}
 		usageBranchLength = branch.length;
 	} catch {
 		// Keep the last known totals while the session is initializing.
 	}
 	return usageTotals;
-}
-
-function clearGitTimer(): void {
-	if (gitTimer) {
-		clearInterval(gitTimer);
-		gitTimer = null;
-	}
-}
-
-function execAsync(cmd: string, args: string[], opts: Record<string, unknown>): Promise<string> {
-	return new Promise((resolve, reject) => {
-		execFile(cmd, args, opts, (error, stdout) => {
-			if (error) reject(error);
-			else resolve(stdout as string);
-		});
-	});
-}
-
-async function getGitStats(cwd: string): Promise<GitStats | null> {
-	try {
-		const stdout = await execAsync("git", ["status", "--porcelain"], {
-			cwd,
-			encoding: "utf8",
-			maxBuffer: 1024 * 1024,
-		});
-		let staged = 0;
-		let modified = 0;
-		let untracked = 0;
-		for (const line of stdout.split("\n")) {
-			if (!line) continue;
-			const x = line[0];
-			const y = line[1];
-			if (x === "?" && y === "?") {
-				untracked++;
-			} else {
-				if (x !== " " && x !== "?") staged++;
-				if (y !== " " && y !== "?") modified++;
-			}
-		}
-		return { staged, modified, untracked };
-	} catch {
-		return null;
-	}
 }
 
 function fmtTokens(value: number): string {
@@ -205,11 +129,6 @@ function fmtPath(p: string): string {
 
 export function configSummary(): string {
 	return SEGMENT_NAMES.map((name) => `${name}:${segmentConfig[name] ? "on" : "off"}`).join(" · ");
-}
-
-/** 组装分隔的段字符串 */
-function joinSegments(parts: string[], theme: { fg: (token: any, text: string) => string }): string {
-	return parts.join(`${theme.fg("dim", " | ")}`);
 }
 
 // ── ANSI 颜色 (用于 context bar 色条) ──
@@ -316,33 +235,43 @@ function scaleSegments(segments: Record<string, number>, usedTokens: number): Re
 	return result;
 }
 
+function resetContextSnapshotCache(): void {
+	contextSnapshotRevision++;
+}
+
+/**
+ * Context segmentation walks history, so never probe session entries on every
+ * terminal repaint. Pi lifecycle events mark the snapshot dirty; the next
+ * render rebuilds it once, then all subsequent renders are O(1).
+ */
 function updateContextSnapshot(ctx: ExtensionContext): void {
+	if (renderedContextSnapshotRevision === contextSnapshotRevision) return;
 	try {
+		const usage = ctx.getContextUsage();
+		const measuredTokens = typeof usage?.tokens === "number" && usage.tokens > 0 ? usage.tokens : undefined;
+		const contextWindow = usage?.contextWindow || (ctx.model as any)?.contextWindow || 0;
 		const entries = ctx.sessionManager.getEntries();
 		const messages: unknown[] = [];
 		for (const entry of entries) {
 			if (entry.type === "message") messages.push(entry.message);
 		}
-		const systemPrompt = (ctx as any)?.getSystemPrompt?.() || "";
-		const rawSegments = segmentSessionMessages(messages, systemPrompt);
-		const usage = ctx.getContextUsage();
-		const measuredTokens = typeof usage?.tokens === "number" && usage.tokens > 0 ? usage.tokens : undefined;
+		const rawSegments = segmentSessionMessages(messages, ctx.getSystemPrompt());
 		const estimatedTokens = segmentTotal(rawSegments);
 		const usedTokens = measuredTokens ?? estimatedTokens;
-		const contextWindow = (usage as any)?.contextWindow || (ctx.model as any)?.contextWindow || 0;
 		contextSnapshot = {
 			segments: scaleSegments(rawSegments, usedTokens),
 			usedTokens,
 			contextWindow,
 			usageIsEstimated: measuredTokens === undefined,
 		};
+		renderedContextSnapshotRevision = contextSnapshotRevision;
 	} catch {
-		// keep last snapshot
+		// Keep the last snapshot while the session is initializing; retry next render.
 	}
 }
 
 // 色条内文字颜色 (深色背景上的浅色文字)
-const BAR_TEXT_COLOR = "#15181D";
+const BAR_TEXT_COLOR = "#d8d8d8";
 
 function centerText(text: string, width: number): string {
 	if (width <= 0) return "";
@@ -385,32 +314,32 @@ function renderContextBar(snapshot: ContextSnapshot, width: number): string {
 	if (freeCol > 0) {
 		const freeLabel = chooseLabel(["free", "fr", "f"], freeCol);
 		const text = freeLabel ? centerText(freeLabel, freeCol) : " ".repeat(freeCol);
-		parts.push(bgHex(FREE_SEGMENT_FILL, fgHex("#C7D46A", text)));
+		parts.push(bgHex(FREE_SEGMENT_FILL, fgHex("#a5a5a5", text)));
 	}
 	return parts.join("");
 }
 
 export function applyStatusline(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
-	clearGitTimer();
 	updateContextSnapshot(ctx);
 	usageBranchLength = -1;
 	updateUsageTotals(ctx);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
-		const refreshGit = async () => {
-			if (!gitEnabled) return;
-			const stats = await getGitStats(ctx.sessionManager.getCwd());
-			if (stats) gitStats = stats;
-			tui.requestRender();
+		let renderedExtensionStatusSignature = "";
+		let cachedExtensionStatusLine = "";
+		const getExtensionStatusLine = () => {
+			if (!segmentConfig.extensions) return "";
+			const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
+			const signature = statuses.join("\u0000");
+			if (signature !== renderedExtensionStatusSignature) {
+				renderedExtensionStatusSignature = signature;
+				cachedExtensionStatusLine = statuses.length > 0
+					? theme.fg("dim", `${getIcons().extensions} ${statuses.join(theme.fg("dim", " | "))}`)
+					: "";
+			}
+			return cachedExtensionStatusLine;
 		};
-
-		if (gitEnabled) {
-			void refreshGit();
-			gitTimer = setInterval(() => void refreshGit(), GIT_REFRESH_MS);
-			gitTimer.unref?.();
-		}
-
 		const unsubscribeBranch = footerData.onBranchChange(() => {
 			// A fork/rewind can replace the branch at the same length, so rebuild
 			// on the branch-change event rather than risking stale totals.
@@ -421,13 +350,8 @@ export function applyStatusline(ctx: ExtensionContext): void {
 		});
 
 		return {
-			dispose: () => {
-				unsubscribeBranch();
-				clearGitTimer();
-			},
-			invalidate: () => {
-				if (gitEnabled) void refreshGit();
-			},
+			dispose: unsubscribeBranch,
+			invalidate: () => {},
 			render(width: number): string[] {
 				updateContextSnapshot(ctx);
 
@@ -443,165 +367,83 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					modelStr = theme.fg("accent", `${icons.model} ${provider}/${modelId}[${level}]`);
 				}
 
-				// ── git ──
-				let gitStr: string | null = null;
-				if (segmentConfig.git) {
-					const branch = footerData.getGitBranch();
-					if (branch) {
-						const hasChanges = Boolean(
-							gitStats && (gitStats.staged || gitStats.modified || gitStats.untracked),
-						);
-						let value = theme.fg(hasChanges ? "warning" : "success", `${icons.git} ${branch}`);
-						if (gitEnabled && gitStats) {
-							const gitParts: string[] = [];
-							if (gitStats.staged > 0) gitParts.push(theme.fg("success", `+${gitStats.staged}`));
-							if (gitStats.modified > 0) gitParts.push(theme.fg("warning", `~${gitStats.modified}`));
-							if (gitStats.untracked > 0) gitParts.push(theme.fg("error", `?${gitStats.untracked}`));
-							if (gitParts.length > 0) value += ` ${gitParts.join(" ")}`;
-						}
-						gitStr = value;
-					}
-				}
-
 				// ── 累计 output / cost ──
-				const totals = segmentConfig.context || segmentConfig.cost || segmentConfig.tools
+				const totals = segmentConfig.context || segmentConfig.tools
 					? updateUsageTotals(ctx)
-					: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-				const { input, output, cacheRead, cacheWrite, cost } = totals;
+					: createUsageTotals();
+				const { input, output, cacheRead, cacheWrite } = totals;
 
-				// ── context (含 output) ──
-				let ctxStr: string | null = null;
+				// ── 独立统计块：每个“图标 + 数值”只使用一种颜色 ──
+				let contextStr: string | null = null;
+				let inputStr: string | null = null;
+				let outputStr: string | null = null;
+				let cacheStr: string | null = null;
 				if (segmentConfig.context) {
 					try {
 						const usage = ctx.getContextUsage();
 						if (usage && typeof usage.tokens === "number") {
-							const contextWindow = (usage as any)?.contextWindow || (ctx.model as any)?.contextWindow || 128000;
+							const contextWindow = usage.contextWindow || (ctx.model as any)?.contextWindow || 128000;
 							const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
 							const label = `${icons.context} ${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
-							let value: string;
-							if (percent < 70) value = theme.fg("success", label);
-							else if (percent < 85) value = theme.fg("warning", label);
-							else if (percent <= 95) value = theme.fg("error", label);
-							else value = theme.bold(theme.fg("error", label));
-							// token breakdown（借鉴 pi-hud-footer）：↑in ↓out R cacheRead W cacheWrite ⚡ hitRate
-							// R / W 为 0 时隐藏；命中率 = cacheRead / (input + cacheRead + cacheWrite)
-							const tkParts: string[] = [];
-							tkParts.push(theme.fg("muted", `↑ ${fmtTokens(input)}`));
-							tkParts.push(theme.fg("muted", `↓ ${fmtTokens(output)}`));
-							if (cacheRead > 0) tkParts.push(theme.fg("muted", `R ${fmtTokens(cacheRead)}`));
-							if (cacheWrite > 0) tkParts.push(theme.fg("muted", `W ${fmtTokens(cacheWrite)}`));
+							const contextColor = percent < 70 ? "success" : percent < 85 ? "warning" : "error";
+							contextStr = percent > 95 ? theme.bold(theme.fg(contextColor, label)) : theme.fg(contextColor, label);
+
+							inputStr = theme.fg("accent", `↑ ${fmtTokens(input)}`);
+							outputStr = theme.fg("success", `↓ ${fmtTokens(output)}`);
+							// 缓存读取量与命中率共同描述一个缓存块：只显示一次图标，
+							// 统一颜色；cacheWrite 仍会参与命中率计算，但不占紧凑状态栏宽度。
 							const inputTotal = input + cacheRead + cacheWrite;
-							if (inputTotal > 0 && cacheRead > 0) {
-								const hitRate = cacheRead / inputTotal;
-								const hitColor = hitRate >= 0.5 ? "success" : hitRate > 0 ? "warning" : "muted";
-								tkParts.push(theme.fg(hitColor, `${icons.cache} ${Math.round(hitRate * 100)}%`));
+							if (cacheRead > 0 || cacheWrite > 0) {
+								const hitRate = inputTotal > 0 ? cacheRead / inputTotal : 0;
+								const cacheColor = hitRate >= 0.5 ? "success" : hitRate > 0 ? "warning" : "muted";
+								cacheStr = theme.fg(cacheColor, `${icons.cache} ${fmtTokens(cacheRead)}/${Math.round(hitRate * 100)}%`);
 							}
-							value += ` ${tkParts.join(theme.fg("dim", " "))}`;
-							ctxStr = value;
 						}
 					} catch {
 						// Context usage is optional while a session is initializing.
 					}
 				}
 
-				// ── tokens (TTFT/TPS) ──
-				let tokensStr: string | null = null;
-				if (segmentConfig.tokens && (lastTTFT !== null || lastTPS !== null)) {
-					const tokenParts: string[] = [];
-					if (lastTTFT !== null) {
-						const label = `TTFT:${lastTTFT.toFixed(1)}s`;
-						tokenParts.push(theme.fg(lastTTFT > 3 ? "error" : "success", label));
-					}
-					if (lastTPS !== null) {
-						const label = `${Math.round(lastTPS)} TPS`;
-						tokenParts.push(theme.fg(lastTPS < 10 ? "error" : "success", label));
-					}
-					tokensStr = tokenParts.join(" ");
-				}
 
 				// ── tools (增量成功/失败指标) ──
 				let toolsStr: string | null = null;
 				if (segmentConfig.tools) {
 					const metrics = updateToolMetrics(toolMetrics, ctx.sessionManager.getBranch());
 					if (metrics.totalCalls > 0) {
-						const parts: string[] = [theme.fg("muted", `${icons.tool} ${metrics.totalCalls}`)];
-						if (metrics.success > 0) parts.push(theme.fg("success", `${icons.success}${metrics.success}`));
-						if (metrics.error > 0) parts.push(theme.fg("error", `${icons.error}${metrics.error}`));
-						toolsStr = parts.join(theme.fg("dim", " "));
+						// 成功数/总数：一眼可读，错误时整个数字组使用错误色。
+						const toolColor = metrics.error > 0 ? "error" : "success";
+						toolsStr = theme.fg(toolColor, `${icons.tool} ${metrics.success}/${metrics.totalCalls}`);
 					}
 				}
 
-				// ── cost ──
-				let costStr: string | null = null;
-				if (segmentConfig.cost) {
-					const label = `$ ${cost.toFixed(3)}`;
-					const color = cost < 0.1 ? "muted" : cost <= 1 ? "dim" : "warning";
-					costStr = theme.fg(color, label);
-				}
-
-				// ── 行 1: 左右对齐 ──
-				const leftParts = [modelStr, gitStr].filter(Boolean) as string[];
-				const rightParts = [ctxStr, tokensStr, toolsStr, costStr].filter(Boolean) as string[];
-
-				const leftStr = joinSegments(leftParts, theme);
-				const rightStr = joinSegments(rightParts, theme);
-
-				let line1: string;
-				if (leftStr && rightStr) {
-					const gap = width - visibleWidth(leftStr) - visibleWidth(rightStr);
-					if (gap >= 2) {
-						line1 = leftStr + " ".repeat(gap) + rightStr;
-					} else {
-						line1 = truncateToWidth(`${leftStr}${theme.fg("dim", " | ")}${rightStr}`, width);
-					}
-				} else if (leftStr) {
-					line1 = leftStr;
-				} else if (rightStr) {
-					line1 = rightStr;
-				} else {
-					line1 = "";
-				}
-
+				const separator = theme.fg("dim", " | ");
 				const lines: string[] = [];
-				if (line1) lines.push(line1);
 
-				// ── 行 2: path (左) + 色条 (右, bar 开启时) ──
-				if (segmentConfig.path || segmentConfig.bar) {
-					let pathStr = "";
-					if (segmentConfig.path) {
-						pathStr = theme.fg("dim", `${icons.path} ${fmtPath(ctx.sessionManager.getCwd())}`);
-					}
+				// ── 行 1: 模型左对齐；Context/Token | 工具统计右对齐。 ──
+				// 模型与 Context 之间不使用分隔符；仅保留右侧 telemetry 内的 |。
+				// 固定三行布局不显示 Git、费用、TPS/TTFT，避免挤压此主行。
+				const telemetryStr = [contextStr, inputStr, outputStr, cacheStr]
+					.filter(Boolean)
+					.join(" ");
+				const rightStr = toolsStr ? [telemetryStr, toolsStr].filter(Boolean).join(separator) : telemetryStr;
+				const topLine = renderFooterEnds(modelStr ?? "", rightStr, width);
+				if (topLine) lines.push(topLine);
 
-					if (segmentConfig.bar) {
-						const barWidth = Math.max(10, width - visibleWidth(pathStr) - 2);
-						const bar = renderContextBar(contextSnapshot, barWidth);
-						if (pathStr) {
-							const gap = width - visibleWidth(pathStr) - visibleWidth(bar);
-							if (gap >= 1) {
-								lines.push(pathStr + " ".repeat(gap) + bar);
-							} else {
-								lines.push(truncateToWidth(pathStr, width));
-							}
-						} else {
-							lines.push(bar);
-						}
-					} else if (pathStr) {
-						lines.push(visibleWidth(pathStr) <= width ? pathStr : truncateToWidth(pathStr, width));
-					}
-				}
+				// ── 行 2: path 与 context 色条固定各占约一半 ──
+				const pathStr = segmentConfig.path
+					? theme.fg("dim", `${icons.path} ${fmtPath(ctx.sessionManager.getCwd())}`)
+					: "";
+				// 第二行是路径与色条的连续布局，不显示竖线分隔符。
+				const secondLineDivider = " ";
+				const barContentWidth = Math.max(0, width - visibleWidth(secondLineDivider));
+				const barWidth = Math.ceil(barContentWidth / 2);
+				const bar = segmentConfig.bar ? renderContextBar(contextSnapshot, barWidth) : "";
+				const primaryLine = renderPrimaryFooterBarLine(pathStr, bar, width, secondLineDivider);
+				if (primaryLine) lines.push(primaryLine);
 
-				// ── 行 3: extensions (左) + 图例 (右, bar 开启时) ──
-				let extStr = "";
-				if (segmentConfig.extensions) {
-					const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
-					if (statuses.length > 0) {
-						extStr = theme.fg("dim", `${icons.extensions} ${statuses.join(theme.fg("dim", " · "))}`);
-					}
-				}
-
-				if (extStr) {
-					lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
-				}
+				// ── 行 3: extensions（状态未变时复用已格式化文本）──
+				const extStr = getExtensionStatusLine();
+				if (extStr) lines.push(visibleWidth(extStr) <= width ? extStr : truncateToWidth(extStr, width));
 
 			return lines;
 			},
@@ -610,47 +452,31 @@ export function applyStatusline(ctx: ExtensionContext): void {
 }
 
 export function restoreDefaultFooter(ctx: ExtensionContext): void {
-	clearGitTimer();
 	ctx.ui.setFooter(undefined);
 }
 
 export default function (pi: ExtensionAPI) {
-	activePi = pi;
-
-	pi.on("session_start", (_event, ctx) => applyStatusline(ctx));
-	pi.on("agent_end", (_event, ctx) => applyStatusline(ctx));
-	pi.on("agent_settled", (_event, ctx) => applyStatusline(ctx));
-	pi.on("turn_end", (_event, ctx) => applyStatusline(ctx));
-	pi.on("message_end", (_event, ctx) => applyStatusline(ctx));
+	// The footer closure reads current session/model state at render time. Replacing
+	// it after every agent/message/context event previously recreated listeners and
+	// the git timer several times per turn without adding information. Reinstall
+	// only when the session or model instance changes; normal TUI invalidation
+	// refreshes the existing footer during streaming and after tool activity.
+	pi.on("session_start", (_event, ctx) => {
+		resetContextSnapshotCache();
+		applyStatusline(ctx);
+	});
 	pi.on("model_select", (_event, ctx) => applyStatusline(ctx));
-	pi.on("thinking_level_select", (event: any, ctx) => { cachedThinkingLevel = event.level; applyStatusline(ctx); });
-	pi.on("session_compact", (_event, ctx) => applyStatusline(ctx));
-	pi.on("session_tree", (_event, ctx) => applyStatusline(ctx));
-	pi.on("context", (_event, ctx) => applyStatusline(ctx));
-	pi.on("session_shutdown", () => clearGitTimer());
-
-	pi.on("before_provider_request", () => {
-		providerStartTime = Date.now();
-		firstTokenTime = null;
-		tokenCount = 0;
-		resetTpsTracker(tpsTracker);
+	pi.on("thinking_level_select", (event: any, ctx) => {
+		cachedThinkingLevel = event.level;
+		applyStatusline(ctx);
 	});
+	pi.on("session_compact", () => resetContextSnapshotCache());
+	pi.on("session_tree", () => resetContextSnapshotCache());
+	pi.on("context", () => resetContextSnapshotCache());
 
-	pi.on("message_update", (event) => {
-		if (!providerStartTime) return;
-		const message = (event as any).message;
-		if (message?.role !== "assistant") return;
-		const output = message.usage?.output || 0;
-		if (output <= 0) return;
-
-		if (!firstTokenTime) {
-			firstTokenTime = Date.now();
-			lastTTFT = (firstTokenTime - providerStartTime) / 1000;
-		}
-		tokenCount = output;
-		const now = Date.now();
-		recordTpsTokens(tpsTracker, output, now);
-		const windowTps = shortWindowTps(tpsTracker, now);
-		if (windowTps !== null) lastTPS = windowTps;
-	});
+	// Context usage changes only when Pi commits a completed message to the
+	// session. Avoid invalidating on every streaming message_update: that would
+	// force a full history segmentation on every terminal repaint.
+	pi.on("before_provider_request", () => resetContextSnapshotCache());
+	pi.on("message_end", () => resetContextSnapshotCache());
 }

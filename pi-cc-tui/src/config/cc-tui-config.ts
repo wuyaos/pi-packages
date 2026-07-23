@@ -9,16 +9,14 @@ import { readJsonObject, updateJsonObject, type JsonRecord } from "./json-store.
 export const CC_TUI_CONFIG_VERSION = 1;
 export const CC_TUI_CONFIG_PATH = join(homedir(), ".pi", "agent", "config", "cc-tui.json");
 
+/** 当前固定三行状态栏的可见区块。 */
 export type SegmentConfig = {
 	model: boolean;
-	git: boolean;
 	context: boolean;
-	tokens: boolean;
-	cost: boolean;
-	path: boolean;
-	extensions: boolean;
-	bar: boolean;
 	tools: boolean;
+	path: boolean;
+	bar: boolean;
+	extensions: boolean;
 };
 
 export type CcTuiConfig = Readonly<{
@@ -32,28 +30,22 @@ export type CcTuiConfig = Readonly<{
 
 export const SEGMENT_NAMES = [
 	"model",
-	"path",
-	"git",
 	"context",
-	"tokens",
-	"cost",
 	"tools",
-	"extensions",
+	"path",
 	"bar",
+	"extensions",
 ] as const;
 
 export type SegmentName = (typeof SEGMENT_NAMES)[number];
 
 export const DEFAULT_SEGMENTS: SegmentConfig = Object.freeze({
 	model: true,
-	git: true,
 	context: true,
-	tokens: false,
-	cost: false,
-	path: true,
-	extensions: true,
-	bar: false,
 	tools: false,
+	path: true,
+	bar: false,
+	extensions: true,
 });
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -132,11 +124,6 @@ export function saveCcTuiIcons(
 
 export function resolveCcTuiIcons(config: CcTuiConfig): IconSet {
 	return createIconSet(config.icons);
-}
-
-/** Legacy configuration was unversioned but already used the segments object. */
-export function isSegmentName(value: string): value is SegmentName {
-	return (SEGMENT_NAMES as readonly string[]).includes(value);
 }
 
 /**

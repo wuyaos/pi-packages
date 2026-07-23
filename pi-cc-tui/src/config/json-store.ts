@@ -64,7 +64,7 @@ export function readJsonObject(path: string): JsonFileState {
  * Atomically replace a JSON object. Existing permissions are retained; new
  * configuration defaults to owner-readable/writable only (0600 before umask).
  */
-export function writeJsonObjectAtomically(path: string, record: JsonRecord, mode?: number): void {
+function writeJsonObjectAtomically(path: string, record: JsonRecord, mode?: number): void {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const temporaryPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
 	let descriptor: number | undefined;

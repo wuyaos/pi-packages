@@ -1,7 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-export const BRAND_RGB = "215;119;87";
-export const brand = (text: string) => `\x1b[38;2;${BRAND_RGB}m${text}\x1b[39m`;
+const DEFAULT_BORDER_COLOR = (text: string) => `\x1b[38;2;215;119;87m${text}\x1b[39m`;
 
 /**
  * Build a block-cursor open style from a theme foreground ANSI sequence.
@@ -12,9 +11,6 @@ export function cursorOpenFromFgAnsi(fgAnsi: string): string {
 	// Dark ink on the accent block for contrast (same idea as the old brand cursor).
 	return `${bg}\x1b[38;2;24;24;30m`;
 }
-
-/** Fallback when theme accent is unavailable. */
-export const cursorStyleOpen = () => cursorOpenFromFgAnsi(`\x1b[38;2;${BRAND_RGB}m`);
 
 /**
  * Logo half is the hero (Claude Code style): it takes most of the width and
@@ -209,7 +205,7 @@ export function roundedBorderLine(
 	sourceLine: string,
 	width: number,
 	kind: "top" | "bottom",
-	color: (text: string) => string = brand,
+	color: (text: string) => string = DEFAULT_BORDER_COLOR,
 ): string {
 	if (width < 2) return color(truncateToWidth(kind === "top" ? "╭╮" : "╰╯", width, ""));
 
@@ -252,7 +248,7 @@ export function restyleEditorCursor(line: string, openStyle: string): string {
 export function applyRoundedEditorBorders(
 	lines: string[],
 	width: number,
-	color: (text: string) => string = brand,
+	color: (text: string) => string = DEFAULT_BORDER_COLOR,
 ): string[] {
 	if (lines.length === 0 || width < 4) return lines;
 

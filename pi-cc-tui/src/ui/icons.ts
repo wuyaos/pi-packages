@@ -25,6 +25,7 @@ export const ICON_NAMES = [
 	"thinking",
 	"todo",
 	"tool",
+	"traffic",
 	"user",
 ] as const;
 
@@ -52,6 +53,7 @@ const UNICODE_ICONS: IconSet = {
 	thinking: "✻",
 	todo: "☐",
 	tool: "◆",
+	traffic: "⇅",
 	user: "›",
 };
 
@@ -74,6 +76,7 @@ const ASCII_ICONS: IconSet = {
 	thinking: "...",
 	todo: "[ ]",
 	tool: "tool",
+	traffic: "in/out",
 	user: "user",
 };
 
@@ -98,13 +101,14 @@ const EMOJI_ICONS: IconSet = {
 	thinking: "💭",
 	todo: "☑️",
 	tool: "🛠️",
+	traffic: "⇅",
 	user: "👤",
 };
 
 const NERD_ICONS: IconSet = {
 	actionEnable: "\uf00c",
 	actionDisable: "\uf00d",
-	cache: "\uf49b",
+	cache: "⚡",
 	context: "\uf2db",
 	diff: "\uf0c9",
 	disabled: "\uf10c",
@@ -120,6 +124,8 @@ const NERD_ICONS: IconSet = {
 	thinking: "\uf085",
 	todo: "\uf00c",
 	tool: "\uf0ad",
+	// 流量箭头与 Unicode/Emoji 模式保持一致，避免 Nerd Font 模式误显示为下载图标。
+	traffic: "⇅",
 	user: "\uf2bd",
 };
 

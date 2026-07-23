@@ -20,6 +20,7 @@ test("ASCII icon set contains readable fallbacks", () => {
 	assert.equal(icons.model, "model");
 	assert.equal(icons.path, "cwd");
 	assert.equal(icons.success, "ok");
+	assert.equal(icons.traffic, "in/out");
 	assert.equal(Object.isFrozen(icons), true);
 });
 
@@ -28,6 +29,7 @@ test("Emoji icon set provides a complete semantic alternative", () => {
 	assert.equal(icons.model, "🤖");
 	assert.equal(icons.path, "📁");
 	assert.equal(icons.user, "👤");
+	assert.equal(icons.traffic, "⇅");
 });
 
 test("icon overrides are non-empty only and do not mutate a new set", () => {
@@ -38,6 +40,7 @@ test("icon overrides are non-empty only and do not mutate a new set", () => {
 	assert.equal(icons.model, "M");
 	assert.equal(icons.success, "✓");
 	assert.equal(createIconSet({ mode: "unicode" }).model, "◆");
+	assert.equal(createIconSet({ mode: "unicode" }).traffic, "⇅");
 });
 
 test("configured icons override the environment-backed default", () => {

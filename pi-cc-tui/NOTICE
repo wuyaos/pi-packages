@@ -4,10 +4,10 @@
 
 ## 当前已包含或改写的第三方实现
 
-- `extensions/codex-editor.ts`、`extensions/startup-header.ts`、`extensions/render-utils.ts`
+- `extensions/editor.ts`、`extensions/startup-header.ts`、`extensions/render-utils.ts`
   - 来源：`Phoobobo/pi-claude-code-tui`
   - 许可证：MIT
-  - 说明：项目既有的 Codex 风格输入框、启动头和相关渲染工具；本包已根据 Pi 生命周期调整。
+  - 说明：项目既有的圆角输入框、启动头和相关渲染工具；本包已根据 Pi 生命周期调整。
 
 ## 当前已改写的第三方实现
 
@@ -26,31 +26,14 @@
   - 许可证：MIT
   - 说明：按 cc-tui 的 public API、有限摘要、原始工具参数/图片/系统提示不显示和不写入模型上下文要求重新实现；tool 报告仅显示工具名与成功/失败状态，不含参数或结果内容；未复制原始文件内容。
 
-- `src/transcript/user-message.ts`、`src/transcript/user-message-chrome.ts`
-  - 设计来源：`lmilojevicc/pi-zentui` / `beautifulrem/pi-sakura-cyberdeck` 的 user-message renderer
-  - 许可证：MIT
-  - 说明：改为装饰 Pi 已渲染的 Markdown 行，采用 cc-tui 的统一图标/边框、WeakMap 有界缓存和可逆 patch 生命周期；未复制原始文件内容。
-
-- `src/runtime/prototype-patch.ts`
-  - 设计来源：`lmilojevicc/pi-zentui`（亦见 `beautifulrem/pi-sakura-cyberdeck` 的派生实现）
-  - 许可证：MIT
-  - 说明：按 cc-tui 的 package-qualified adapter、泛型边界、过期 cleanup 和第三方后续覆盖保护要求重新实现；未复制原始文件内容。
-
 - `src/status/tool-metrics.ts`、`src/status/tps-tracker.ts`
   - 设计来源：`liao666brant/pi-hud-footer` 的每工具成功/失败统计与短窗口 token 速率/工作时长状态。
   - 许可证：MIT
   - 说明：重新实现为纯增量游标聚合器与有界滚动窗口 TPS 跟踪器；tool-metrics 按 session branch 新增条目推进，rewind/fork 时重建，每工具 Map 有 32 项上限，渲染摘要最多 6 项；tps-tracker 采样环有 128 项上限，5 秒窗口计算响应式 TPS，长空闲后关闭工作时长窗口；渲染保持 O(1)；未复制原始文件内容。
 
-- `src/tools/read-search-summary.ts`、`src/tools/read-search-renderers.ts`、`src/tools/bash-activity.ts`、`src/tools/bash-renderer.ts`、`src/tools/edit-write-renderers.ts`
-  - 设计来源：`MasuRii/pi-tool-display` 的低风险 read/search 调用与结果概览、Bash 活动状态显示，以及 edit/write pending-diff 预览。
-  - 许可证：MIT
-  - 说明：使用 Pi 官方逐工具 `ToolDefinition` 覆盖 API 重新实现；仅在当前仍由 builtin 所有时注册，不覆盖其他扩展的同名工具；预览移除控制序列、拒绝图片 payload，并设置行数和 64 KiB 字符边界。Bash 按 tool call 维持独立活动状态，刷新间隔为 200ms，settle/reload/shutdown 均释放定时器；未复制原始文件内容。edit/write renderer 复用 `src/diff` 的安全数据层生成有界 pending/result Diff，不重复实现文件读取或替换逻辑。
-
-- `src/diff/pending-preview.ts`、`src/diff/projection.ts`
-  - 设计来源：`MasuRii/pi-tool-display` 的 pending-diff-preview 安全读取边界和 Diff 预览思路。
-  - 许可证：MIT
-  - 说明：重新实现为尚未接 renderer 的独立数据层：工作区及既有目标均需 realpath containment，目标必须为常规文件，默认拒绝工作区外、符号链接逃逸、不可读与超过 1 MiB 的文件；精确 edit projection 保留 BOM/换行约定，拒绝空、非唯一或重叠替换；摘要线数和单行长度有界。只读、无会话写入、无文件改写；未复制原始文件内容。
-
+- 工具调用、Diff、用户消息和 Thinking 的呈现不再由 CC-TUI 实现或覆盖。
+  - 运行时所有者：`pi-tool-display`（MIT，MasuRii）。
+  - 集成边界：CC-TUI 不注册内置同名工具覆盖、不 patch 用户或 assistant 消息组件。未来 CC-TUI 的自有工具如需接入 pi-tool-display 的统一工具呈现，可使用 `pi-tool-display/tool-display-api-consumer` 的公开 v1 装饰 API；该 API 不限制 CC-TUI 其他 UI 功能的实现。
 ## 设计参考（尚未复制代码）
 
 下列项目只作为架构或行为参考；当前包尚未直接复制其实现：

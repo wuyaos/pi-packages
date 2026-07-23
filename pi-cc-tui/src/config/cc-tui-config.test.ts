@@ -14,6 +14,7 @@ import {
 	saveCcTuiSegments,
 } from "./cc-tui-config.ts";
 import { updateJsonObject } from "./json-store.ts";
+import { isStartupResourceListingVisible, saveStartupResourceListingVisible } from "./pi-startup.ts";
 
 function withTempDir(fn: (dir: string) => void): void {
 	const dir = mkdtempSync(join(tmpdir(), "cc-tui-config-"));
@@ -38,13 +39,13 @@ test("segment saves migrate legacy files and preserve unrelated future settings"
 	withTempDir((dir) => {
 		const path = join(dir, "cc-tui.json");
 		writeFileSync(path, JSON.stringify({ segments: { cost: true }, future: { keep: true } }));
-		const config = saveCcTuiSegments({ ...DEFAULT_SEGMENTS, tokens: true }, path);
+		const config = saveCcTuiSegments({ ...DEFAULT_SEGMENTS, tools: true }, path);
 		const stored = JSON.parse(readFileSync(path, "utf8"));
 		assert.equal(config.version, 1);
-		assert.equal(config.segments.tokens, true);
+		assert.equal(config.segments.tools, true);
 		assert.equal(stored.version, 1);
 		assert.deepEqual(stored.future, { keep: true });
-		assert.equal(stored.segments.cost, false);
+		assert.equal(stored.segments.tools, true);
 	});
 });
 
@@ -57,6 +58,21 @@ test("icon saves use the same versioned document and resolve semantic icons", ()
 		assert.equal(config.icons.mode, "ascii");
 		assert.equal(resolveCcTuiIcons(config).success, "done");
 		assert.equal(resolveCcTuiIcons(config).path, "cwd");
+	});
+});
+
+test("startup resource listing persists as Pi quietStartup without changing unrelated settings", () => {
+	withTempDir((dir) => {
+		const path = join(dir, "settings.json");
+		writeFileSync(path, JSON.stringify({ theme: "dark", packages: ["npm:example"] }));
+		assert.equal(isStartupResourceListingVisible(path), true);
+		saveStartupResourceListingVisible(false, path);
+		assert.equal(isStartupResourceListingVisible(path), false);
+		const stored = JSON.parse(readFileSync(path, "utf8"));
+		assert.equal(stored.quietStartup, true);
+		assert.equal(stored.theme, "dark");
+		saveStartupResourceListingVisible(true, path);
+		assert.equal(isStartupResourceListingVisible(path), true);
 	});
 });
 
@@ -81,7 +97,7 @@ test("corrupt configuration is never overwritten and can only be archived explic
 		writeFileSync(path, "{ broken");
 		assert.deepEqual(loadCcTuiConfig(path).segments, DEFAULT_SEGMENTS);
 		assert.throws(
-			() => saveCcTuiSegments({ ...DEFAULT_SEGMENTS, cost: true }, path),
+			() => saveCcTuiSegments({ ...DEFAULT_SEGMENTS, tools: true }, path),
 			/Refusing to overwrite corrupt/,
 		);
 		assert.equal(readFileSync(path, "utf8"), "{ broken");
@@ -99,12 +115,12 @@ test("generic update rejects malformed JSON and parser ignores invalid fields", 
 		assert.throws(() => updateJsonObject(path, () => undefined), /Refusing to overwrite corrupt/);
 		const config = parseCcTuiConfig({
 			version: -1,
-			segments: { model: false, cost: "not-a-bool" },
+			segments: { model: false, tools: "not-a-bool" },
 			icons: { mode: "not-a-mode", overrides: { success: "" } },
 		});
 		assert.equal(config.version, 1);
 		assert.equal(config.segments.model, false);
-		assert.equal(config.segments.cost, false);
+		assert.equal(config.segments.tools, false);
 		assert.equal(resolveCcTuiIcons(config).success, "✓");
 	});
 });
