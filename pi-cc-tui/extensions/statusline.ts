@@ -11,13 +11,35 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname } from "node:path";
+import { configureIcons, getIcons } from "../src/ui/icons.ts";
+import {
+	DEFAULT_SEGMENTS,
+	hasCcTuiIconConfiguration,
+	isSegmentName,
+	loadCcTuiConfig,
+	SEGMENT_NAMES,
+	saveCcTuiSegments,
+	type SegmentConfig,
+	type SegmentName,
+} from "../src/config/cc-tui-config.ts";
+import {
+	createToolMetricsState,
+	resetToolMetricsCursor,
+	summarizeToolMetrics,
+	updateToolMetrics,
+	type ToolMetricsState,
+} from "../src/status/tool-metrics.ts";
+import {
+	createTpsTracker,
+	recordTpsTokens,
+	resetTpsTracker,
+	shortWindowTps,
+	type TpsTracker,
+} from "../src/status/tps-tracker.ts";
 
 const GIT_REFRESH_MS = 2000;
 export const gitEnabled = process.env.PI_STATUSLINE_GIT === "1";
-const CONFIG_PATH = `${homedir()}/.pi/agent/config/cc-tui.json`;
 
 // ── Context bar 配色 (合并自 pi-nano-context) ──
 const CHARACTERS_PER_TOKEN = 4;
@@ -60,60 +82,20 @@ interface GitStats {
 }
 
 /** 可配置段。thinking 已并入 model，output 已并入 context。 */
-export interface SegmentConfig {
-	model: boolean;
-	git: boolean;
-	context: boolean;
-	tokens: boolean;
-	cost: boolean;
-	path: boolean;
-	extensions: boolean;
-	bar: boolean;
-}
-
-export type SegmentName = keyof SegmentConfig;
-
-export const SEGMENT_NAMES: SegmentName[] = [
-	"model",
-	"path",
-	"git",
-	"context",
-	"tokens",
-	"cost",
-	"extensions",
-	"bar",
-];
-
-const DEFAULT_CONFIG: SegmentConfig = {
-	model: true,
-	git: true,
-	context: true,
-	tokens: false,
-	cost: false,
-	path: true,
-	extensions: true,
-	bar: false,
-};
+export type { SegmentConfig, SegmentName };
+export { isSegmentName, SEGMENT_NAMES };
 
 export function loadConfig(): SegmentConfig {
-	try {
-		if (existsSync(CONFIG_PATH)) {
-			const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-			return { ...DEFAULT_CONFIG, ...raw.segments };
-		}
-	} catch {
-		// Invalid or unreadable config falls back to defaults.
-	}
-	return { ...DEFAULT_CONFIG };
+	const config = loadCcTuiConfig();
+	// Keep PI_CC_TUI_ICON_MODE as the backwards-compatible default until a
+	// user explicitly adds an icons object to their persisted configuration.
+	if (hasCcTuiIconConfiguration()) configureIcons(config.icons);
+	return { ...config.segments };
 }
 
 export function saveConfig(config: SegmentConfig): void {
-	try {
-		mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-		writeFileSync(CONFIG_PATH, JSON.stringify({ segments: config }, null, 2));
-	} catch {
-		// The live setting still applies even if persistence fails.
-	}
+	const saved = saveCcTuiSegments(config);
+	configureIcons(saved.icons);
 }
 
 export let segmentConfig = loadConfig();
@@ -127,6 +109,7 @@ let tokenCount = 0;
 let lastTTFT: number | null = null;
 let lastTPS: number | null = null;
 let cachedThinkingLevel = "medium";
+let tpsTracker: TpsTracker = createTpsTracker();
 
 interface UsageTotals {
 	input: number;
@@ -138,6 +121,7 @@ interface UsageTotals {
 
 let usageTotals: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
 let usageBranchLength = -1;
+let toolMetrics: ToolMetricsState = createToolMetricsState();
 
 /** Incrementally aggregate branch usage; terminal rendering must stay O(1). */
 function updateUsageTotals(ctx: ExtensionContext): UsageTotals {
@@ -217,10 +201,6 @@ function fmtTokens(value: number): string {
 function fmtPath(p: string): string {
 	const home = homedir();
 	return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-}
-
-export function isSegmentName(value: string): value is SegmentName {
-	return SEGMENT_NAMES.includes(value as SegmentName);
 }
 
 export function configSummary(): string {
@@ -435,6 +415,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 			// A fork/rewind can replace the branch at the same length, so rebuild
 			// on the branch-change event rather than risking stale totals.
 			usageBranchLength = -1;
+			resetToolMetricsCursor(toolMetrics);
 			updateUsageTotals(ctx);
 			tui.requestRender();
 		});
@@ -450,6 +431,8 @@ export function applyStatusline(ctx: ExtensionContext): void {
 			render(width: number): string[] {
 				updateContextSnapshot(ctx);
 
+				const icons = getIcons();
+
 				// ── model (含 thinking 级别) ──
 				let modelStr: string | null = null;
 				if (segmentConfig.model) {
@@ -457,7 +440,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					const modelId = model?.id || "no-model";
 					const provider = model?.provider || "?";
 					let level = cachedThinkingLevel;
-					modelStr = theme.fg("accent", `◆ ${provider}/${modelId}[${level}]`);
+					modelStr = theme.fg("accent", `${icons.model} ${provider}/${modelId}[${level}]`);
 				}
 
 				// ── git ──
@@ -468,7 +451,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 						const hasChanges = Boolean(
 							gitStats && (gitStats.staged || gitStats.modified || gitStats.untracked),
 						);
-						let value = theme.fg(hasChanges ? "warning" : "success", `⎇ ${branch}`);
+						let value = theme.fg(hasChanges ? "warning" : "success", `${icons.git} ${branch}`);
 						if (gitEnabled && gitStats) {
 							const gitParts: string[] = [];
 							if (gitStats.staged > 0) gitParts.push(theme.fg("success", `+${gitStats.staged}`));
@@ -481,7 +464,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				}
 
 				// ── 累计 output / cost ──
-				const totals = segmentConfig.context || segmentConfig.cost
+				const totals = segmentConfig.context || segmentConfig.cost || segmentConfig.tools
 					? updateUsageTotals(ctx)
 					: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
 				const { input, output, cacheRead, cacheWrite, cost } = totals;
@@ -494,7 +477,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 						if (usage && typeof usage.tokens === "number") {
 							const contextWindow = (usage as any)?.contextWindow || (ctx.model as any)?.contextWindow || 128000;
 							const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
-							const label = `▤ ${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
+							const label = `${icons.context} ${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
 							let value: string;
 							if (percent < 70) value = theme.fg("success", label);
 							else if (percent < 85) value = theme.fg("warning", label);
@@ -511,7 +494,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 							if (inputTotal > 0 && cacheRead > 0) {
 								const hitRate = cacheRead / inputTotal;
 								const hitColor = hitRate >= 0.5 ? "success" : hitRate > 0 ? "warning" : "muted";
-								tkParts.push(theme.fg(hitColor, `⚡ ${Math.round(hitRate * 100)}%`));
+								tkParts.push(theme.fg(hitColor, `${icons.cache} ${Math.round(hitRate * 100)}%`));
 							}
 							value += ` ${tkParts.join(theme.fg("dim", " "))}`;
 							ctxStr = value;
@@ -536,6 +519,18 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					tokensStr = tokenParts.join(" ");
 				}
 
+				// ── tools (增量成功/失败指标) ──
+				let toolsStr: string | null = null;
+				if (segmentConfig.tools) {
+					const metrics = updateToolMetrics(toolMetrics, ctx.sessionManager.getBranch());
+					if (metrics.totalCalls > 0) {
+						const parts: string[] = [theme.fg("muted", `${icons.tool} ${metrics.totalCalls}`)];
+						if (metrics.success > 0) parts.push(theme.fg("success", `${icons.success}${metrics.success}`));
+						if (metrics.error > 0) parts.push(theme.fg("error", `${icons.error}${metrics.error}`));
+						toolsStr = parts.join(theme.fg("dim", " "));
+					}
+				}
+
 				// ── cost ──
 				let costStr: string | null = null;
 				if (segmentConfig.cost) {
@@ -546,7 +541,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 
 				// ── 行 1: 左右对齐 ──
 				const leftParts = [modelStr, gitStr].filter(Boolean) as string[];
-				const rightParts = [ctxStr, tokensStr, costStr].filter(Boolean) as string[];
+				const rightParts = [ctxStr, tokensStr, toolsStr, costStr].filter(Boolean) as string[];
 
 				const leftStr = joinSegments(leftParts, theme);
 				const rightStr = joinSegments(rightParts, theme);
@@ -574,7 +569,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (segmentConfig.path || segmentConfig.bar) {
 					let pathStr = "";
 					if (segmentConfig.path) {
-						pathStr = theme.fg("dim", `⌂ ${fmtPath(ctx.sessionManager.getCwd())}`);
+						pathStr = theme.fg("dim", `${icons.path} ${fmtPath(ctx.sessionManager.getCwd())}`);
 					}
 
 					if (segmentConfig.bar) {
@@ -600,7 +595,7 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				if (segmentConfig.extensions) {
 					const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
 					if (statuses.length > 0) {
-						extStr = theme.fg("dim", `⊕ ${statuses.join(theme.fg("dim", " · "))}`);
+						extStr = theme.fg("dim", `${icons.extensions} ${statuses.join(theme.fg("dim", " · "))}`);
 					}
 				}
 
@@ -638,6 +633,7 @@ export default function (pi: ExtensionAPI) {
 		providerStartTime = Date.now();
 		firstTokenTime = null;
 		tokenCount = 0;
+		resetTpsTracker(tpsTracker);
 	});
 
 	pi.on("message_update", (event) => {
@@ -652,7 +648,9 @@ export default function (pi: ExtensionAPI) {
 			lastTTFT = (firstTokenTime - providerStartTime) / 1000;
 		}
 		tokenCount = output;
-		const elapsed = (Date.now() - firstTokenTime) / 1000;
-		if (elapsed > 0.1) lastTPS = tokenCount / elapsed;
+		const now = Date.now();
+		recordTpsTokens(tpsTracker, output, now);
+		const windowTps = shortWindowTps(tpsTracker, now);
+		if (windowTps !== null) lastTPS = windowTps;
 	});
 }

@@ -14,6 +14,18 @@ Claude Code 风格的 pi 终端体验包，集中提供主题和 TUI 组件。
 
 `PI_STATUSLINE_GIT` 默认关闭：状态栏只显示 git 分支，不运行 `git status --porcelain`。
 
+### 图标模式
+
+所有 cc-tui 界面共用一套语义图标。默认 `unicode`；若终端字体不完整，可切换到 ASCII；安装 Nerd Font 后可选择 `nerd`；也可选择 Emoji 风格：
+
+```bash
+PI_CC_TUI_ICON_MODE=ascii pi
+PI_CC_TUI_ICON_MODE=nerd pi
+PI_CC_TUI_ICON_MODE=emoji pi
+```
+
+图标设定现已支持保存到 `~/.pi/agent/config/cc-tui.json` 的 `icons` 字段；在尚未保存该字段前，环境变量仍是兼容默认值。Emoji 的实际宽度由终端字体决定，空间较窄时建议改用 `unicode` 或 `ascii`。
+
 需要显示 staged、modified 和 untracked 文件数时，在启动 pi 前设置：
 
 ```bash
@@ -26,6 +38,8 @@ export PI_STATUSLINE_GIT=1
 - `/use-default-tui`：恢复 pi 内置启动头、输入框和状态栏
 - `/claude-thinking-preview <n>`：设置 thinking 折叠预览行数，省略参数恢复为 5 行
 - `/statusline-git`：显示切换 git 状态统计所需的环境变量值
+- `/cc-tui context`：打开只读、可滚动的上下文诊断面板；内容不会写入模型上下文
+- `/cc-tui tools`：打开只读、可滚动的工具调用诊断面板；仅显示工具名与成功/失败状态，不含参数或结果内容
 
 ## 安装
 

@@ -5,7 +5,10 @@ import { applyCodexEditor, restoreDefaultEditor } from "./codex-editor.ts";
 import { applyStartupHeader, disposeStartupHeader } from "./startup-header.ts";
 import { applyStatusline, restoreDefaultFooter, segmentConfig, SEGMENT_NAMES, saveConfig, loadConfig, isSegmentName, configSummary, gitEnabled } from "./statusline.ts";
 import { getPreviewLines, setPreviewLines } from "./thinking.ts";
-import { ConfigMenuComponent } from "./menu.ts";
+import { ConfigMenuComponent, type MenuResult } from "./menu.ts";
+import { createScrollableOverlay, SCROLLABLE_OVERLAY_OPTIONS } from "../src/overlays/scrollable-overlay.ts";
+import { buildContextReportLines } from "../src/overlays/context-report.ts";
+import { buildToolReportLines } from "../src/overlays/tool-report.ts";
 
 const DEFAULT_PREVIEW = 5;
 
@@ -18,6 +21,8 @@ const USAGE = `用法:
   /cc-tui only <段>    只开启指定段
   /cc-tui git          切换 git 统计 (重启生效)
   /cc-tui preview <n>  thinking 折叠行数 (默认 5)
+  /cc-tui context      打开只读上下文诊断面板
+  /cc-tui tools        打开只读工具调用诊断面板
   /cc-tui apply        启用启动头+输入框+状态栏
   /cc-tui reset        恢复 pi 原生 TUI
 
@@ -36,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(configSummary(), "info");
 					return;
 				}
-				const result = await ctx.ui.custom(
+				const result = await ctx.ui.custom<MenuResult | undefined>(
 					(_tui, theme, _kb, done) =>
 						new ConfigMenuComponent(theme, done, segmentConfig, getPreviewLines()),
 					{ overlay: true },
@@ -47,6 +52,40 @@ export default function (pi: ExtensionAPI) {
 					applyStatusline(ctx);
 					ctx.ui.notify(configSummary(), "info");
 				}
+				return;
+			}
+
+			// ── context: 只读 Overlay，不写入模型上下文 ──
+			if (action === "context") {
+				if (ctx.mode !== "tui") {
+					ctx.ui.notify("上下文诊断面板仅在 TUI 模式可用", "info");
+					return;
+				}
+				const lines = buildContextReportLines(ctx);
+				await ctx.ui.custom<undefined>(
+					(tui, theme, _kb, done) => createScrollableOverlay(tui, theme, done, {
+						title: "CC-TUI 上下文诊断",
+						lines,
+					}),
+					SCROLLABLE_OVERLAY_OPTIONS,
+				);
+				return;
+			}
+
+			// ── tools: 只读工具诊断 Overlay，不写入模型上下文 ──
+			if (action === "tools") {
+				if (ctx.mode !== "tui") {
+					ctx.ui.notify("工具诊断面板仅在 TUI 模式可用", "info");
+					return;
+				}
+				const lines = buildToolReportLines(ctx);
+				await ctx.ui.custom<undefined>(
+					(tui, theme, _kb, done) => createScrollableOverlay(tui, theme, done, {
+						title: "CC-TUI 工具诊断",
+						lines,
+					}),
+					SCROLLABLE_OVERLAY_OPTIONS,
+				);
 				return;
 			}
 
@@ -91,17 +130,6 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// ── 段配置 ──
-			// ── diag: 诊断 extension statuses ──
-			if (action === "diag") {
-				const statuses = ctx.ui.getExtensionStatuses ? ctx.ui.getExtensionStatuses() : [];
-				const lines = [`Extension statuses (${statuses.length}):`];
-				for (const s of statuses) {
-					lines.push(`  ${JSON.stringify(s)}`);
-				}
-				ctx.ui.notify(lines.join("\n"), "info");
-				return;
-			}
-
 			if (action === "list") {
 				ctx.ui.notify(configSummary(), "info");
 				return;

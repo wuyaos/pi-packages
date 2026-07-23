@@ -1,8 +1,10 @@
 /** pi-cc-tui 交互式配置菜单 (overlay TUI)。 */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, visibleWidth, type Focusable } from "@earendil-works/pi-tui";
+import { matchesKey, type Focusable } from "@earendil-works/pi-tui";
 import type { SegmentConfig, SegmentName } from "./statusline.ts";
+import { getIconMode, getIcons } from "../src/ui/icons.ts";
+import { renderBorderLine, renderBoxLine, resolveBorderStyle } from "../src/ui/box.ts";
 
 export interface MenuResult {
 	/** 需要重新应用 statusline */
@@ -18,16 +20,12 @@ interface MenuItem {
 
 interface ActionItem {
 	kind: "action";
+	action: "enableAll" | "disableAll";
 	label: string;
 	description: string;
 }
 
 type Row = MenuItem | ActionItem;
-
-const PAD = (s: string, len: number) => {
-	const vis = visibleWidth(s);
-	return s + " ".repeat(Math.max(0, len - vis));
-};
 
 export class ConfigMenuComponent implements Focusable {
 	focused = false;
@@ -49,15 +47,15 @@ export class ConfigMenuComponent implements Focusable {
 		this.done = done;
 		this.config = config;
 
+		const icons = getIcons();
 		this.rows = [
-			{ kind: "action", label: "✓ 全部开启", description: "开启所有段" },
-			{ kind: "action", label: "✕ 全部关闭", description: "关闭所有段" },
+			{ kind: "action", action: "enableAll", label: `${icons.actionEnable} 全部开启`, description: "开启所有段" },
+			{ kind: "action", action: "disableAll", label: `${icons.actionDisable} 全部关闭`, description: "关闭所有段" },
 			{ kind: "toggle", name: "model", label: "model", description: "模型名+thinking level" },
 			{ kind: "toggle", name: "git", label: "git", description: "git 分支+状态统计" },
-			{ kind: "toggle", name: "path", label: "path", description: "项目路径 ⌂" },
-			{ kind: "toggle", name: "context", label: "context", description: "上下文 token 用量 ▤" },
-			{ kind: "toggle", name: "tokens", label: "tokens", description: "输出 token ↑" },
-			{ kind: "toggle", name: "ttft", label: "ttft/tps", description: "首 token 延迟+吞吐" },
+			{ kind: "toggle", name: "path", label: "path", description: `项目路径 ${icons.path}` },
+			{ kind: "toggle", name: "context", label: "context", description: `上下文 token 用量 ${icons.context}` },
+			{ kind: "toggle", name: "tokens", label: "ttft/tps", description: "首 token 延迟+吞吐" },
 			{ kind: "toggle", name: "cost", label: "cost", description: "累计费用 $" },
 			{ kind: "toggle", name: "bar", label: "bar", description: "上下文色条" },
 			{ kind: "toggle", name: "extensions", label: "extensions", description: "扩展状态 (telegram+ 等)" },
@@ -89,7 +87,7 @@ export class ConfigMenuComponent implements Focusable {
 				this.toggleSegment(row.name);
 			} else {
 				// action
-				if (row.label.startsWith("✓")) {
+				if (row.action === "enableAll") {
 					for (const r of this.rows) {
 						if (r.kind === "toggle") this.config[r.name] = true;
 					}
@@ -114,24 +112,29 @@ export class ConfigMenuComponent implements Focusable {
 	render(_width: number): string[] {
 		const w = this.width;
 		const th = this.theme;
-		const innerW = w - 2;
+		const icons = getIcons();
+		const glyphs = resolveBorderStyle("rounded", getIconMode());
 		const lines: string[] = [];
+		const paintBorder = (text: string) => th.fg("border", text);
+		const row = (content: string) => renderBoxLine({
+			content,
+			width: w,
+			glyphs,
+			paint: paintBorder,
+		});
 
-		const row = (content: string) =>
-			th.fg("border", "│") + PAD(content, innerW) + th.fg("border", "│");
-
-		lines.push(th.fg("border", `╭${"─".repeat(innerW)}╮`));
+		lines.push(renderBorderLine({ width: w, side: "top", glyphs, paint: paintBorder }));
 		lines.push(row(` ${th.fg("accent", "⚙ pi-cc-tui 配置")}`));
 		lines.push(row(""));
 
 		for (let i = 0; i < this.rows.length; i++) {
 			const item = this.rows[i]!;
 			const isSel = i === this.selected;
-			const prefix = isSel ? " ▶ " : "   ";
+			const prefix = isSel ? ` ${icons.selected} ` : "   ";
 
 			if (item.kind === "toggle") {
 				const on = this.getToggleState(item.name);
-				const check = on ? th.fg("success", "●") : th.fg("dim", "○");
+				const check = on ? th.fg("success", icons.enabled) : th.fg("dim", icons.disabled);
 				const label = isSel ? th.fg("accent", item.label) : th.fg("text", item.label);
 				const desc = th.fg("dim", `  ${item.description}`);
 				lines.push(row(`${prefix}${check} ${label}${desc}`));
@@ -141,14 +144,14 @@ export class ConfigMenuComponent implements Focusable {
 			}
 
 			// 分隔线
-			if (item.label === "✕ 全部关闭") {
+			if (item.kind === "action" && item.action === "disableAll") {
 				lines.push(row(` ${th.fg("dim", "── 段 ──")}`));
 			}
 		}
 
 		lines.push(row(""));
 		lines.push(row(` ${th.fg("dim", "↑↓ 移动 • Enter 切换 • Esc 退出")}`));
-		lines.push(th.fg("border", `╰${"─".repeat(innerW)}╯`));
+		lines.push(renderBorderLine({ width: w, side: "bottom", glyphs, paint: paintBorder }));
 
 		return lines;
 	}

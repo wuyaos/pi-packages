@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --project tsconfig.check.json",
-    "test": "tsx --test pi-model-roles/src/api.test.ts pi-sync/extensions/sync/*.test.ts",
+    "test": "tsx --test pi-model-roles/src/api.test.ts pi-sync/extensions/sync/*.test.ts pi-cc-tui/src/**/*.test.ts",
     "check": "npm run typecheck && npm test"
   },
   "pi": {

@@ -12,6 +12,9 @@
  */
 
 import { AssistantMessageComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { installPrototypePatch } from "../src/runtime/prototype-patch.ts";
+import { getIcons } from "../src/ui/icons.ts";
+import { buildCollapsedThinkingContent, normalizePreviewLines, type ThinkingContent } from "../src/transcript/thinking-preview.ts";
 
 const DEFAULT_PREVIEW = 5;
 let previewLines = DEFAULT_PREVIEW;
@@ -21,73 +24,50 @@ export function getPreviewLines(): number {
 }
 
 export function setPreviewLines(n: number): void {
-	previewLines = n;
+	previewLines = normalizePreviewLines(n, DEFAULT_PREVIEW);
 }
 
 // Type alias for the internal message shape (avoids importing private types).
 type AnyMessage = {
-	content: Array<{ type: string; thinking?: string; text?: string }>;
+	content: ThinkingContent[];
 	[key: string]: unknown;
 };
 
 export default function (pi: ExtensionAPI) {
-	const proto = AssistantMessageComponent.prototype as unknown as {
-		updateContent: (this: unknown, message: AnyMessage) => void;
-	};
-
-	// Save the original implementation once. Guard against double-patching on /reload.
-	if ((proto as { __claudeThinkingPatched?: boolean }).__claudeThinkingPatched) {
-		return;
-	}
-	const origUpdateContent = proto.updateContent;
-	(proto as { __claudeThinkingPatched?: boolean }).__claudeThinkingPatched = true;
-
-	proto.updateContent = function (this: any, message: AnyMessage) {
-		if (!this.hideThinkingBlock) {
-			// Expanded: original renderer shows full thinking.
-			return origUpdateContent.call(this, message);
-		}
-
-		// Collapsed ("hidden") state: pi would normally show only a static label.
-		// Instead, truncate each thinking block to the first N lines and reuse
-		// the original renderer's "expanded" branch by flipping the flag back,
-		// so it renders the truncated Markdown with thinkingText styling.
-		let totalExtra = 0;
-		const truncatedContent = message.content.map((c) => {
-			if (c.type === "thinking" && typeof c.thinking === "string") {
-				const lines = c.thinking.split("\n");
-				if (lines.length > previewLines) {
-					totalExtra += lines.length - previewLines;
-					return { ...c, thinking: lines.slice(0, previewLines).join("\n") };
-				}
+	const cleanup = installPrototypePatch(
+		AssistantMessageComponent.prototype,
+		"updateContent",
+		"cc-tui:thinking-content",
+		({ predecessor, receiver, args }) => {
+			const instance = receiver as {
+				hideThinkingBlock?: boolean;
+				lastMessage?: AnyMessage;
+			};
+			const message = args[0] as AnyMessage;
+			if (!instance.hideThinkingBlock) {
+				// Expanded: original renderer shows full thinking.
+				return Reflect.apply(predecessor, receiver, args);
 			}
-			return c;
-		});
 
-		// Append a single expand hint as a trailing thinking block so the
-		// original Markdown renderer styles it like the rest of the thinking.
-		if (totalExtra > 0) {
-			truncatedContent.push({
-				type: "thinking",
-				thinking: `✻ ${totalExtra} more line${totalExtra === 1 ? "" : "s"} (Ctrl+T to expand)`,
-			});
-		}
+			// Collapsed ("hidden") state: Pi would normally show one static label.
+			// Render bounded, per-run previews through the original expanded branch.
+			const collapsed = buildCollapsedThinkingContent(
+				message.content,
+				previewLines,
+				getIcons().thinking,
+			);
 
-		// Temporarily flip the flag so the original renderer takes the
-		// "show thinking as Markdown" branch instead of the "show label" branch.
-		const prev = this.hideThinkingBlock;
-		this.hideThinkingBlock = false;
-		origUpdateContent.call(this, { ...message, content: truncatedContent });
-		this.hideThinkingBlock = prev;
+			const previousHidden = instance.hideThinkingBlock;
+			instance.hideThinkingBlock = false;
+			try {
+				return Reflect.apply(predecessor, receiver, [{ ...message, content: collapsed.content }]);
+			} finally {
+				instance.hideThinkingBlock = previousHidden;
+				// Retain the original message so Ctrl+T expands the full block.
+				instance.lastMessage = message;
+			}
+		},
+	);
 
-		// Keep the original (untruncated) message as lastMessage so a later
-		// Ctrl+T expand re-renders the full thinking, not the truncated copy.
-		this.lastMessage = message;
-	};
-
-	pi.on("session_shutdown", () => {
-		// Best-effort restore; pi tears down the process anyway.
-		proto.updateContent = origUpdateContent;
-		(proto as { __claudeThinkingPatched?: boolean }).__claudeThinkingPatched = false;
-	});
+	pi.on("session_shutdown", cleanup);
 }
