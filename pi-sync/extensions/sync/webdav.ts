@@ -1,19 +1,19 @@
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fetchWithTimeout } from "../_shared/fetch-utils";
 import { resolvePassword, type SyncConfig } from "./config";
 
 export const WEBDAV_FETCH_TIMEOUT_MS = 120_000;
 export const WEBDAV_CONFIG_DIR = "config/";
-export const WEBDAV_MEMORY_DIR = "memory/";
 export const WEBDAV_AGENT_SKILLS_DIR = "agent-skills/";
 export const WEBDAV_SESSIONS_DIR = "sessions/";
 
 export const ensureTrailingSlash = (url: string): string => url.endsWith("/") ? url : `${url}/`;
 export const webdavDirBase = (config: SyncConfig, remoteDir: string): string => ensureTrailingSlash(config.webdavUrl) + remoteDir.replace(/^\/+/, "");
 export const configWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_CONFIG_DIR);
-export const memoryWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_MEMORY_DIR);
 export const agentSkillsWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_AGENT_SKILLS_DIR);
 export const sessionsWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_SESSIONS_DIR);
 export const webdavAuth = (config: SyncConfig): string => "Basic " + Buffer.from(`${config.webdavUser}:${resolvePassword(config.webdavPass)}`).toString("base64");
@@ -39,14 +39,32 @@ export async function webdavList(url: string, auth: string, ctx: ExtensionContex
 }
 
 export async function webdavPutFile(localPath: string, remoteUrl: string, auth: string, ctx: ExtensionContext): Promise<void> {
-  const response = await fetchWithTimeout(remoteUrl, { method: "PUT", headers: { Authorization: auth, "Content-Type": "application/octet-stream" }, body: fs.readFileSync(localPath) }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
-  if (!response.ok) throw new Error(`WebDAV PUT HTTP ${response.status}: ${response.statusText}`);
+  const stream = fs.createReadStream(localPath);
+  try {
+    const response = await fetchWithTimeout(remoteUrl, {
+      method: "PUT",
+      headers: { Authorization: auth, "Content-Type": "application/octet-stream" },
+      body: stream as unknown as BodyInit,
+      // Node fetch requires this for a streaming request body.
+      duplex: "half",
+    } as RequestInit, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
+    if (!response.ok) throw new Error(`WebDAV PUT HTTP ${response.status}: ${response.statusText}`);
+  } finally {
+    stream.destroy();
+  }
 }
 
 export async function webdavGetFile(remoteUrl: string, destPath: string, auth: string, ctx: ExtensionContext): Promise<void> {
   const response = await fetchWithTimeout(remoteUrl, { method: "GET", headers: { Authorization: auth } }, WEBDAV_FETCH_TIMEOUT_MS, ctx.signal);
   if (!response.ok) throw new Error(`WebDAV GET HTTP ${response.status}: ${response.statusText}`);
-  fs.writeFileSync(destPath, Buffer.from(await response.arrayBuffer()));
+  if (!response.body) throw new Error("WebDAV GET returned an empty response body");
+  const tempPath = `${destPath}.part-${process.pid}-${Date.now()}`;
+  try {
+    await pipeline(Readable.fromWeb(response.body as never), fs.createWriteStream(tempPath), { signal: ctx.signal });
+    fs.renameSync(tempPath, destPath);
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
 }
 
 export async function webdavMkcol(url: string, auth: string, ctx: ExtensionContext): Promise<void> {

@@ -41,42 +41,51 @@ function notifySend(title: string, body: string): boolean {
   return true;
 }
 
-function powershellToast(title: string, body: string): boolean {
+function powershellToast(title: string, body: string): Promise<boolean> {
   const candidates = [
     "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
     "powershell.exe",
-  ];
-  for (const ps of candidates) {
-    if (ps.includes("/") && !existsSync(ps)) continue;
-    const script = `
-Add-Type -AssemblyName System.Windows.Forms
-$n = New-Object System.Windows.Forms.NotifyIcon
-$n.Icon = [System.Drawing.SystemIcons]::Information
-$n.Visible = $true
-$n.ShowBalloonTip(5000, '${title.replace(/'/g, "''")}', '${body.replace(/'/g, "''")}', [System.Windows.Forms.ToolTipIcon]::Info)
-[System.Console]::Beep(800, 200)
-Start-Sleep -Seconds 6
-$n.Dispose()
-`;
-    try {
-      execFile(ps, ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000 }, () => {});
-      return true;
-    } catch { /* try next */ }
-  }
-  return false;
+  ].filter((ps) => !ps.includes("/") || existsSync(ps));
+  const title64 = Buffer.from(title, "utf16le").toString("base64");
+  const body64 = Buffer.from(body, "utf16le").toString("base64");
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    `$title = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${title64}'))`,
+    `$body = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${body64}'))`,
+    "$n = New-Object System.Windows.Forms.NotifyIcon",
+    "$n.Icon = [System.Drawing.SystemIcons]::Information",
+    "$n.Visible = $true",
+    "$n.ShowBalloonTip(5000, $title, $body, [System.Windows.Forms.ToolTipIcon]::Info)",
+    "[System.Console]::Beep(800, 200)",
+    "Start-Sleep -Seconds 6",
+    "$n.Dispose()",
+  ].join("\n");
+  return new Promise((resolve) => {
+    const tryCandidate = (index: number): void => {
+      const ps = candidates[index];
+      if (!ps) return resolve(false);
+      execFile(ps, ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000 }, (error) => {
+        if (!error) return resolve(true);
+        tryCandidate(index + 1);
+      });
+    };
+    tryCandidate(0);
+  });
 }
 
-function tryNotify(title: string, body: string) {
+async function tryNotify(title: string, body: string): Promise<boolean> {
   // Windows / WSL：优先 WinRT Toast（带图标、现代样式），失败回退 BalloonTip
   if (isWSL() || process.platform === "win32") {
     if (sendWinrtToast(title, body)) return true;
-    if (powershellToast(title, body)) return true;
+    if (await powershellToast(title, body)) return true;
   }
   // Linux / WSLg：notify-send
   if (notifySend(title, body)) return true;
   // macOS
   if (existsSync("/usr/bin/osascript")) {
-    execFile("osascript", ["-e", `display notification "${body}" with title "${title}"`], () => {});
+    // Pass untrusted text as argv data, not interpolated AppleScript source.
+    // `on run argv` preserves quotes, backslashes, and newlines verbatim.
+    execFile("osascript", ["-e", "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run", title, body], () => {});
     return true;
   }
   return false;
@@ -108,11 +117,11 @@ export default function (pi: ExtensionAPI) {
         const n = pendingNotify;
         pendingNotify = null;
         pendingTimer = null;
-        if (n) tryNotify(n.title, n.body);
+        if (n) void tryNotify(n.title, n.body);
       }, delayMs);
       pendingTimer.unref?.();
     } else {
-      tryNotify(title, body);
+      void tryNotify(title, body);
     }
   }
 
@@ -196,7 +205,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("notify-test", {
     description: "测试桌面通知",
     handler: async (_args, ctx) => {
-      const ok = tryNotify(defaultTitle, "pi-notify 测试");
+      const ok = await tryNotify(defaultTitle, "pi-notify 测试");
       ctx.ui.notify(ok ? "已发送测试通知" : "未找到可用通知方式", ok ? "info" : "warning");
     },
   });
@@ -217,8 +226,8 @@ export default function (pi: ExtensionAPI) {
       const parts = (args || "").trim().split(/\s+/);
       const title = parts[0] || defaultTitle;
       const body = parts.slice(1).join(" ") || "(无正文)";
-      tryNotify(title, body);
-      ctx.ui.notify(`已发送: ${title}`, "info");
+      const ok = await tryNotify(title, body);
+      ctx.ui.notify(ok ? `已发送: ${title}` : "未找到可用通知方式", ok ? "info" : "warning");
     },
   });
 }

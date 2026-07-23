@@ -128,6 +128,43 @@ let lastTTFT: number | null = null;
 let lastTPS: number | null = null;
 let cachedThinkingLevel = "medium";
 
+interface UsageTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+}
+
+let usageTotals: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+let usageBranchLength = -1;
+
+/** Incrementally aggregate branch usage; terminal rendering must stay O(1). */
+function updateUsageTotals(ctx: ExtensionContext): UsageTotals {
+	try {
+		const branch = ctx.sessionManager.getBranch();
+		// A branch rewind/fork can shrink or replace history; rebuild only then.
+		if (usageBranchLength < 0 || branch.length < usageBranchLength) {
+			usageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+			usageBranchLength = 0;
+		}
+		for (let index = usageBranchLength; index < branch.length; index += 1) {
+			const entry: any = branch[index];
+			if (entry?.type !== "message" || entry.message?.role !== "assistant") continue;
+			const usage = entry.message.usage;
+			usageTotals.input += usage?.input || 0;
+			usageTotals.output += usage?.output || 0;
+			usageTotals.cacheRead += usage?.cacheRead || 0;
+			usageTotals.cacheWrite += usage?.cacheWrite || 0;
+			usageTotals.cost += usage?.cost?.total || 0;
+		}
+		usageBranchLength = branch.length;
+	} catch {
+		// Keep the last known totals while the session is initializing.
+	}
+	return usageTotals;
+}
+
 function clearGitTimer(): void {
 	if (gitTimer) {
 		clearInterval(gitTimer);
@@ -191,7 +228,7 @@ export function configSummary(): string {
 }
 
 /** 组装分隔的段字符串 */
-function joinSegments(parts: string[], theme: { fg: (token: string, text: string) => string }): string {
+function joinSegments(parts: string[], theme: { fg: (token: any, text: string) => string }): string {
 	return parts.join(`${theme.fg("dim", " | ")}`);
 }
 
@@ -377,6 +414,8 @@ export function applyStatusline(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
 	clearGitTimer();
 	updateContextSnapshot(ctx);
+	usageBranchLength = -1;
+	updateUsageTotals(ctx);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
 		const refreshGit = async () => {
@@ -392,7 +431,13 @@ export function applyStatusline(ctx: ExtensionContext): void {
 			gitTimer.unref?.();
 		}
 
-		const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
+		const unsubscribeBranch = footerData.onBranchChange(() => {
+			// A fork/rewind can replace the branch at the same length, so rebuild
+			// on the branch-change event rather than risking stale totals.
+			usageBranchLength = -1;
+			updateUsageTotals(ctx);
+			tui.requestRender();
+		});
 
 		return {
 			dispose: () => {
@@ -436,23 +481,10 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				}
 
 				// ── 累计 output / cost ──
-				let input = 0;
-				let output = 0;
-				let cacheRead = 0;
-				let cacheWrite = 0;
-				let cost = 0;
-				if (segmentConfig.context || segmentConfig.cost) {
-					for (const entry of ctx.sessionManager.getBranch()) {
-						if (entry.type === "message" && (entry.message as any).role === "assistant") {
-							const usage = (entry.message as any).usage;
-							input += usage?.input || 0;
-							output += usage?.output || 0;
-							cacheRead += usage?.cacheRead || 0;
-							cacheWrite += usage?.cacheWrite || 0;
-							cost += usage?.cost?.total || 0;
-						}
-					}
-				}
+				const totals = segmentConfig.context || segmentConfig.cost
+					? updateUsageTotals(ctx)
+					: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+				const { input, output, cacheRead, cacheWrite, cost } = totals;
 
 				// ── context (含 output) ──
 				let ctxStr: string | null = null;

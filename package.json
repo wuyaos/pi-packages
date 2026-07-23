@@ -5,7 +5,14 @@
   "description": "个人 pi 包集合：Claude Code 风格 TUI、octssh SSH 桥接、桌面通知",
   "keywords": [],
   "license": "MIT",
-  "workspaces": ["pi-*"],
+  "workspaces": [
+    "pi-*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.check.json",
+    "test": "tsx --test pi-model-roles/src/api.test.ts pi-sync/extensions/sync/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
   "pi": {
     "extensions": [
       "pi-*/extensions/*.ts",
@@ -14,7 +21,16 @@
       "pi-advisor/advisor.ts",
       "pi-tool-gate/index.ts"
     ],
-    "themes": ["pi-*/themes/*.json"],
-    "skills": ["pi-*/skills"]
+    "themes": [
+      "pi-*/themes/*.json"
+    ],
+    "skills": [
+      "pi-*/skills"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
   }
 }

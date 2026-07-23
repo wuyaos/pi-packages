@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ensureDir as ensureSharedDir, readJsonSafe, writeJsonAtomic } from "../_shared/json-io";
+import { normalizeCustomPathList } from "./custom-paths";
 
 export const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const AGENT_SKILLS_DIR = path.join(os.homedir(), ".agents", "skills");
@@ -11,7 +12,6 @@ export const SYNC_CONFIG_DIR = path.join(AGENT_DIR, "config");
 export const SYNC_CONFIG_PATH = path.join(SYNC_CONFIG_DIR, "sync.json");
 export const LEGACY_SYNC_CONFIG_PATH = path.join(AGENT_DIR, "sync_config.json");
 export const AGENT_ROOT_MARKDOWN_FILES = ["SYSTEM.md", "AGENTS.md", "APPEND_SYSTEM.md"] as const;
-export const MEMORY_MARKDOWN_FILES = ["USER.md", "MEMORY.md", "failures.md"] as const;
 
 export type ManifestFile = { archive: string; source: string };
 
@@ -28,7 +28,7 @@ export interface SyncConfig {
   liveBackupDebounceMs: number;
   syncIntervalTurns: number;
   syncSessionOnExit: boolean;
-  backupMemory: boolean;
+  customPaths: string[];
   backupAgentSkills: boolean;
   sessionProjectMode: "whitelist" | "blacklist";
   maxBackups: number;
@@ -58,7 +58,7 @@ export function loadConfig(): SyncConfig {
     liveBackupDebounceMs: typeof data.liveBackupDebounceMs === "number" && data.liveBackupDebounceMs > 0 ? data.liveBackupDebounceMs : 3000,
     syncIntervalTurns: typeof data.syncIntervalTurns === "number" && data.syncIntervalTurns >= 0 ? Math.floor(data.syncIntervalTurns) : 0,
     syncSessionOnExit: data.syncSessionOnExit !== false,
-    backupMemory: data.backupMemory !== false,
+    customPaths: normalizeCustomPathList(data.customPaths),
     backupAgentSkills: data.backupAgentSkills !== false,
     sessionProjectMode: data.sessionProjectMode === "blacklist" ? "blacklist" : "whitelist",
     maxBackups: typeof data.maxBackups === "number" && data.maxBackups >= 0 ? Math.floor(data.maxBackups) : 10,

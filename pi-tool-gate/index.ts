@@ -238,7 +238,7 @@ function applyGate(pi: ExtensionAPI): void {
     for (const g of enabledGroups) disabledGroups.delete(g);
 
     // 项目覆盖全局：项目存在时，项目关的组并入、项目开的组从关集中移除
-    const proj = cfg.projects[pi.cwd];
+    const proj = cfg.projects[(pi as any).cwd];
     if (proj) {
       for (const g of proj.disabledGroups) disabledGroups.add(g);
       for (const g of proj.userDisabledGroups) disabledGroups.add(g);
@@ -319,11 +319,30 @@ function registerGateTools(pi: ExtensionAPI): void {
           const groups = groupTools(allToolObjs);
           const t2g = toolToGroupMap(allToolObjs);
 
-          // 当前关的组（loader 可激活的 = disabledGroups 中、但不在 userDisabledGroups 中）
-          const userDisabledGroupsSet = new Set(cfg.userDisabledGroups);
-          const openableGroups = new Set(cfg.disabledGroups.filter((g) => !userDisabledGroupsSet.has(g)));
+          // gate_tools must use the same effective project scope as applyGate.
+          // Previously it only examined global disabledGroups, so a tool group
+          // disabled by the current project's config could never be discovered.
+          const effectiveDisabledGroups = new Set<string>([...cfg.disabledGroups, ...cfg.userDisabledGroups]);
+          const effectiveUserDisabledGroups = new Set<string>(cfg.userDisabledGroups);
+          for (const group of cfg.enabledGroups) {
+            effectiveDisabledGroups.delete(group);
+            effectiveUserDisabledGroups.delete(group);
+          }
+          const projectScope = cfg.projects[(pi as any).cwd];
+          if (projectScope) {
+            for (const group of projectScope.disabledGroups) effectiveDisabledGroups.add(group);
+            for (const group of projectScope.userDisabledGroups) {
+              effectiveDisabledGroups.add(group);
+              effectiveUserDisabledGroups.add(group);
+            }
+            for (const group of projectScope.enabledGroups) {
+              effectiveDisabledGroups.delete(group);
+              effectiveUserDisabledGroups.delete(group);
+            }
+          }
+          const openableGroups = new Set([...effectiveDisabledGroups].filter((group) => !effectiveUserDisabledGroups.has(group)));
 
-          // gated 候选工具 = 当前未激活、所在组是 openableGroups、非 protected
+          // gated candidates = currently inactive, recoverably disabled, non-protected
           const gatedCandidates = allToolObjs.filter(
             (t) => !activeSet.has(t.name) && !protectedSet.has(t.name) && openableGroups.has(groupOf(t)),
           );
@@ -366,7 +385,7 @@ function registerGateTools(pi: ExtensionAPI): void {
             // 按整组激活：把组内所有工具并入 active
             const toAdd: string[] = [];
             for (const g of matchedGroups) {
-              if (!userDisabledGroupsSet.has(g)) {
+              if (!effectiveUserDisabledGroups.has(g)) {
                 for (const n of groups.get(g) ?? []) {
                   if (!activeSet.has(n)) toAdd.push(n);
                 }
@@ -455,7 +474,7 @@ async function handleToolGateCommand(
   const groups = groupTools(allToolObjs);
   const t2g = toolToGroupMap(allToolObjs);
 
-  const cwd = pi.cwd;
+  const cwd = (pi as any).cwd;
   const proj = cfg.projects[cwd] ?? null;
   const scopeDesc = proj ? `项目 ${cwd}` : `全局`;
 
@@ -753,7 +772,7 @@ async function interactiveMenu(
     const activeSet = new Set(pi.getActiveTools());
     const protectedSet = new Set([...cfg.protected, ...HARDCODED_PROTECTED]);
     const groups = groupTools(allToolObjs);
-    const cwd = pi.cwd;
+    const cwd = (pi as any).cwd;
     const proj = cfg.projects[cwd] ?? null;
     const scopeDesc = proj ? `项目 ${cwd}` : `全局`;
 

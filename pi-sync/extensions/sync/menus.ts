@@ -7,8 +7,8 @@ import {
   archiveTimestamp,
   createAgentSkillsZip,
   createConfigZip,
+  createCustomPathsZip,
   createLegacyZip,
-  createMemoryZip,
   createSessionsArchiveZip,
   listArchiveEntries,
   platformTag,
@@ -16,11 +16,13 @@ import {
   yieldToUI,
 } from "./archive";
 import { loadConfig, saveConfig, isProjectAllowed, type SyncConfig } from "./config";
+import { customPathDisplay, parseCustomPathList } from "./custom-paths";
 import {
   extractAgentSkillsZip,
   extractConfigZip,
+  extractCustomPathsZip,
   extractLegacyZip,
-  extractMemoryZip,
+  inspectCustomPathsZip,
   extractSessionsArchiveZip,
   getRestorePlan,
 } from "./restore";
@@ -39,7 +41,6 @@ import {
   uploadToWebdavDir,
   WEBDAV_AGENT_SKILLS_DIR,
   WEBDAV_CONFIG_DIR,
-  WEBDAV_MEMORY_DIR,
   WEBDAV_SESSIONS_DIR,
   webdavAuth,
   webdavGetFile,
@@ -67,7 +68,7 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       `Backup Providers & Config: ${config.backupProviders ? "ON" : "OFF"}`,
       `Backup Skills: ${config.backupSkills ? "ON" : "OFF"}`,
       `Backup Extensions: ${config.backupExtensions ? "ON" : "OFF"}`,
-      `Backup Memory Markdown: ${config.backupMemory ? "ON" : "OFF"}`,
+      `Custom Pi Paths: ${config.customPaths.length ? config.customPaths.map(customPathDisplay).join(", ") : "(none)"}`,
       `Backup Shared Agent Skills: ${config.backupAgentSkills ? "ON" : "OFF"}`,
       `Backup Sessions: ${config.backupSessions ? "ON" : "OFF"}`,
       `  ↳ Session Projects: ${describeSessionSelection(config)}`,
@@ -85,7 +86,15 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
     if (choice.startsWith("Backup Providers")) { config.backupProviders = !config.backupProviders; continue; }
     if (choice.startsWith("Backup Skills:")) { config.backupSkills = !config.backupSkills; continue; }
     if (choice.startsWith("Backup Extensions")) { config.backupExtensions = !config.backupExtensions; continue; }
-    if (choice.startsWith("Backup Memory")) { config.backupMemory = !config.backupMemory; continue; }
+    if (choice.startsWith("Custom Pi Paths:")) {
+      const current = config.customPaths.map(customPathDisplay).join(", ");
+      const value = await ctx.ui.input("Custom paths under ~/.pi/agent (comma or newline separated; blank clears):", current);
+      if (value !== undefined) {
+        try { config.customPaths = parseCustomPathList(value); }
+        catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+      }
+      continue;
+    }
     if (choice.startsWith("Backup Shared")) { config.backupAgentSkills = !config.backupAgentSkills; continue; }
     if (choice.startsWith("Backup Sessions")) { config.backupSessions = !config.backupSessions; continue; }
     if (choice.startsWith("  ↳")) { await showSessionProjectSelect(ctx, config); continue; }
@@ -96,26 +105,33 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
   }
 }
 
-type BackupKind = "config" | "memory" | "agent-skills";
+type BackupKind = "config" | "custom" | "agent-skills";
 
-async function showUploadPackage(ctx: ExtensionCommandContext, kind: BackupKind): Promise<void> {
+async function showUploadPackage(ctx: ExtensionCommandContext, kind: BackupKind): Promise<boolean> {
   const config = loadConfig();
-  if (kind === "memory" && !config.backupMemory) { ctx.ui.notify("Memory backup is disabled.", "warning"); return; }
-  if (kind === "agent-skills" && !config.backupAgentSkills) { ctx.ui.notify("Shared skills backup is disabled.", "warning"); return; }
+  if (kind === "custom" && config.customPaths.length === 0) { ctx.ui.notify("No custom Pi paths are configured.", "warning"); return false; }
+  if (kind === "agent-skills" && !config.backupAgentSkills) { ctx.ui.notify("Shared skills backup is disabled.", "warning"); return false; }
   const timestamp = archiveTimestamp();
   const meta = kind === "config"
     ? { filename: `pi_config_${platformTag()}_${timestamp}.tar.xz`, dir: WEBDAV_CONFIG_DIR, prefix: "pi_config_" }
-    : kind === "memory"
-      ? { filename: `memory_${timestamp}.tar.xz`, dir: WEBDAV_MEMORY_DIR, prefix: "memory_" }
+    : kind === "custom"
+      ? { filename: `pi_custom_${platformTag()}_${timestamp}.tar.xz`, dir: "custom/", prefix: "pi_custom_" }
       : { filename: `agent_skills_${timestamp}.tar.xz`, dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" };
   const archive = path.join(os.tmpdir(), meta.filename);
   try {
-    const contents = kind === "config" ? await createConfigZip(config, archive) : kind === "memory" ? await createMemoryZip(archive) : await createAgentSkillsZip(archive);
+    const contents = kind === "config" ? await createConfigZip(config, archive) : kind === "custom" ? await createCustomPathsZip(config, archive) : await createAgentSkillsZip(archive);
+    if (contents.length === 0) {
+      ctx.ui.notify(`No ${kind} content is available to back up.`, "warning");
+      return false;
+    }
     await uploadToWebdavDir(archive, meta.dir, meta.filename, config, ctx);
     const deleted = await pruneOldBackupsInDir(config, ctx, meta.dir, meta.prefix);
     ctx.ui.notify(`🎉 Uploaded ${meta.filename}\n${contents.join("\n")}${deleted.length ? `\nPruned: ${deleted.length}` : ""}`, "info");
-  } catch (error) { ctx.ui.notify(`❌ ${kind} backup failed: ${error instanceof Error ? error.message : String(error)}`, "error"); }
-  finally { fs.rmSync(archive, { force: true }); }
+    return true;
+  } catch (error) {
+    ctx.ui.notify(`❌ ${kind} backup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+    return false;
+  } finally { fs.rmSync(archive, { force: true }); }
 }
 
 async function showUploadSessionsArchive(ctx: ExtensionCommandContext): Promise<void> {
@@ -137,7 +153,7 @@ async function showUploadSessionsArchive(ctx: ExtensionCommandContext): Promise<
 
 async function showRestorePackage(ctx: ExtensionCommandContext, kind: BackupKind, autoLatest = false): Promise<boolean> {
   const config = loadConfig();
-  const meta = kind === "config" ? { dir: WEBDAV_CONFIG_DIR, prefix: "pi_config_" } : kind === "memory" ? { dir: WEBDAV_MEMORY_DIR, prefix: "memory_" } : { dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" };
+  const meta = kind === "config" ? { dir: WEBDAV_CONFIG_DIR, prefix: "pi_config_" } : kind === "custom" ? { dir: "custom/", prefix: "pi_custom_" } : { dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" };
   try {
     const files = (await listWebdavDir(meta.dir, config, ctx)).filter((name) => name.startsWith(meta.prefix) && name.endsWith(".tar.xz")).sort().reverse();
     if (!files.length) { ctx.ui.notify(`No ${kind} archives found.`, "warning"); return false; }
@@ -148,7 +164,11 @@ async function showRestorePackage(ctx: ExtensionCommandContext, kind: BackupKind
     const local = path.join(os.tmpdir(), path.basename(selected));
     try {
       await downloadFromWebdavDir(selected, meta.dir, local, config, ctx);
-      const restored = kind === "config" ? await extractConfigZip(local, config) : kind === "memory" ? await extractMemoryZip(local) : await extractAgentSkillsZip(local);
+      if (kind === "custom") {
+        const paths = await inspectCustomPathsZip(local);
+        if (!await ctx.ui.confirm("Restore custom Pi paths?", `The following ~/.pi/agent paths will be replaced with timestamped backups:\n${paths.join("\n")}`)) return false;
+      }
+      const restored = kind === "config" ? await extractConfigZip(local, config) : kind === "custom" ? await extractCustomPathsZip(local) : await extractAgentSkillsZip(local);
       ctx.ui.notify(`🎉 Restored ${kind}:\n${restored.join("\n")}`, "info");
       return true;
     } finally { fs.rmSync(local, { force: true }); }
@@ -157,20 +177,19 @@ async function showRestorePackage(ctx: ExtensionCommandContext, kind: BackupKind
 
 async function showUploadAll(ctx: ExtensionCommandContext): Promise<void> {
   const results: string[] = [];
-  for (const kind of ["config", "memory", "agent-skills"] as BackupKind[]) {
+  for (const kind of ["config", "custom", "agent-skills"] as BackupKind[]) {
     const config = loadConfig();
     if (kind === "config" && !config.backupProviders) { results.push(`⏭️  config (disabled)`); continue; }
-    if (kind === "memory" && !config.backupMemory) { results.push(`⏭️  memory (disabled)`); continue; }
+    if (kind === "custom" && config.customPaths.length === 0) { results.push(`⏭️  custom (none configured)`); continue; }
     if (kind === "agent-skills" && !config.backupAgentSkills) { results.push(`⏭️  agent-skills (disabled)`); continue; }
-    await showUploadPackage(ctx, kind);
-    results.push(`✅ ${kind}`);
+    results.push((await showUploadPackage(ctx, kind)) ? `✅ ${kind}` : `❌ ${kind}`);
   }
   ctx.ui.notify(`Upload All complete:\n${results.join("\n")}\n\n💡 Sessions: use 🗂️ Upload Sessions Archive or 🔄 Session Sync.`, "info");
 }
 
 async function showRestoreAll(ctx: ExtensionCommandContext): Promise<void> {
   const results: string[] = [];
-  for (const kind of ["config", "memory", "agent-skills"] as BackupKind[]) {
+  for (const kind of ["config", "custom", "agent-skills"] as BackupKind[]) {
     const ok = await showRestorePackage(ctx, kind, true);
     results.push(ok ? `✅ ${kind}` : `⏭️  ${kind} (skipped)`);
   }
@@ -224,22 +243,22 @@ export async function handleSyncCommand(ctx: ExtensionCommandContext): Promise<v
   let config = loadConfig();
   if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) { if (!await showSetupWizard(ctx)) return; config = loadConfig(); }
   const choice = await enhancedSelect(ctx, "Pi WebDAV Synchronization", [
-    "⬆️  Upload All (config + memory + skills)", "⬇️  Restore All (latest)",
-    "☁️  Upload Config Backup", "🧠 Upload Memory Backup", "📦 Upload Skills Snapshot", "🗂️  Upload Sessions Archive",
-    "📥 Restore Config Backup", "📥 Restore Memory Backup", "📥 Restore Skills Snapshot", "📥 Restore Sessions Archive",
+    "⬆️  Upload All (config + custom + skills)", "⬇️  Restore All (latest)",
+    "☁️  Upload Config Backup", "📁 Upload Custom Pi Paths", "📦 Upload Skills Snapshot", "🗂️  Upload Sessions Archive",
+    "📥 Restore Config Backup", "📥 Restore Custom Pi Paths", "📥 Restore Skills Snapshot", "📥 Restore Sessions Archive",
     "🔄 Session Sync", "🧰 Legacy Monolithic Backup/Restore", "⚙️  Configure Sync Settings", "❌  Cancel",
   ]);
   if (!choice || choice.includes("Cancel")) return;
   if (choice.startsWith("⬆️  Upload All")) return showUploadAll(ctx);
   if (choice.startsWith("⬇️  Restore All")) return showRestoreAll(ctx);
   if (choice.includes("Configure")) return showConfigureSettings(ctx);
-  if (choice === "☁️  Upload Config Backup") return showUploadPackage(ctx, "config");
-  if (choice === "🧠 Upload Memory Backup") return showUploadPackage(ctx, "memory");
-  if (choice === "📦 Upload Skills Snapshot") return showUploadPackage(ctx, "agent-skills");
+  if (choice === "☁️  Upload Config Backup") { await showUploadPackage(ctx, "config"); return; }
+  if (choice === "📁 Upload Custom Pi Paths") { await showUploadPackage(ctx, "custom"); return; }
+  if (choice === "📦 Upload Skills Snapshot") { await showUploadPackage(ctx, "agent-skills"); return; }
   if (choice === "🗂️  Upload Sessions Archive") return showUploadSessionsArchive(ctx);
-  if (choice === "📥 Restore Config Backup") return showRestorePackage(ctx, "config");
-  if (choice === "📥 Restore Memory Backup") return showRestorePackage(ctx, "memory");
-  if (choice === "📥 Restore Skills Snapshot") return showRestorePackage(ctx, "agent-skills");
+  if (choice === "📥 Restore Config Backup") { await showRestorePackage(ctx, "config"); return; }
+  if (choice === "📥 Restore Custom Pi Paths") { await showRestorePackage(ctx, "custom"); return; }
+  if (choice === "📥 Restore Skills Snapshot") { await showRestorePackage(ctx, "agent-skills"); return; }
   if (choice === "📥 Restore Sessions Archive") return showRestoreSessionsArchive(ctx);
   if (choice.startsWith("🔄")) return showSessionSyncMenu(ctx);
   if (choice.startsWith("🧰")) {

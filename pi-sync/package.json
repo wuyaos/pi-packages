@@ -13,6 +13,7 @@
   },
   "files": [
     "extensions",
+    "!extensions/**/*.test.ts",
     "docs",
     "pi-bootstrap.ps1",
     "README.md",

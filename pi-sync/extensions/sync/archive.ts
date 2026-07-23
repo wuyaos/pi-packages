@@ -2,11 +2,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runCommand } from "../_shared/spawn";
+import { type CustomPathArchiveEntry, resolveCustomSource } from "./custom-paths";
 import {
   AGENT_DIR,
   AGENT_ROOT_MARKDOWN_FILES,
   AGENT_SKILLS_DIR,
-  MEMORY_MARKDOWN_FILES,
   SESSIONS_DIR,
   ensureDir,
   isProjectAllowed,
@@ -41,9 +41,17 @@ export async function runTar(args: string[], options: { capture?: boolean; timeo
   return options.capture ? result.stdout : "";
 }
 
+function lstatRegularOrDirectory(src: string): fs.Stats {
+  const stats = fs.lstatSync(src);
+  if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory())) {
+    throw new Error(`Refusing unsafe filesystem entry: ${src}`);
+  }
+  return stats;
+}
+
 export function copyRecursiveSync(src: string, dest: string): void {
   if (!fs.existsSync(src)) return;
-  const stats = fs.statSync(src);
+  const stats = lstatRegularOrDirectory(src);
   if (stats.isDirectory()) {
     ensureDir(dest);
     for (const child of fs.readdirSync(src)) copyRecursiveSync(path.join(src, child), path.join(dest, child));
@@ -55,7 +63,7 @@ export function copyRecursiveSync(src: string, dest: string): void {
 
 export function copyRecursiveSyncFiltered(src: string, dest: string, include: (name: string, isDirectory: boolean) => boolean): void {
   if (!fs.existsSync(src)) return;
-  const stats = fs.statSync(src);
+  const stats = lstatRegularOrDirectory(src);
   if (!include(path.basename(src), stats.isDirectory())) return;
   if (stats.isDirectory()) {
     ensureDir(dest);
@@ -68,22 +76,34 @@ export function copyRecursiveSyncFiltered(src: string, dest: string, include: (n
 
 export function collectManifest(dir: string, archivePrefix: string, sourcePrefix: string, files: ManifestFile[]): void {
   if (!fs.existsSync(dir)) return;
+  const stats = lstatRegularOrDirectory(dir);
+  if (stats.isFile()) {
+    files.push({ archive: archivePrefix, source: sourcePrefix });
+    return;
+  }
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const archivePath = `${archivePrefix}/${entry.name}`;
     const sourcePath = sourcePrefix ? `${sourcePrefix}/${entry.name}` : entry.name;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) collectManifest(full, archivePath, sourcePath, files);
-    else files.push({ archive: archivePath, source: sourcePath });
+    else if (entry.isFile()) files.push({ archive: archivePath, source: sourcePath });
+    else throw new Error(`Refusing unsafe filesystem entry: ${full}`);
   }
 }
 
-export function writeManifest(tempDir: string, agentDir: string, files: ManifestFile[]): void {
+export function writeManifest(
+  tempDir: string,
+  agentDir: string,
+  files: ManifestFile[],
+  customPaths?: CustomPathArchiveEntry[],
+): void {
   fs.writeFileSync(path.join(tempDir, "manifest.json"), JSON.stringify({
     version: 1,
     createdAt: new Date().toISOString(),
     agentDir,
     fileCount: files.length,
     files,
+    ...(customPaths?.length ? { customPaths } : {}),
   }, null, 2), "utf8");
 }
 
@@ -98,15 +118,43 @@ export async function listArchiveEntries(archivePath: string): Promise<string[]>
     .filter((entry) => entry && entry !== ".");
 }
 
+/**
+ * `tar -t` only prints names, so it cannot distinguish regular files from
+ * links or device nodes. Ask tar for the entry type before extraction.
+ * The POSIX tar permission field starts with `-` (file) or `d` (directory);
+ * every other type is rejected.
+ */
+export async function validateArchiveEntryTypes(archivePath: string): Promise<void> {
+  const lines = (await runTar(["-t", "-v", "-f", archivePath], { capture: true }))
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (lines.length === 0) throw new Error("Backup archive is empty or unreadable");
+  for (const line of lines) {
+    const entryType = line[0];
+    if (entryType !== "-" && entryType !== "d") {
+      throw new Error(`Unsafe archive entry type rejected: ${entryType ?? "unknown"}`);
+    }
+  }
+}
+
 export function validateArchiveEntries(entries: string[]): void {
-  const allowed = new Set(["config", "skills", "extensions", "sessions", "memory", "agent-skills", "manifest.json"]);
+  const allowed = new Set(["config", "skills", "extensions", "sessions", "custom", "agent-skills", "manifest.json"]);
   const legacyConfigFiles = new Set(["models.json", "settings.json", "auth.json"]);
   const rootMarkdownFiles = new Set<string>(AGENT_ROOT_MARKDOWN_FILES);
   if (entries.length === 0) throw new Error("Backup archive is empty or unreadable");
   for (const entry of entries) {
     const parts = entry.split("/");
-    if (entry.startsWith("/") || /^[a-zA-Z]:\//.test(entry) || parts.includes("..") || !allowed.has(parts[0]!)) {
+    if (entry.startsWith("/") || /^[a-zA-Z]:\//.test(entry) || parts.includes("..") || parts.some((part) => !part) || !allowed.has(parts[0]!)) {
       throw new Error(`Unsafe archive path rejected: ${entry}`);
+    }
+    if (parts[0] === "custom") {
+      // tar emits parent directories too. A payload may be either a directory
+      // (custom/N/data/...) or one regular file at custom/N/data.
+      if (parts.length === 1) continue;
+      if (!/^\d+$/.test(parts[1] ?? "")) throw new Error(`Unexpected custom archive entry rejected: ${entry}`);
+      if (parts.length === 2) continue;
+      if (parts[2] !== "data") throw new Error(`Unexpected custom archive entry rejected: ${entry}`);
+      continue;
     }
     if (parts[0] !== "config" || !parts[1]) continue;
     if (parts[1] === "root") {
@@ -170,23 +218,26 @@ export async function createConfigZip(config: SyncConfig, archivePath: string): 
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }
 
-export async function createMemoryZip(archivePath: string): Promise<string[]> {
-  const sourceDir = path.join(AGENT_DIR, "pi-hermes-memory");
-  const tempDir = path.join(os.tmpdir(), `pi_memory_temp_${Date.now()}`);
-  const destDir = path.join(tempDir, "memory");
+export async function createCustomPathsZip(config: SyncConfig, archivePath: string): Promise<string[]> {
+  if (config.customPaths.length === 0) throw new Error("No custom Pi paths are configured.");
+  const tempDir = path.join(os.tmpdir(), `pi_custom_paths_temp_${Date.now()}`);
   const manifest: ManifestFile[] = [];
-  ensureDir(destDir);
+  const customPaths: CustomPathArchiveEntry[] = [];
   try {
-    for (const name of MEMORY_MARKDOWN_FILES) {
-      const src = path.join(sourceDir, name);
-      if (!fs.existsSync(src)) continue;
-      fs.copyFileSync(src, path.join(destDir, name));
-      manifest.push({ archive: `memory/${name}`, source: `pi-hermes-memory/${name}` });
+    // Validate every source before creating a partial archive. This also makes
+    // persisted configuration with overlapping paths fail closed.
+    const sources = config.customPaths.map((relativePath) => ({ relativePath, source: resolveCustomSource(relativePath) }));
+    for (const [index, { relativePath, source }] of sources.entries()) {
+      const archiveRoot = `custom/${index}/data`;
+      const destination = path.join(tempDir, archiveRoot);
+      copyRecursiveSync(source.absolute, destination);
+      collectManifest(destination, archiveRoot, relativePath, manifest);
+      customPaths.push({ archiveRoot, relativePath, type: source.type });
     }
-    if (manifest.length === 0) throw new Error("No durable pi-hermes-memory markdown files found.");
-    writeManifest(tempDir, AGENT_DIR, manifest);
+    if (manifest.length === 0) throw new Error("No files found in configured custom Pi paths.");
+    writeManifest(tempDir, AGENT_DIR, manifest, customPaths);
     await packTemporaryArchive(tempDir, archivePath);
-    return manifest.map((item) => `Memory: ${path.basename(item.source)}`);
+    return customPaths.map((entry) => `Custom: ~/.pi/agent/${entry.relativePath}`);
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }
 

@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "files": [
+    "pi-notify/extensions/notify.ts",
+    "pi-sync/extensions/_shared/fetch-utils.ts",
+    "pi-sync/extensions/sync/archive.ts",
+    "pi-sync/extensions/sync/config.ts",
+    "pi-sync/extensions/sync/custom-paths.ts",
+    "pi-sync/extensions/sync/custom-paths.test.ts",
+    "pi-sync/extensions/sync/archive.test.ts",
+    "pi-sync/extensions/sync/webdav.test.ts",
+    "pi-sync/extensions/sync/index.ts",
+    "pi-sync/extensions/sync/menus.ts",
+    "pi-sync/extensions/sync/restore.ts",
+    "pi-sync/extensions/sync/webdav.ts",
+    "pi-cc-tui/extensions/statusline.ts",
+    "pi-tool-gate/index.ts",
+    "pi-model-roles/src/api.ts",
+    "pi-model-roles/src/api.test.ts"
+  ]
+}
