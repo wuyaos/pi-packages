@@ -55,6 +55,33 @@ jobs:
             }
           ')
 
+          # 带重试的发布: 处理 OIDC provenance 的 tlog 409 等偶发错误
+          # npm publish 非幂等, 但 tlog 失败时包可能已上传成功 → 重试前先查版本
+          publish_pkg() {
+            local name="$1" version="$2" max_attempts=3 attempt=1
+            while :; do
+              # 重试前检查: 上次可能已上传成功 (仅 tlog/签名步骤失败)
+              if npm view "$name@$version" version >/dev/null 2>&1; then
+                echo "  $name@$version already on npm, treating as success"
+                return 0
+              fi
+              echo "  Publish attempt $attempt/$max_attempts..."
+              local log rc
+              log=$(npm publish --workspace "$name" --access public 2>&1)
+              rc=$?
+              echo "$log" | sed 's/^/    /'
+              [ $rc -eq 0 ] && return 0
+              # 仅对偶发错误重试 (tlog 冲突 / 网络抖动)
+              if [ "$attempt" -lt "$max_attempts" ] && echo "$log" | grep -qE "TLOG_CREATE_ENTRY_ERROR|ETIMEDOUT|ECONNRESET|EAI_AGAIN|409"; then
+                attempt=$((attempt + 1))
+                echo "  Retriable error, retrying in $((attempt * 10))s..."
+                sleep $((attempt * 10))
+                continue
+              fi
+              return $rc
+            done
+          }
+
           for line in "${pkgs[@]}"; do
             IFS=$'\t' read -r name version <<< "$line"
             echo ""
@@ -69,14 +96,14 @@ jobs:
             # 2. 包是否已存在? 决定首次(token) vs OIDC
             if npm view "$name" version >/dev/null 2>&1; then
               echo "  Package exists, publishing $version via OIDC"
-              npm publish --workspace "$name" --access public
+              publish_pkg "$name" "$version"
             else
               if [ -z "$NPM_TOKEN" ]; then
                 echo "::error::$name does not exist on npm; first publish requires NPM_TOKEN secret"
                 exit 1
               fi
               echo "  First publish of $name, using NPM_TOKEN"
-              NODE_AUTH_TOKEN="$NPM_TOKEN" npm publish --workspace "$name" --access public
+              NODE_AUTH_TOKEN="$NPM_TOKEN" publish_pkg "$name" "$version"
               echo "::notice::$name first-published. Configure Trusted Publisher on npm, then remove NPM_TOKEN secret."
             fi
           done
