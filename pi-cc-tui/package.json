@@ -1,6 +1,6 @@
 {
   "name": "@wuyaos/pi-cc-tui",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Pi 主题与 TUI 组件：99 主题、启动头、圆角输入框、状态栏和诊断面板",
   "keywords": ["pi-package"],
   "license": "MIT",

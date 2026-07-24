@@ -1,11 +1,12 @@
 /**
  * pi-cc-tui 状态栏（含 context bar，合并自 pi-nano-context）。
  *
- * 行 1: model | Context/Token | tools。
+ * 行 1: model | git | Context/Token | tools。
  * 行 2: ⌂ path（约半宽）| context 色条（约半宽）。
  * 行 3: extensions。
  *
- * PI_STATUSLINE_GIT=1 时启用 git status --porcelain 统计，默认关闭。
+ * git 段默认开启：异步刷新 `git status --porcelain=v2 -b`，render 只读
+ * 进程级缓存，非 git 仓库时不显示。
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -27,6 +28,11 @@ import {
 	updateToolMetrics,
 	type ToolMetricsState,
 } from "../src/status/tool-metrics.ts";
+import {
+	createGitStatusState,
+	refreshGitStatus,
+	type GitStatusState,
+} from "../src/status/git-status.ts";
 import { renderFooterEnds, renderPrimaryFooterBarLine } from "../src/status/footer-layout.ts";
 import {
 	addAssistantEntryUsage,
@@ -96,6 +102,7 @@ let cachedThinkingLevel = "medium";
 let usageTotals: UsageTotals = createUsageTotals();
 let usageBranchLength = -1;
 let toolMetrics: ToolMetricsState = createToolMetricsState();
+let gitStatus: GitStatusState = createGitStatusState();
 
 /** Incrementally aggregate branch usage; terminal rendering must stay O(1). */
 function updateUsageTotals(ctx: ExtensionContext): UsageTotals {
@@ -367,6 +374,24 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					modelStr = theme.fg("accent", `${icons.model} ${provider}/${modelId}[${level}]`);
 				}
 
+				// ── git (异步刷新，render 只读缓存) ──
+				// 显示：⎇ branch +N~M?K  +=已暂存 ~=未暂存 ?=未跟踪；0 的项省略。
+				let gitStr: string | null = null;
+				if (segmentConfig.git) {
+					const cwd = ctx.sessionManager.getCwd();
+					refreshGitStatus(gitStatus, cwd, () => tui.requestRender());
+					if (gitStatus.branch) {
+						const { staged, unstaged, untracked } = gitStatus;
+						const dirty = staged + unstaged + untracked;
+						const branchColor = dirty > 0 ? "warning" : "success";
+						const parts: string[] = [theme.fg(branchColor, `${icons.git} ${gitStatus.branch}`)];
+						if (staged > 0) parts.push(theme.fg("success", `+${staged}`));
+						if (unstaged > 0) parts.push(theme.fg("warning", `~${unstaged}`));
+						if (untracked > 0) parts.push(theme.fg("dim", `?${untracked}`));
+						gitStr = parts.join(" ");
+					}
+				}
+
 				// ── 累计 output / cost ──
 				const totals = segmentConfig.context || segmentConfig.tools
 					? updateUsageTotals(ctx)
@@ -419,14 +444,14 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				const separator = theme.fg("dim", " | ");
 				const lines: string[] = [];
 
-				// ── 行 1: 模型左对齐；Context/Token | 工具统计右对齐。 ──
-				// 模型与 Context 之间不使用分隔符；仅保留右侧 telemetry 内的 |。
-				// 固定三行布局不显示 Git、费用、TPS/TTFT，避免挤压此主行。
+				// ── 行 1: 模型 + git 左对齐；Context/Token | 工具统计右对齐。 ──
+				// 模型与 git 之间用分隔符；右侧 telemetry 内部仍用 | 分隔。
 				const telemetryStr = [contextStr, inputStr, outputStr, cacheStr]
 					.filter(Boolean)
 					.join(" ");
 				const rightStr = toolsStr ? [telemetryStr, toolsStr].filter(Boolean).join(separator) : telemetryStr;
-				const topLine = renderFooterEnds(modelStr ?? "", rightStr, width);
+				const leftStr = [modelStr, gitStr].filter(Boolean).join(separator);
+				const topLine = renderFooterEnds(leftStr, rightStr, width);
 				if (topLine) lines.push(topLine);
 
 				// ── 行 2: path 与 context 色条固定各占约一半 ──

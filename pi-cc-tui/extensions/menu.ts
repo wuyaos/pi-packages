@@ -86,6 +86,7 @@ export class ConfigMenuComponent implements Focusable {
 					{ kind: "toggle", name: "tools", label: "工具统计", description: "成功数／总数" },
 					{ kind: "toggle", name: "path", label: "项目路径", description: "当前项目路径" },
 					{ kind: "toggle", name: "bar", label: "上下文色条", description: "当前上下文分段概览" },
+					{ kind: "toggle", name: "git", label: "Git 状态", description: "分支名与变更文件数" },
 					{ kind: "toggle", name: "extensions", label: "扩展状态", description: "扩展提供的状态文本" },
 				],
 			},

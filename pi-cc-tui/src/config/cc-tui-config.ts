@@ -16,6 +16,7 @@ export type SegmentConfig = {
 	tools: boolean;
 	path: boolean;
 	bar: boolean;
+	git: boolean;
 	extensions: boolean;
 };
 
@@ -34,6 +35,7 @@ export const SEGMENT_NAMES = [
 	"tools",
 	"path",
 	"bar",
+	"git",
 	"extensions",
 ] as const;
 
@@ -45,6 +47,7 @@ export const DEFAULT_SEGMENTS: SegmentConfig = Object.freeze({
 	tools: false,
 	path: true,
 	bar: false,
+	git: true,
 	extensions: true,
 });
 
