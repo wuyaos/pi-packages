@@ -94,6 +94,52 @@ export default function registerModelRolesExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: "use_model",
+    label: "Switch to a specific model",
+    description: "Switch the current model directly by provider/model-id (e.g. 'anthropic/claude-sonnet-4'), bypassing role bindings. Use list_models first to confirm available IDs. Optionally set a thinking level; if omitted, the current thinking level is preserved. Use use_role instead when you want a named role's model+thinking bundle.",
+    parameters: Type.Object({
+      model: Type.String({ description: "Model identifier to switch to, e.g. 'anthropic/claude-sonnet-4' or bare 'claude-sonnet-4'" }),
+      thinking: Type.Optional(
+        Type.String({
+          description: "Optional thinking level to apply after switching: off, minimal, low, medium, high, xhigh, max. If omitted, current thinking level is unchanged.",
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const api = getModelRolesAPI();
+      const modelRef = params.model;
+      const model = api.findModel(modelRef);
+      if (!model) {
+        return {
+          content: [
+            { type: "text", text: `Model not found: ${modelRef}. Available:\n${api.listModels().join("\n")}` },
+          ],
+          details: undefined as any,
+        };
+      }
+      const success = await pi.setModel(model);
+      if (!success) {
+        return {
+          content: [{ type: "text", text: `No API key for ${model.provider}/${model.id}` }],
+          details: undefined as any,
+        };
+      }
+      let thinkingApplied: string | undefined;
+      if (params.thinking) {
+        pi.setThinkingLevel(params.thinking as any);
+        thinkingApplied = params.thinking;
+      }
+      const thinkingLabel = thinkingApplied ?? "unchanged";
+      return {
+        content: [
+          { type: "text", text: `Switched to model ${model.provider}/${model.id} [thinking: ${thinkingLabel}]` },
+        ],
+        details: undefined as any,
+      };
+    },
+  });
+
   pi.registerCommand("roles", {
     description: "Show model role definitions and resolved models",
     handler: async (_args, ctx) => {

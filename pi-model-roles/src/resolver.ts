@@ -20,7 +20,7 @@ interface ModelLike {
   id: string;
 }
 
-function parseModelIdentifier(modelRef: string): { provider: string | undefined; modelId: string } {
+export function parseModelIdentifier(modelRef: string): { provider: string | undefined; modelId: string } {
   const parts = modelRef.split("/");
   if (parts.length > 1) {
     return { provider: parts[0], modelId: parts.slice(1).join("/") };
@@ -28,7 +28,7 @@ function parseModelIdentifier(modelRef: string): { provider: string | undefined;
   return { provider: undefined, modelId: parts[0] };
 }
 
-function findModel(modelRef: string, available: ModelLike[]): ModelLike | undefined {
+export function findModel(modelRef: string, available: ModelLike[]): ModelLike | undefined {
   const { provider, modelId } = parseModelIdentifier(modelRef);
   return available.find((m) => {
     if (provider) return m.provider === provider && m.id === modelId;

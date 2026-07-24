@@ -1,6 +1,6 @@
 {
   "name": "@wuyaos/pi-model-roles",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "模型角色路由 — 为不同任务分配不同模型+thinking level (fork from @d3ara1n/pi-model-roles)",
   "main": "src/index.ts",

@@ -22,7 +22,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import type { ModelRolesAPI, ModelRolesConfig, RoleConfig, ResolvedRole } from "./types.ts";
 import { loadRolesConfig } from "./config.ts";
-import { resolveModelForRole, resolveModelForRoleAsync } from "./resolver.ts";
+import { resolveModelForRole, resolveModelForRoleAsync, findModel } from "./resolver.ts";
 
 const GLOBAL_KEY = "__piModelRoles";
 
@@ -138,6 +138,10 @@ export function initModelRolesAPI(
       return state.modelRegistry
         .getAvailable()
         .map((m: { provider: string; id: string }) => `${m.provider}/${m.id}`);
+    },
+
+    findModel(modelRef: string): any | undefined {
+      return findModel(modelRef, state.modelRegistry.getAvailable()) ?? undefined;
     },
 
     async completeWithRole(roleName: string, context: any, options?: any): Promise<any> {

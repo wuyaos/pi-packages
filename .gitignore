@@ -13,3 +13,6 @@ pi-sync/REFACTOR_SPEC.md
 # 防止误在仓库根产生污染
 /i18n.template.json
 /i18n.translated.json
+
+# Ralph loop 临时产物
+/.ralph/

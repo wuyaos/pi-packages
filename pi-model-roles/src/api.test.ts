@@ -57,6 +57,30 @@ test("resolveRole keeps an unknown requested name while using the default role m
   });
 });
 
+test("findModel resolves a provider/model-id and returns the Model instance", () => {
+  const alpha = { provider: "test", id: "alpha" };
+  const beta = { provider: "other", id: "beta" };
+  const multiRegistry = {
+    getAvailable: () => [currentModel, alpha, beta],
+    async getApiKeyAndHeaders() {
+      return { ok: true, apiKey: "test-key" };
+    },
+  };
+
+  withDefaultConfig(() => {
+    const api = initModelRolesAPI(multiRegistry, currentModel);
+
+    // Full provider/model-id
+    assert.equal(api.findModel("test/alpha"), alpha);
+    assert.equal(api.findModel("other/beta"), beta);
+    // Bare model-id matches across providers (first hit wins)
+    assert.equal(api.findModel("alpha"), alpha);
+    // Unknown id → undefined
+    assert.equal(api.findModel("test/missing"), undefined);
+    assert.equal(api.findModel("nope"), undefined);
+  });
+});
+
 test("unknown roles use the configured fallback model while retaining their name", async () => {
   const fallbackModel = { provider: "test", id: "fallback" };
   const fallbackRegistry = {

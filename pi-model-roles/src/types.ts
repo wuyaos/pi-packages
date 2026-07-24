@@ -109,6 +109,15 @@ export interface ModelRolesAPI {
   listModels(): string[];
 
   /**
+   * Find a Model instance by its identifier (e.g. "anthropic/claude-sonnet-4").
+   * Accepts "provider/model-id" or bare "model-id" (matches the first model
+   * with that id across providers). Returns undefined if no available model
+   * matches. Does not resolve auth — use {@link resolveRoleAsync} on a
+   * model=null role for that, or call pi.setModel() directly to switch.
+   */
+  findModel(modelRef: string): any | undefined; // Model<Api> | undefined
+
+  /**
    * Call pi-ai's completeSimple() with auth and thinking resolved from the role.
    *
    * Convenience: same as streamWithRole().result(). Auth (including OAuth
