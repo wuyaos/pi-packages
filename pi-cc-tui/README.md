@@ -57,3 +57,4 @@ pi install git:github.com/wuyaos/pi-packages
 
 - 启动头、圆角输入框及相关渲染工具移植自 [pi-claude-code-tui](https://github.com/Phoobobo/pi-claude-code-tui)，作者 Phoobobo，MIT License。
 - 98 个主题转换自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（omp）。
+- 运行时检测、working timer、turn telemetry、fitSegmentsByPriority 优先级裁剪、SessionLifecycle 代际屏障、git porcelain v2 全信号解析、sanitizeStatus 与 fmtTokens 格式移植自 [pi-open-tui](https://github.com/OldSuns/pi-open-tui)，作者 OldSuns，MIT License。

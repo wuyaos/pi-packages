@@ -3,7 +3,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyEditor, restoreEditor } from "./editor.ts";
 import { applyStartupHeader, disposeStartupHeader } from "./startup-header.ts";
-import { applyStatusline, restoreDefaultFooter, segmentConfig, saveConfig, loadConfig, configSummary } from "./statusline.ts";
+import { applyStatusline, restoreDefaultFooter, segmentConfig, telemetryConfig, saveConfig, saveTelemetryConfig, loadConfig, configSummary } from "./statusline.ts";
 import { ConfigMenuComponent, type MenuResult } from "./menu.ts";
 import { loadCcTuiConfig, saveCcTuiIcons } from "../src/config/cc-tui-config.ts";
 import { isStartupResourceListingVisible, saveStartupResourceListingVisible } from "../src/config/pi-startup.ts";
@@ -41,6 +41,7 @@ export default function (pi: ExtensionAPI) {
 							theme,
 							done,
 							segmentConfig,
+							telemetryConfig,
 							getIconMode(),
 							isStartupResourceListingVisible(),
 						),
@@ -55,6 +56,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				if (result?.changed) {
 					saveConfig(segmentConfig);
+					saveTelemetryConfig(telemetryConfig);
 					const saved = saveCcTuiIcons({ mode: result.iconMode, overrides: persisted.icons.overrides });
 					configureIcons(saved.icons);
 					if (result.startupResourcesChanged) {

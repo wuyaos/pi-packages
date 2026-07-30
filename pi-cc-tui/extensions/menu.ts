@@ -2,7 +2,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Focusable } from "@earendil-works/pi-tui";
-import type { SegmentConfig, SegmentName } from "./statusline.ts";
+import type { SegmentConfig, SegmentName, TelemetryConfig } from "./statusline.ts";
 import { getIconMode, getIcons, type IconMode } from "../src/ui/icons.ts";
 
 import { renderBorderLine, renderBoxLine, resolveBorderStyle } from "../src/ui/box.ts";
@@ -15,12 +15,19 @@ export interface MenuResult {
 	startupResourcesChanged: boolean;
 }
 
-type CategoryId = "appearance" | "statusline";
+type CategoryId = "appearance" | "statusline" | "telemetry";
 type MenuPane = "categories" | "settings";
 
 type ToggleRow = Readonly<{
 	kind: "toggle";
 	name: SegmentName;
+	label: string;
+	description: string;
+}>;
+
+type TelemetryToggleRow = Readonly<{
+	kind: "telemetry";
+	name: keyof TelemetryConfig;
 	label: string;
 	description: string;
 }>;
@@ -32,7 +39,7 @@ type ActionRow = Readonly<{
 	description: string;
 }>;
 
-type Row = ToggleRow | ActionRow;
+type Row = ToggleRow | TelemetryToggleRow | ActionRow;
 type Category = Readonly<{ id: CategoryId; label: string; hint: string; rows: readonly Row[] }>;
 
 export class ConfigMenuComponent implements Focusable {
@@ -40,10 +47,11 @@ export class ConfigMenuComponent implements Focusable {
 	private categoryIndex = 0;
 	/** Left pane is the first-level menu; right pane is its settings page. */
 	private pane: MenuPane = "categories";
-	private readonly selectedRows: Record<CategoryId, number> = { appearance: 0, statusline: 0 };
+	private readonly selectedRows: Record<CategoryId, number> = { appearance: 0, statusline: 0, telemetry: 0 };
 	private readonly theme: Theme;
 	private readonly done: (result: MenuResult | undefined) => void;
 	private readonly config: SegmentConfig;
+	private readonly telemetryConfig: Record<keyof TelemetryConfig, boolean>;
 	private iconMode: IconMode;
 	private startupResourcesVisible: boolean;
 	private startupResourcesChanged = false;
@@ -55,12 +63,14 @@ export class ConfigMenuComponent implements Focusable {
 		theme: Theme,
 		done: (result: MenuResult | undefined) => void,
 		config: SegmentConfig,
+		telemetryConfig: TelemetryConfig,
 		iconMode: IconMode,
 		startupResourcesVisible: boolean,
 	) {
 		this.theme = theme;
 		this.done = done;
 		this.config = config;
+		this.telemetryConfig = telemetryConfig as Record<keyof TelemetryConfig, boolean>;
 		this.iconMode = iconMode;
 		this.startupResourcesVisible = startupResourcesVisible;
 		const icons = getIcons();
@@ -85,11 +95,28 @@ export class ConfigMenuComponent implements Focusable {
 					{ kind: "toggle", name: "context", label: "上下文用量", description: "当前上下文、输入、输出与缓存" },
 					{ kind: "toggle", name: "tools", label: "工具统计", description: "成功数／总数" },
 					{ kind: "toggle", name: "path", label: "项目路径", description: "当前项目路径" },
+				{ kind: "toggle", name: "runtime", label: "运行时版本", description: "项目运行时图标与版本，显示在路径尾部" },
 					{ kind: "toggle", name: "bar", label: "上下文色条", description: "当前上下文分段概览" },
 					{ kind: "toggle", name: "git", label: "Git 状态", description: "分支名与变更文件数" },
+				{ kind: "toggle", name: "timer", label: "运行计时", description: "agent 运行中显示 working，结束后显示 done 耗时" },
+				{ kind: "toggle", name: "cost", label: "会话成本", description: "累计成本 $X.XXX" },
 					{ kind: "toggle", name: "extensions", label: "扩展状态", description: "扩展提供的状态文本" },
 				],
 			},
+		{
+			id: "telemetry",
+			label: "遥测",
+			hint: "turn 性能通知",
+			rows: [
+				{ kind: "telemetry", name: "enabled", label: "启用通知", description: "agent 结束后弹一行性能摘要" },
+				{ kind: "telemetry", name: "tps", label: "TPS", description: "生成速率 tok/s" },
+				{ kind: "telemetry", name: "ttft", label: "TTFT", description: "首 token 延迟" },
+				{ kind: "telemetry", name: "duration", label: "耗时", description: "本次运行总时长" },
+				{ kind: "telemetry", name: "tokens", label: "令牌数", description: "输入/输出 token" },
+				{ kind: "telemetry", name: "stalls", label: "停顿", description: "生成停顿次数与时长" },
+				{ kind: "telemetry", name: "cost", label: "单价", description: "$/M tokens" },
+			],
+		},
 		];
 	}
 
@@ -110,6 +137,11 @@ export class ConfigMenuComponent implements Focusable {
 		this.changed = true;
 	}
 
+	private toggleTelemetry(name: keyof TelemetryConfig): void {
+		this.telemetryConfig[name] = !this.telemetryConfig[name];
+		this.changed = true;
+	}
+
 	private cycleIcons(): void {
 		const modes: readonly IconMode[] = ["unicode", "ascii", "nerd", "emoji"];
 		this.iconMode = modes[(modes.indexOf(this.iconMode) + 1) % modes.length]!;
@@ -119,6 +151,10 @@ export class ConfigMenuComponent implements Focusable {
 	private activate(row: Row): void {
 		if (row.kind === "toggle") {
 			this.toggleSegment(row.name);
+			return;
+		}
+		if (row.kind === "telemetry") {
+			this.toggleTelemetry(row.name);
 			return;
 		}
 		if (row.action === "cycleIcons") {
@@ -187,6 +223,7 @@ export class ConfigMenuComponent implements Focusable {
 
 	private isEnabled(row: Row): boolean | undefined {
 		if (row.kind === "toggle") return this.config[row.name] ?? false;
+		if (row.kind === "telemetry") return this.telemetryConfig[row.name] ?? false;
 		return undefined;
 	}
 

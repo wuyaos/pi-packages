@@ -16,3 +16,6 @@ pi-sync/REFACTOR_SPEC.md
 
 # Ralph loop 临时产物
 /.ralph/
+
+# pi loop 调度锁文件
+.pi-loop.json.lock

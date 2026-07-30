@@ -15,8 +15,14 @@ export type SegmentConfig = {
 	context: boolean;
 	tools: boolean;
 	path: boolean;
+	/** 运行时图标+版本，追加在 path 段尾部。 */
+	runtime: boolean;
 	bar: boolean;
 	git: boolean;
+	/** agent 运行计时：运行中显示 working，结束后显示 done。 */
+	timer: boolean;
+	/** 会话累计成本 $X.XXX。 */
+	cost: boolean;
 	extensions: boolean;
 };
 
@@ -27,6 +33,7 @@ export type CcTuiConfig = Readonly<{
 		mode: IconMode;
 		overrides: IconOverrides;
 	}>;
+	telemetry: TelemetryConfig;
 }>;
 
 export const SEGMENT_NAMES = [
@@ -34,8 +41,11 @@ export const SEGMENT_NAMES = [
 	"context",
 	"tools",
 	"path",
+	"runtime",
 	"bar",
 	"git",
+	"timer",
+	"cost",
 	"extensions",
 ] as const;
 
@@ -46,9 +56,33 @@ export const DEFAULT_SEGMENTS: SegmentConfig = Object.freeze({
 	context: true,
 	tools: false,
 	path: true,
+	runtime: false,
 	bar: false,
 	git: true,
+	timer: true,
+	cost: true,
 	extensions: true,
+});
+
+/** Turn 遥测通知的各段开关；agent_settled 后弹一行 TPS/TTFT/cost。 */
+export type TelemetryConfig = Readonly<{
+	enabled: boolean;
+	tps: boolean;
+	ttft: boolean;
+	duration: boolean;
+	tokens: boolean;
+	stalls: boolean;
+	cost: boolean;
+}>;
+
+export const DEFAULT_TELEMETRY: TelemetryConfig = Object.freeze({
+	enabled: true,
+	tps: true,
+	ttft: true,
+	duration: true,
+	tokens: true,
+	stalls: true,
+	cost: true,
 });
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -75,6 +109,15 @@ function normalizeIconOverrides(value: unknown): IconOverrides {
 	return overrides;
 }
 
+function normalizeTelemetry(value: unknown): TelemetryConfig {
+	const record = isRecord(value) ? value : {};
+	const result: Record<string, boolean> = { ...DEFAULT_TELEMETRY };
+	for (const key of Object.keys(DEFAULT_TELEMETRY) as (keyof TelemetryConfig)[]) {
+		if (typeof record[key] === "boolean") result[key] = record[key] as boolean;
+	}
+	return Object.freeze(result as TelemetryConfig);
+}
+
 /** Parse permissively; unknown future keys remain on disk but do not affect this version. */
 export function parseCcTuiConfig(value: unknown): CcTuiConfig {
 	const record = isRecord(value) ? value : {};
@@ -88,6 +131,7 @@ export function parseCcTuiConfig(value: unknown): CcTuiConfig {
 			mode: normalizeIconMode(iconRecord.mode),
 			overrides: normalizeIconOverrides(iconRecord.overrides),
 		}),
+		telemetry: normalizeTelemetry(record.telemetry),
 	});
 }
 
@@ -107,6 +151,15 @@ export function saveCcTuiSegments(segments: SegmentConfig, path = CC_TUI_CONFIG_
 	const record = updateJsonObject(path, (next) => {
 		next.version = CC_TUI_CONFIG_VERSION;
 		next.segments = normalizeSegments(segments);
+	});
+	return parseCcTuiConfig(record);
+}
+
+/** Persist only the telemetry block; segments and icons are left untouched. */
+export function saveCcTuiTelemetry(telemetry: TelemetryConfig, path = CC_TUI_CONFIG_PATH): CcTuiConfig {
+	const record = updateJsonObject(path, (next) => {
+		next.version = CC_TUI_CONFIG_VERSION;
+		next.telemetry = normalizeTelemetry(telemetry);
 	});
 	return parseCcTuiConfig(record);
 }

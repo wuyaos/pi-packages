@@ -12,14 +12,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
-import { configureIcons, getIcons } from "../src/ui/icons.ts";
+import { configureIcons, getIconMode, getIcons } from "../src/ui/icons.ts";
 import {
 	hasCcTuiIconConfiguration,
 	loadCcTuiConfig,
+	DEFAULT_TELEMETRY,
 	SEGMENT_NAMES,
 	saveCcTuiSegments,
+	saveCcTuiTelemetry,
 	type SegmentConfig,
 	type SegmentName,
+	type TelemetryConfig,
 } from "../src/config/cc-tui-config.ts";
 import {
 	createToolMetricsState,
@@ -33,7 +36,23 @@ import {
 	refreshGitStatus,
 	type GitStatusState,
 } from "../src/status/git-status.ts";
-import { renderFooterEnds, renderPrimaryFooterBarLine } from "../src/status/footer-layout.ts";
+import {
+	createRuntimeInfoState,
+	refreshRuntimeInfo,
+	runtimeSymbol,
+	type RuntimeInfoState,
+} from "../src/status/runtime-info.ts";
+import { WorkingTimer, formatDuration } from "../src/status/working-timer.ts";
+import { TurnTelemetryTracker, formatTurnTelemetry } from "../src/status/telemetry.ts";
+import { SessionLifecycle } from "../src/status/session-lifecycle.ts";
+import {
+	effortColor,
+	providerColor,
+	renderFooterEndsPrioritized,
+	renderPrimaryFooterBarLine,
+	sanitizeStatus,
+	type PrioritizedSegment,
+} from "../src/status/footer-layout.ts";
 import {
 	addAssistantEntryUsage,
 	createUsageTotals,
@@ -88,6 +107,7 @@ export function loadConfig(): SegmentConfig {
 	// Keep PI_CC_TUI_ICON_MODE as the backwards-compatible default until a
 	// user explicitly adds an icons object to their persisted configuration.
 	if (hasCcTuiIconConfiguration()) configureIcons(config.icons);
+	telemetryConfig = { ...config.telemetry };
 	return { ...config.segments };
 }
 
@@ -96,13 +116,25 @@ export function saveConfig(config: SegmentConfig): void {
 	configureIcons(saved.icons);
 }
 
+/** Persist telemetry config and update the process-local copy. */
+export function saveTelemetryConfig(config: TelemetryConfig): void {
+	const saved = saveCcTuiTelemetry(config);
+	telemetryConfig = { ...saved.telemetry };
+}
+
+export let telemetryConfig: TelemetryConfig = { ...DEFAULT_TELEMETRY };
 export let segmentConfig = loadConfig();
+const turnTelemetry = new TurnTelemetryTracker();
+const sessionLifecycle = new SessionLifecycle();
 let cachedThinkingLevel = "medium";
 
 let usageTotals: UsageTotals = createUsageTotals();
 let usageBranchLength = -1;
 let toolMetrics: ToolMetricsState = createToolMetricsState();
 let gitStatus: GitStatusState = createGitStatusState();
+let runtimeInfo: RuntimeInfoState = createRuntimeInfoState();
+let requestRender: (() => void) | undefined;
+let workingTimer: WorkingTimer | undefined;
 
 /** Incrementally aggregate branch usage; terminal rendering must stay O(1). */
 function updateUsageTotals(ctx: ExtensionContext): UsageTotals {
@@ -125,8 +157,12 @@ function updateUsageTotals(ctx: ExtensionContext): UsageTotals {
 
 function fmtTokens(value: number): string {
 	if (value < 1000) return `${value}`;
-	if (value < 1_000_000) return `${(value / 1000).toFixed(1)}k`;
-	return `${(value / 1_000_000).toFixed(1)}M`;
+	if (value < 1_000_000) {
+		const k = value / 1000;
+		return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+	}
+	const m = value / 1_000_000;
+	return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
 }
 
 function fmtPath(p: string): string {
@@ -333,11 +369,16 @@ export function applyStatusline(ctx: ExtensionContext): void {
 	updateUsageTotals(ctx);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
+		requestRender = () => tui.requestRender();
+		if (!workingTimer) workingTimer = new WorkingTimer(() => requestRender?.());
 		let renderedExtensionStatusSignature = "";
 		let cachedExtensionStatusLine = "";
 		const getExtensionStatusLine = () => {
 			if (!segmentConfig.extensions) return "";
-			const statuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
+			const statuses = [...footerData.getExtensionStatuses().values()]
+				.filter(Boolean)
+				.map((s) => sanitizeStatus(s))
+				.filter((s) => s.length > 0);
 			const signature = statuses.join("\u0000");
 			if (signature !== renderedExtensionStatusSignature) {
 				renderedExtensionStatusSignature = signature;
@@ -357,21 +398,28 @@ export function applyStatusline(ctx: ExtensionContext): void {
 		});
 
 		return {
-			dispose: unsubscribeBranch,
+			dispose: () => {
+				unsubscribeBranch();
+				requestRender = undefined;
+			},
 			invalidate: () => {},
 			render(width: number): string[] {
 				updateContextSnapshot(ctx);
 
 				const icons = getIcons();
 
-				// ── model (含 thinking 级别) ──
+				// ── model (仅 reasoning 模型显示 thinking 级别) ──
 				let modelStr: string | null = null;
 				if (segmentConfig.model) {
 					const model = ctx.model as any;
 					const modelId = model?.id || "no-model";
 					const provider = model?.provider || "?";
-					let level = cachedThinkingLevel;
-					modelStr = theme.fg("accent", `${icons.model} ${provider}/${modelId}[${level}]`);
+					// provider 不再按厂商拆色，统一 accent；仅 [level] 保留 effort 语义色。
+					const base = theme.fg("accent", `${icons.model} ${provider}/${modelId}`);
+					const label = model?.reasoning === true
+						? `${base}${theme.fg(effortColor(cachedThinkingLevel), `[${cachedThinkingLevel}]`)}`
+						: base;
+					modelStr = label;
 				}
 
 				// ── git (异步刷新，render 只读缓存) ──
@@ -379,16 +427,49 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				let gitStr: string | null = null;
 				if (segmentConfig.git) {
 					const cwd = ctx.sessionManager.getCwd();
-					refreshGitStatus(gitStatus, cwd, () => tui.requestRender());
-					if (gitStatus.branch) {
-						const { staged, unstaged, untracked } = gitStatus;
-						const dirty = staged + unstaged + untracked;
+					const gitGen = sessionLifecycle.currentGeneration();
+				refreshGitStatus(gitStatus, cwd, () => {
+					if (!sessionLifecycle.isCurrent(gitGen)) return;
+					tui.requestRender();
+				});
+					const { branch, oid, ahead, behind, staged, modified, untracked, conflicted, renamed, deleted, stashed } = gitStatus;
+					if (branch || oid) {
+						const dirty = staged + modified + untracked + conflicted + renamed + deleted + ahead + behind;
 						const branchColor = dirty > 0 ? "warning" : "success";
-						const parts: string[] = [theme.fg(branchColor, `${icons.git} ${gitStatus.branch}`)];
+						const parts: string[] = [];
+						if (branch) {
+							parts.push(theme.fg(branchColor, `${icons.git} ${branch}`));
+						} else {
+							// detached HEAD：显示 HEAD + 短哈希。
+							parts.push(theme.fg("warning", `${icons.git} HEAD`));
+							if (oid) parts.push(theme.fg("dim", oid));
+						}
+						if (ahead > 0 && behind > 0) {
+							parts.push(theme.fg("warning", `⇕${ahead}/${behind}`));
+						} else if (ahead > 0) {
+							parts.push(theme.fg("success", `↑${ahead}`));
+						} else if (behind > 0) {
+							parts.push(theme.fg("warning", `↓${behind}`));
+						}
+						if (conflicted > 0) parts.push(theme.fg("error", `!${conflicted}`));
+						if (deleted > 0) parts.push(theme.fg("error", `✘${deleted}`));
+						if (modified > 0) parts.push(theme.fg("warning", `~${modified}`));
+						if (renamed > 0) parts.push(theme.fg("warning", `»${renamed}`));
 						if (staged > 0) parts.push(theme.fg("success", `+${staged}`));
-						if (unstaged > 0) parts.push(theme.fg("warning", `~${unstaged}`));
 						if (untracked > 0) parts.push(theme.fg("dim", `?${untracked}`));
+						if (stashed > 0) parts.push(theme.fg("muted", `⚑${stashed}`));
 						gitStr = parts.join(" ");
+					}
+				}
+
+				// ── timer (agent 运行计时) ──
+				let timerStr: string | null = null;
+				if (segmentConfig.timer) {
+					const timerState = workingTimer?.getState();
+					if (timerState?.workingSince !== undefined) {
+						timerStr = theme.fg("accent", `${icons.running} ${formatDuration(Date.now() - timerState.workingSince)}`);
+					} else if (timerState?.lastDoneIn !== undefined) {
+						timerStr = theme.fg("success", `${icons.success} ${formatDuration(timerState.lastDoneIn)}`);
 					}
 				}
 
@@ -403,15 +484,24 @@ export function applyStatusline(ctx: ExtensionContext): void {
 				let inputStr: string | null = null;
 				let outputStr: string | null = null;
 				let cacheStr: string | null = null;
+				let costStr: string | null = null;
 				if (segmentConfig.context) {
 					try {
 						const usage = ctx.getContextUsage();
 						if (usage && typeof usage.tokens === "number") {
-							const contextWindow = usage.contextWindow || (ctx.model as any)?.contextWindow || 128000;
-							const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
-							const label = `${icons.context} ${fmtTokens(usage.tokens)}/${fmtTokens(contextWindow)} (${Math.round(percent)}%)`;
-							const contextColor = percent < 70 ? "success" : percent < 85 ? "warning" : "error";
-							contextStr = percent > 95 ? theme.bold(theme.fg(contextColor, label)) : theme.fg(contextColor, label);
+							const contextWindow = usage.contextWindow ?? (ctx.model as any)?.contextWindow ?? 0;
+							// contextWindow 未知时不渲染占用比，避免 0/128000 这类错误值；
+							// 累计 input/output/cache 不依赖窗口，继续显示。
+							if (contextWindow > 0) {
+								const percent = Math.max(0, (usage.tokens / contextWindow) * 100);
+								const contextColor = percent < 70 ? "success" : percent < 85 ? "warning" : "error";
+								const ctxIcon = theme.fg(contextColor, icons.context);
+								const used = theme.fg("text", fmtTokens(usage.tokens));
+								const win = theme.fg("dim", fmtTokens(contextWindow));
+								const pct = theme.fg(contextColor, `${Math.round(percent)}%`);
+								const label = `${ctxIcon} ${used}${theme.fg("dim", "/")}${win} (${pct})`;
+								contextStr = percent > 95 ? theme.bold(label) : label;
+							}
 
 							inputStr = theme.fg("accent", `↑ ${fmtTokens(input)}`);
 							outputStr = theme.fg("success", `↓ ${fmtTokens(output)}`);
@@ -419,9 +509,12 @@ export function applyStatusline(ctx: ExtensionContext): void {
 							// 统一颜色；cacheWrite 仍会参与命中率计算，但不占紧凑状态栏宽度。
 							const inputTotal = input + cacheRead + cacheWrite;
 							if (cacheRead > 0 || cacheWrite > 0) {
-								const hitRate = inputTotal > 0 ? cacheRead / inputTotal : 0;
-								const cacheColor = hitRate >= 0.5 ? "success" : hitRate > 0 ? "warning" : "muted";
-								cacheStr = theme.fg(cacheColor, `${icons.cache} ${fmtTokens(cacheRead)}/${Math.round(hitRate * 100)}%`);
+								const hitRate = totals.latestCacheHitRate ?? (inputTotal > 0 ? cacheRead / inputTotal : 0);
+								const cacheColor = hitRate >= 0.5 ? "text" : hitRate > 0 ? "warning" : "muted";
+								cacheStr = theme.fg(cacheColor, `${icons.cache} ${fmtTokens(cacheRead)}/${(hitRate * 100).toFixed(1)}%`);
+							}
+							if (segmentConfig.cost && totals.cost > 0) {
+								costStr = theme.fg("warning", `$${totals.cost.toFixed(3)}`);
 							}
 						}
 					} catch {
@@ -450,20 +543,41 @@ export function applyStatusline(ctx: ExtensionContext): void {
 					.filter(Boolean)
 					.join(" ");
 				const rightStr = toolsStr ? [telemetryStr, toolsStr].filter(Boolean).join(separator) : telemetryStr;
-				const leftStr = [modelStr, gitStr].filter(Boolean).join(separator);
-				const topLine = renderFooterEnds(leftStr, rightStr, width);
+				const leftParts: PrioritizedSegment[] = [];
+				if (modelStr) leftParts.push({ text: modelStr, priority: 2 });
+				if (gitStr) leftParts.push({ text: gitStr, priority: 3 });
+				if (timerStr) leftParts.push({ text: timerStr, priority: 1 });
+				const topLine = renderFooterEndsPrioritized(leftParts, rightStr, width);
 				if (topLine) lines.push(topLine);
 
 				// ── 行 2: path 与 context 色条固定各占约一半 ──
 				const pathStr = segmentConfig.path
 					? theme.fg("dim", `${icons.path} ${fmtPath(ctx.sessionManager.getCwd())}`)
 					: "";
+				// runtime 图标+版本追加在 path 尾部，异步刷新，render 只读缓存。
+				let runtimeSuffix = "";
+				if (segmentConfig.runtime) {
+					const cwd = ctx.sessionManager.getCwd();
+					const rtGen = sessionLifecycle.currentGeneration();
+				refreshRuntimeInfo(runtimeInfo, cwd, () => {
+					if (!sessionLifecycle.isCurrent(rtGen)) return;
+					tui.requestRender();
+				});
+					if (runtimeInfo.info && runtimeInfo.infoCwd === cwd) {
+						const symbol = runtimeSymbol(runtimeInfo.info.name, getIconMode());
+						const version = runtimeInfo.info.version
+							? theme.fg("muted", runtimeInfo.info.version)
+							: "";
+						runtimeSuffix = `${theme.fg("dim", "•")}${theme.fg("success", symbol)}${version}`;
+					}
+				}
+				const pathWithRuntime = pathStr + runtimeSuffix;
 				// 第二行是路径与色条的连续布局，不显示竖线分隔符。
 				const secondLineDivider = " ";
 				const barContentWidth = Math.max(0, width - visibleWidth(secondLineDivider));
 				const barWidth = Math.ceil(barContentWidth / 2);
 				const bar = segmentConfig.bar ? renderContextBar(contextSnapshot, barWidth) : "";
-				const primaryLine = renderPrimaryFooterBarLine(pathStr, bar, width, secondLineDivider);
+				const primaryLine = renderPrimaryFooterBarLine(pathWithRuntime, bar, width, secondLineDivider);
 				if (primaryLine) lines.push(primaryLine);
 
 				// ── 行 3: extensions（状态未变时复用已格式化文本）──
@@ -487,6 +601,12 @@ export default function (pi: ExtensionAPI) {
 	// only when the session or model instance changes; normal TUI invalidation
 	// refreshes the existing footer during streaming and after tool activity.
 	pi.on("session_start", (_event, ctx) => {
+		// 重置 thinking level 缓存：新会话不应继承上一会话的陈旧值，
+		// 在收到 thinking_level_select 前用默认 medium。
+		cachedThinkingLevel = "medium";
+		// 重置计时器：新会话不继承上一会话的 lastDoneIn。
+		workingTimer?.reset();
+		sessionLifecycle.start();
 		resetContextSnapshotCache();
 		applyStatusline(ctx);
 	});
@@ -503,5 +623,35 @@ export default function (pi: ExtensionAPI) {
 	// session. Avoid invalidating on every streaming message_update: that would
 	// force a full history segmentation on every terminal repaint.
 	pi.on("before_provider_request", () => resetContextSnapshotCache());
-	pi.on("message_end", () => resetContextSnapshotCache());
+
+	// Working timer：agent 运行中计时，结束后显示上次耗时。
+	pi.on("agent_start", (event) => {
+		turnTelemetry.handle(event);
+		workingTimer?.start();
+	});
+	pi.on("agent_end", () => {
+		workingTimer?.stop();
+		requestRender?.();
+	});
+	pi.on("session_shutdown", () => {
+		workingTimer?.stop();
+		sessionLifecycle.shutdown();
+	});
+
+	// Turn 遥测：聚合 turn/message 事件，agent_settled 后弹一行通知。
+	pi.on("turn_start", (event) => turnTelemetry.handle(event));
+	pi.on("message_start", (event) => turnTelemetry.handle(event));
+	pi.on("message_update", (event) => turnTelemetry.handle(event));
+	pi.on("message_end", (event) => {
+		turnTelemetry.handle(event);
+		resetContextSnapshotCache();
+	});
+	pi.on("turn_end", (event) => turnTelemetry.handle(event));
+	pi.on("agent_settled", (event, ctx) => {
+		const telemetry = turnTelemetry.handle(event);
+		if (telemetry && telemetryConfig.enabled && ctx.mode === "tui") {
+			const message = formatTurnTelemetry(telemetry, ctx.ui.theme, telemetryConfig);
+			if (message) ctx.ui.notify(message, "info");
+		}
+	});
 }

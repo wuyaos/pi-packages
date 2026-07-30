@@ -12,6 +12,9 @@ export interface UsageTotals {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+	cost: number;
+	/** 最近一次 assistant message 的缓存命中率；undefined 表示无有效数据。 */
+	latestCacheHitRate: number | undefined;
 }
 
 export const EMPTY_USAGE_TOTALS: Readonly<UsageTotals> = Object.freeze({
@@ -19,6 +22,8 @@ export const EMPTY_USAGE_TOTALS: Readonly<UsageTotals> = Object.freeze({
 	output: 0,
 	cacheRead: 0,
 	cacheWrite: 0,
+	cost: 0,
+	latestCacheHitRate: undefined,
 });
 
 export function createUsageTotals(): UsageTotals {
@@ -33,10 +38,19 @@ function usageNumber(value: unknown): number {
 export function addUsage(totals: UsageTotals, usage: unknown): void {
 	if (!usage || typeof usage !== "object") return;
 	const value = usage as Record<string, unknown>;
-	totals.input += usageNumber(value.input);
+	const input = usageNumber(value.input);
+	const cacheRead = usageNumber(value.cacheRead);
+	const cacheWrite = usageNumber(value.cacheWrite);
+	totals.input += input;
 	totals.output += usageNumber(value.output);
-	totals.cacheRead += usageNumber(value.cacheRead);
-	totals.cacheWrite += usageNumber(value.cacheWrite);
+	totals.cacheRead += cacheRead;
+	totals.cacheWrite += cacheWrite;
+	totals.cost += usageNumber((value.cost as Record<string, unknown> | undefined)?.total);
+	// 缓存命中率取最近一次 message：每次调用覆盖，render 显示“当前请求”而非累计平均。
+	const promptTokens = input + cacheRead + cacheWrite;
+	if (promptTokens > 0) {
+		totals.latestCacheHitRate = cacheRead / promptTokens;
+	}
 }
 
 /**
