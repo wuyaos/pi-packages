@@ -41,6 +41,7 @@ description: 把 pi 的 `/` 菜单命令说明翻译成中文。当用户运行 
 - **专有名词保留原文**：GitHub gist、HTML、JSONL、Ctrl+P、provider、WebDAV、SSH 等
 - **`${APP_NAME}` 占位符必须原样保留**（如 `quit` 的值 `Quit ${APP_NAME}`），apply 脚本会自动替换为实际 app 名
 - **`[sourceTag]` 前缀不要出现在翻译里**——那是 autocomplete 自动加的来源标签（如 `[u:git:x/y]`），apply 时会自动保留。你只翻译前缀后面的正文
+- **译文中的双引号使用直角引号「」**，不要使用 ASCII 双引号 `"` 或中文双引号 `""`（会破坏 JSON 导致 apply 脚本失败）。例如：`询问「如何做 X」` 而非 `询问"如何做 X"`
 - 值已经是中文的（如 `i18n-translate` 自己的描述）保留不动
 
 把翻译结果写成同样结构（只含 `commands` 对象，key 不变，value 为中文），保存为 `~/.pi/agent/i18n.translated.json`。

@@ -64,11 +64,27 @@ function main() {
     fail(`翻译文件不存在: ${inputFile}`);
   }
 
+  let raw = readFileSync(inputFile, "utf8");
   let translated;
   try {
-    translated = JSON.parse(readFileSync(inputFile, "utf8"));
+    translated = JSON.parse(raw);
   } catch (e) {
-    fail(`翻译文件 JSON 解析失败：${e.message}`);
+    // 尝试修复：译文中的中文双引号可能被写成 ASCII "，破坏 JSON
+    // 模式：汉字/标点后的 " 和 "（成对出现），替换为直角引号
+    const repaired = raw.replace(
+      /([\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef])"([^"]{1,80})"([\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef，。、；：！？\-）\)）])/g,
+      '$1「$2」$3'
+    );
+    if (repaired !== raw) {
+      try {
+        translated = JSON.parse(repaired);
+        console.warn("[apply] 已自动修复译文中混入的 ASCII 双引号（改用直角引号「」）");
+      } catch (e2) {
+        fail(`翻译文件 JSON 解析失败（自动修复也失败）：${e2.message}`);
+      }
+    } else {
+      fail(`翻译文件 JSON 解析失败：${e.message}`);
+    }
   }
 
   const translatedCmds = translated.commands || translated;
