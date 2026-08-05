@@ -38,7 +38,11 @@ export function ensureDir(dir: string): void {
   ensureSharedDir(dir);
 }
 
+/** In-memory config cache, invalidated on saveConfig. Avoids per-turn disk reads. */
+let configCache: SyncConfig | null = null;
+
 export function loadConfig(): SyncConfig {
+  if (configCache) return configCache;
   if (!fs.existsSync(SYNC_CONFIG_PATH) && fs.existsSync(LEGACY_SYNC_CONFIG_PATH)) {
     ensureDir(SYNC_CONFIG_DIR);
     try { fs.copyFileSync(LEGACY_SYNC_CONFIG_PATH, SYNC_CONFIG_PATH); } catch { /* best effort migration */ }
@@ -63,11 +67,14 @@ export function loadConfig(): SyncConfig {
     sessionProjectMode: data.sessionProjectMode === "blacklist" ? "blacklist" : "whitelist",
     maxBackups: typeof data.maxBackups === "number" && data.maxBackups >= 0 ? Math.floor(data.maxBackups) : 10,
   };
+  configCache = result;  // populated after successful load
+  return result;
 }
 
 export function saveConfig(config: SyncConfig, ctx?: Pick<ExtensionContext, "ui">): void {
   ensureDir(path.dirname(SYNC_CONFIG_PATH));
   writeJsonAtomic(SYNC_CONFIG_PATH, config, { backup: true });
+  configCache = config;  // refresh cache to avoid immediate disk re-read
   if (ctx) refreshFooterStatusFromConfig(ctx, config);
 }
 

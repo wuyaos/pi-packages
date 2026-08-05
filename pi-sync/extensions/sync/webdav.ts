@@ -77,11 +77,17 @@ export async function listWebdavDir(remoteDir: string, config: SyncConfig, ctx: 
   catch (error) { if (error instanceof Error && /HTTP 404/.test(error.message)) return []; throw error; }
 }
 
+/** Process-level cache of already-ensured WebDAV directory URLs, avoids repeated MKCOL storms. */
+const ensuredDirs = new Set<string>();
+
 export async function ensureWebdavDirectory(remoteDir: string, config: SyncConfig, ctx: ExtensionContext): Promise<string> {
   let current = ensureTrailingSlash(config.webdavUrl);
   for (const segment of remoteDir.split("/").filter(Boolean)) {
     current += `${encodeURIComponent(segment)}/`;
-    await webdavMkcol(current, webdavAuth(config), ctx);
+    if (!ensuredDirs.has(current)) {
+      await webdavMkcol(current, webdavAuth(config), ctx);
+      ensuredDirs.add(current);
+    }
   }
   return current;
 }
