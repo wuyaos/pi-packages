@@ -8,7 +8,7 @@
 |---|---|---|
 | [@wuyaos/pi-cc-tui](https://www.npmjs.com/package/@wuyaos/pi-cc-tui) | `npm:@wuyaos/pi-cc-tui` | 99 个主题、Pi 动画启动头、Codex 输入框、thinking 折叠和状态栏 |
 | [@wuyaos/pi-notify](https://www.npmjs.com/package/@wuyaos/pi-notify) | `npm:@wuyaos/pi-notify` | pi 任务完成后的桌面通知 |
-| [@wuyaos/pi-sync](https://www.npmjs.com/package/@wuyaos/pi-sync) | `npm:@wuyaos/pi-sync` | WebDAV 配置/技能/扩展/会话项目同步备份（fork from [BevalZ/pi-sync](https://github.com/BevalZ/pi-sync)，MIT） |
+| [@wuyaos/pi-sync](https://www.npmjs.com/package/@wuyaos/pi-sync) | `npm:@wuyaos/pi-sync` | WebDAV 归档备份/恢复：Pi 主目录、共享 Skills、项目会话分包，支持退出归档与中英文菜单 |
 | [@wuyaos/pi-tool-gate](https://www.npmjs.com/package/@wuyaos/pi-tool-gate) | `npm:@wuyaos/pi-tool-gate` | 按需工具开关：重 schema 工具默认 inactive，gate_tools loader + /tool-gate 命令，降低每轮 tools[] token 占用 |
 | [@wuyaos/pi-model-roles](https://www.npmjs.com/package/@wuyaos/pi-model-roles) | `npm:@wuyaos/pi-model-roles` | 模型角色路由 — 不同任务分配不同模型+thinking level |
 | [@wuyaos/pi-advisor](https://www.npmjs.com/package/@wuyaos/pi-advisor) | `npm:@wuyaos/pi-advisor` | 顾问模型 — 第二个模型审查每轮输出，注入建议/警告 |

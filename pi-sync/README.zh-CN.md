@@ -4,202 +4,211 @@
 
 [![pi package](https://img.shields.io/badge/pi-package-blue)](https://github.com/earendil-works/pi-coding-agent)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![release](https://img.shields.io/github/v/release/wuyaos/pi-packages?display_name=tag&sort=semver)](https://github.com/wuyaos/pi-packages/releases)
 
-面向 [Pi](https://github.com/earendil-works/pi-coding-agent) 的 WebDAV 配置同步工具 —— 跨机器备份与恢复 **models**、**settings**、**skills**、**extensions** 以及选定的 **session 项目**。
+面向 [Pi](https://github.com/earendil-works/pi-coding-agent) 的 WebDAV 归档备份与恢复工具。
 
-在 Pi 里输入 `/sync`，从菜单选择操作。一台机器上传，另一台下载并恢复。
+`pi-sync` 为 Pi agent 数据、共享 Skills 和项目会话创建有版本的 `.tar.xz` 归档。它现在是**纯归档模式**：没有实时上传、每轮 hook、定时同步或多机合并冲突。
 
-<p align="center">
-  <img src="docs/sync-menu.png" alt="Pi WebDAV Synchronization 菜单" width="720" />
-</p>
+## 特性
 
-<p align="center"><sub><b>Pi WebDAV Synchronization</b> —— 输入 <code>/sync</code> 后的交互菜单</sub></p>
-
-## 为什么需要它
-
-如果你在多台 PC / WSL / 服务器上使用 Pi，手工重装 models、skills、extensions 很痛苦。`pi-sync` 会把 agent 主目录打包成带时间戳的 zip，上传到任意 WebDAV 目录，并在恢复时保留本地安全备份。
+- 直接打包 `~/.pi/agent`，不创建完整临时副本
+- 通过可配置黑名单排除可重装或临时目录
+- `~/.agents/skills` 独立、可选归档
+- 会话按项目独立归档
+- 退出 Pi 时自动归档当前项目
+- 一次操作备份或恢复所有已启用类别
+- `/sync` 菜单支持英文/简体中文即时切换
+- WebDAV 上传和下载使用流式传输，不把整个归档读入内存
+- 拒绝危险路径、符号链接、特殊节点和不安全恢复目标
 
 ## 安装
 
-需要 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent)，以及可用的 WebDAV（TeraCLOUD、坚果云、Nextcloud、ownCloud、自建等）。
+从 npm 安装：
 
-`pi-sync` 是 [wuyaos/pi-packages](https://github.com/wuyaos/pi-packages) monorepo 的子包。直接安装整个仓库会加载所有子包：
+```bash
+pi install npm:@wuyaos/pi-sync
+```
+
+或安装整个 monorepo：
 
 ```bash
 pi install git:github.com/wuyaos/pi-packages
 ```
 
-只想加载 **pi-sync** 时，在 `~/.pi/agent/settings.json` 用 object 形式筛选：
-
-```json
-{
-  "packages": [
-    {
-      "source": "git:github.com/wuyaos/pi-packages",
-      "extensions": ["pi-sync/extensions/*.ts"],
-      "themes": []
-    }
-  ]
-}
-```
-
-然后重启 Pi，或执行 `/reload`。
+安装后重启 Pi 或执行 `/reload`。
 
 ## 用法
 
-在 Pi 中输入 **`/sync`**。没有命令行子命令 —— 全部通过交互菜单完成：
+运行 `/sync`，交互菜单提供：
 
-| 菜单项 | 作用 |
-|--------|------|
-| ☁️ **Upload Backup (Backup to cloud)** | 打包当前配置并上传到 WebDAV |
-| 📥 **Download Backup (Restore from cloud)** | 列出云端备份，下载并在确认后恢复 |
-| ⚙️ **Configure Sync Settings** | 配置 WebDAV 地址 / 用户 / 密码，以及同步范围 |
-| ❌ **Cancel** | 退出菜单 |
+- **全部备份** / **全部恢复（最新）**
+- 单独上传或恢复 **Pi 备份**
+- 单独上传或恢复 **Skills 备份**
+- 单独上传或恢复 **会话归档**
+- 配置备份设置
+- 中英文菜单切换
 
-TUI 提示：`↵` 选择 · `↑↓` 导航 · `Esc` 取消。
+首次运行若缺少 WebDAV 地址、用户名或密码，会自动打开配置向导。
 
-### 首次配置
+## 归档模型
 
-```bash
-# 1. 安装
-pi install git:github.com/wuyaos/pi-packages
+### Pi 备份
 
-# 2. 打开菜单（若尚未配置 WebDAV，会先进入设置向导）
-/sync
+Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
 
-# 3. 如需修改：Configure Sync Settings
-#    填写 URL / 用户名 / 密码
-#    建议：密码填 $PI_WEBDAV_PASS，并在 shell 中 export 该环境变量
-
-# 4. 主力机 → Upload Backup (Backup to cloud)
-# 5. 新机器（安装并配置后）→ Download Backup (Restore from cloud)
+```json
+["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"]
 ```
 
-### 会同步哪些内容
+这样会保留配置与扩展状态，同时排除可重装的包源码、临时扩展缓存、单独归档的会话、工作区历史、后台任务状态和 Web UI RPC 运行时 socket。除非显式加入黑名单，`config/sync.json` 也会进入归档。
 
-| 组件 | 默认 | 说明 |
-|------|------|------|
-| Config | 开 | `models.json`、`settings.json`、`auth.json` |
-| Skills | 开 | 整个 `~/.pi/agent/skills` |
-| Extensions | 开 | `~/.pi/agent/extensions`（zip 中会排除 sync 插件自身） |
-| Sessions | 关 | `~/.pi/agent/sessions/` 下按项目分目录的会话历史；在 **Configure Sync Settings → Session Projects** 中勾选要同步的项目 |
-
-可在 **Configure Sync Settings** 中分别开关。
-
-### Sessions（可选）
-
-会话历史按项目 cwd 存放在 `~/.pi/agent/sessions/<projectDir>/`。**Session Projects** 子菜单会列出本机所有项目目录，勾选你想备份的那些。
-
-- 在 **Configure Sync Settings** 中打开 **Backup Sessions**。
-- 打开 **Session Projects** 逐个勾选项目（可用 **Select All** / **Reset list** 快捷全选/清空）。
-- 列表模式（可切换）：
-  - **白名单模式**：只备份勾选的项目，空列表 = 全部不备份。
-  - **黑名单模式**：跳过勾选的项目，空列表 = 全部备份。
-- 恢复时会以 *合并* 方式写入本地 `~/.pi/agent/sessions/`——会话文件名为唯一的时间戳+uuid，不会覆盖或删除本地已有会话。
-
-> 注意：项目目录名由项目路径编码而来，备份在 A 机器上制作，恢复到 B 机器时只会落到相同项目路径对应的项目目录中。
-
-### 备份文件名
-
-归档文件形如：
+归档名称：
 
 ```text
-pi_sync_backup_2026-7-14_20260714120000_windows11.zip
+backup/pi/pi_agent_<platform>_<timestamp>.tar.xz
 ```
 
-末尾的平台标签（`windows11` / `windows10` / `macos` / `linux`）标明该备份由哪类主机生成。
+### 共享 Skills 备份
 
-### 恢复时的安全机制
+`~/.agents/skills` 使用独立归档，默认关闭：
 
-- 覆盖前，已有配置文件会生成带时间戳的 `.bak` 副本
-- 已有 skills / extensions 目录会先改名为 `*-backup-<timestamp>`，再替换/合并
-- 恢复前会展示计划，并要求确认
-- 恢复成功后可选择 reload agent runtime，以应用 skills / extensions
+```text
+backup/skills/agent_skills_<timestamp>.tar.xz
+```
 
-## 新机引导（Windows，尚未安装 Pi）
+### 会话归档
 
-若还没装 Pi，也可先用辅助脚本拉取最新 zip：
+会话按项目归档，不再进行实时同步，也没有 `_latest.json` marker：
+
+```text
+backup/sessions/<projectDir>/sessions_<platform>_<timestamp>.tar.xz
+```
+
+项目选择支持：
+
+- **白名单**：仅归档列表中的项目；空列表表示全部不归档。
+- **黑名单**：排除列表中的项目；空列表表示归档全部项目。
+
+开启 `backupOnExit` 后，Pi 在 `session_shutdown` 时归档当前允许的项目；仍可通过 `/sync` 手动归档。
+
+## WebDAV 目录结构
+
+```text
+<webdavUrl>/
+└── backup/
+    ├── pi/
+    │   └── pi_agent_<platform>_<timestamp>.tar.xz
+    ├── skills/
+    │   └── agent_skills_<timestamp>.tar.xz
+    └── sessions/
+        └── <projectDir>/
+            └── sessions_<platform>_<timestamp>.tar.xz
+```
+
+`maxBackups` 在每个备份目录内独立生效；设为 `0` 表示全部保留。
+
+## 配置
+
+配置文件为 `~/.pi/agent/config/sync.json`：
+
+```json
+{
+  "webdavUrl": "https://example.com/dav/pi",
+  "webdavUser": "user",
+  "webdavPass": "$PI_WEBDAV_PASS",
+  "language": "zh",
+  "backupProviders": true,
+  "backupSessions": true,
+  "backupAgentSkills": false,
+  "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"],
+  "backupOnExit": true,
+  "sessionProjectMode": "blacklist",
+  "sessionProjects": [],
+  "maxBackups": 10
+}
+```
+
+密码支持环境变量引用（如 `$PI_WEBDAV_PASS`）。未设置 `language` 时，会读取 `settings.json → piSwitch.language`，无法识别则默认英文。
+
+## 恢复行为与安全
+
+- 检查归档中的绝对路径和目录穿越。
+- 解压前拒绝符号链接和非普通文件节点。
+- 先解压到临时目录，再合并到目标目录。
+- 若目标路径包含符号链接或类型冲突则拒绝恢复。
+- Pi 恢复只改写归档中存在的文件，黑名单目录保持原样。
+- Skills 恢复前会把现有 `~/.agents/skills` 移到带时间戳的备份目录。
+- 会话恢复以合并方式写入 `~/.pi/agent/sessions`。
+- Pi 恢复前展示计划，完成后可选择 `/reload`。
+
+归档可能包含 WebDAV 凭据、API Key、provider 配置及其他秘密，应把 WebDAV 存储视为敏感数据。
+
+## Windows 新机引导
+
+`pi-bootstrap.ps1` 会从 `backup/pi/` 下载最新归档，并合并到 `%USERPROFILE%\.pi\agent`：
+
+> **仅限可信归档：** 此 bootstrap 脚本不执行 pi-sync TypeScript 恢复流程的路径和符号链接校验。日常恢复请使用 `/sync`，仅在可信 WebDAV 端点和可信归档场景下使用该脚本。
 
 ```powershell
-# 优先用环境变量，避免密钥进入 shell 历史
-$env:PI_WEBDAV_URL  = "https://your-webdav.example/dav/Pi"
-$env:PI_WEBDAV_USER = "your-user"
-$env:PI_WEBDAV_PASS = "your-app-password"
+$env:PI_WEBDAV_URL  = "https://example.com/dav/pi"
+$env:PI_WEBDAV_USER = "user"
+$env:PI_WEBDAV_PASS = "app-password"
 .\pi-bootstrap.ps1
 ```
 
-或使用占位符一行命令（运行前请替换）：
-
-```powershell
-$url="https://your-webdav.example/dav/Pi"; $user="your-user"; $pass="your-app-password"
-$pair="$user`:$pass"; $auth=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
-$resp=Invoke-RestMethod -Uri $url -Method PROPFIND -Headers @{Authorization="Basic $auth";Depth="1"} -ContentType "application/xml"
-$files=([regex]'<d:href>([^<]+)</d:href>').Matches($resp) | %{$_.Groups[1].Value} | ?{$_ -match "pi_sync_backup_.*\.zip$"} | Sort-Object -Descending
-$latest=$files[0]; $name=Split-Path $latest -Leaf
-Invoke-WebRequest -Uri "$url/$name" -Headers @{Authorization="Basic $auth"} -OutFile "$env:TEMP\$name"
-```
-
-之后安装 Pi，后续更新用 `/sync` → **Download Backup** 即可。
-
-## 安全建议
-
-- WebDAV 凭证保存在本机 `~/.pi/agent/sync_config.json`
-- 优先使用**应用专用密码**（不要用主账号密码）
-- 更推荐环境变量引用：界面里密码填 `$PI_WEBDAV_PASS`，再在 shell profile 中 export
-- 若开启相关选项，备份可能包含 `auth.json` / API key —— 请把 WebDAV 目录当敏感数据对待
-- 切勿把真实 WebDAV 地址与凭证提交进 git
+该脚本用于可信归档和新机恢复。恢复后需要安装/更新 packages，以重建被排除的 `npm/` 和 `git/` 目录。
 
 ## 故障排查
 
 | 现象 | 处理 |
-|------|------|
-| HTTP 401 / 403 | 检查用户名密码；改用应用专用密码；确认 URL 含正确 DAV 路径 |
-| PROPFIND 失败 / 列表为空 | 服务端可能禁用 PROPFIND；换 WebDAV 提供商；确认允许 Depth:1 |
-| tar / zip 报错 | PATH 中需要可用的 `tar`（Windows 10+ 自带；Git Bash / WSL 亦可） |
-| 恢复覆盖了本地内容 | 在 agent 目录旁查找 `*.bak-*` 与 `skills-backup-*` / `extensions-backup-*` |
-| 恢复后插件不见了 | 重新执行 `pi install git:github.com/wuyaos/pi-packages` —— 归档会排除 sync 包自身 |
+|---|---|
+| HTTP 401 / 403 | 检查 WebDAV 地址，并使用应用专用密码。 |
+| PROPFIND 失败 | 确认服务端支持 `Depth: 1` 的 WebDAV `PROPFIND`。 |
+| tar 报错 | 安装支持 xz 的 `tar`。 |
+| 退出时未备份 | 检查 `backupOnExit`、`backupSessions`、项目黑白名单和 WebDAV 凭据。 |
+| Pi 恢复后插件缺失 | 运行 `pi update --extensions`，或按 `settings.json` 重新安装 packages。 |
 
-## 目录结构
+## 开发验证
 
-```text
-pi-sync/
-  package.json
-  LICENSE
-  README.md
-  README.zh-CN.md
-  pi-bootstrap.ps1
-  docs/
-    sync-menu.png       # /sync 菜单截图
-  extensions/
-    sync/
-      index.ts          # /sync 命令
-    _shared/
-      json-io.ts
-      enhanced-select.ts
-      spawn.ts
-      fetch-utils.ts
-      box-drawing.ts
+```bash
+cd /mnt/d/work/project/person/pi-packages
+node --import tsx --test pi-sync/extensions/sync/*.test.ts
+npm run typecheck
 ```
+
+monorepo 类型检查可能报告其他包的既有错误；pi-sync 自身错误路径以 `pi-sync/` 开头。
+
+### WebDAV 烟雾测试
+
+仓库内的 smoke harness 会创建唯一命名的临时 Pi 与会话归档，执行上传、列举、下载和校验，最后删除测试对象；它不会输出凭据，且默认拒绝写入：
+
+```bash
+cd /mnt/d/work/project/person/pi-packages
+PI_SYNC_SMOKE_WRITE=1 bash --noprofile --norc pi-sync/scripts/verify.sh
+```
+
+`verify.sh` 还会执行单元测试、严格的 pi-sync 类型检查、扩展加载检查、发布白名单检查和 diff 检查。它读取 `~/.pi/agent/config/sync.json`；可通过 `PI_SYNC_SMOKE_PROJECT` 指定一个允许归档的本地会话目录名（如 `--home-user--`）。
 
 ## 更新日志
 
-### v1.0.1
+### v1.2.0
 
-- 备份 zip 文件名增加主机平台标签（`windows11` / `macos` / `linux` 等）
-- 从 bootstrap 脚本示例中移除真实凭证
-- 增加 MIT `LICENSE`，扩充 README（安全、恢复保护、故障排查、菜单截图）
+- 从实时同步改为有版本的纯归档备份/恢复
+- 新增 Pi 主目录直接 tar 打包与黑名单排除
+- 分离 Pi、共享 Skills 和项目会话归档
+- 新增退出时会话归档、手动全部备份/全部恢复
+- 新增中英文菜单切换
+- 新增 WebDAV 流式传输、配置缓存和归档/恢复安全检查
+- 删除实时同步、定时同步、custom-path、memory 和 legacy 单体代码
+
+### v1.1.1
+
+- 缓存 WebDAV 目录创建结果与已加载配置，减少重复 I/O
 
 ### v1.0.0
 
-- 首次公开发布：基于 WebDAV 的交互式 `/sync` 菜单
-  - Upload Backup · Download Backup · Configure Sync Settings
-- Windows 新机引导脚本
+- 初始 WebDAV 备份/恢复版本
 
 ## 许可证
 
 MIT — 见 [LICENSE](./LICENSE)。
-
-## 致谢
-
-本开源项目已链接并获 [LINUX DO](https://linux.do) 社区认可。

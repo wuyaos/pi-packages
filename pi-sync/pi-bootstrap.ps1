@@ -1,17 +1,14 @@
 # pi-bootstrap.ps1
-# Pull the latest Pi config backup from WebDAV onto a new machine.
+# Restore the latest trusted Pi agent archive from WebDAV on a new Windows machine.
 #
-# Usage:
-#   .\pi-bootstrap.ps1 -WebdavUrl "https://your-webdav.example/dav/Pi" -User "your-user" -Pass "your-app-password"
+# Security: this bootstrap helper does not run pi-sync's TypeScript archive path/link
+# validation. Use it only with a trusted WebDAV endpoint and archives you trust.
 #
-# Or set env vars (recommended):
-#   $env:PI_WEBDAV_URL  = "https://your-webdav.example/dav/Pi"
+# Recommended usage:
+#   $env:PI_WEBDAV_URL  = "https://your-webdav.example/dav/pi"
 #   $env:PI_WEBDAV_USER = "your-user"
 #   $env:PI_WEBDAV_PASS = "your-app-password"
 #   .\pi-bootstrap.ps1
-#
-# Security: never commit real credentials. Prefer app-specific passwords
-# and store them only in env vars / your password manager.
 
 param(
     [string]$WebdavUrl = $env:PI_WEBDAV_URL,
@@ -23,91 +20,53 @@ $ErrorActionPreference = "Stop"
 
 if (-not $WebdavUrl -or -not $User -or -not $Pass) {
     Write-Host "Usage: .\pi-bootstrap.ps1 -WebdavUrl <url> -User <user> -Pass <pass>" -ForegroundColor Red
-    Write-Host "Or set PI_WEBDAV_URL, PI_WEBDAV_USER, PI_WEBDAV_PASS env vars" -ForegroundColor Yellow
+    Write-Host "Or set PI_WEBDAV_URL, PI_WEBDAV_USER, PI_WEBDAV_PASS." -ForegroundColor Yellow
     exit 1
 }
 
 $WebdavUrl = $WebdavUrl.TrimEnd('/')
+$backupUrl = "$WebdavUrl/backup/pi"
 $pair = "${User}:${Pass}"
 $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
 $headers = @{ Authorization = "Basic $auth"; Depth = "1" }
 
-Write-Host "[1/5] Listing backups on WebDAV..." -ForegroundColor Cyan
-$resp = Invoke-RestMethod -Uri $WebdavUrl -Method PROPFIND -Headers $headers -ContentType "application/xml"
-
-# Parse XML for filenames
-$files = ([regex]'<d:href>([^<]+)</d:href>').Matches($resp) |
-    ForEach-Object { $_.Groups[1].Value } |
-    Where-Object { $_ -match 'pi_sync_backup_.*\.zip$' } |
+Write-Host "[1/5] Listing Pi archives on WebDAV..." -ForegroundColor Cyan
+$resp = Invoke-RestMethod -Uri "$backupUrl/" -Method PROPFIND -Headers $headers -ContentType "application/xml"
+$hrefPattern = [regex]'(?i)<(?:[A-Za-z0-9_-]+:)?href>([^<]+)</(?:[A-Za-z0-9_-]+:)?href>'
+$files = $hrefPattern.Matches([string]$resp) |
+    ForEach-Object { [Uri]::UnescapeDataString($_.Groups[1].Value) } |
+    Where-Object { $_ -match 'pi_agent_.*\.tar\.xz$' } |
     Sort-Object -Descending
 
 if ($files.Count -eq 0) {
-    Write-Host "No backups found on WebDAV!" -ForegroundColor Red
+    Write-Host "No Pi archives found under backup/pi/." -ForegroundColor Red
     exit 1
 }
 
-$latest = $files[0]
-$name = [System.IO.Path]::GetFileName($latest)
-Write-Host "[2/5] Latest backup: $name" -ForegroundColor Green
+$name = [System.IO.Path]::GetFileName($files[0])
+Write-Host "[2/5] Latest archive: $name" -ForegroundColor Green
 
-$tempZip = "$env:TEMP\$name"
-Write-Host "[3/5] Downloading..." -ForegroundColor Cyan
-Invoke-WebRequest -Uri "$WebdavUrl/$name" -Headers @{ Authorization = "Basic $auth" } -OutFile $tempZip
-
-$tempDir = "$env:TEMP\pi_restore_$(Get-Date -Format 'yyyyMMddHHmmss')"
+$tempArchive = Join-Path $env:TEMP $name
+$tempDir = Join-Path $env:TEMP "pi_restore_$(Get-Date -Format 'yyyyMMddHHmmss')"
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
-Write-Host "[4/5] Extracting..." -ForegroundColor Cyan
-tar -xf $tempZip -C $tempDir
+try {
+    Write-Host "[3/5] Downloading..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri "$backupUrl/$name" -Headers @{ Authorization = "Basic $auth" } -OutFile $tempArchive
 
-$agentDir = "$env:USERPROFILE\.pi\agent"
-$backupSuffix = "bak-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    Write-Host "[4/5] Extracting..." -ForegroundColor Cyan
+    tar -xf $tempArchive -C $tempDir
+    if ($LASTEXITCODE -ne 0) { throw "tar extraction failed with exit code $LASTEXITCODE" }
 
-# Restore config
-if (Test-Path "$tempDir\config") {
-    Write-Host "  → Restoring config files..." -ForegroundColor Yellow
-    Get-ChildItem "$tempDir\config" | ForEach-Object {
-        $dest = Join-Path $agentDir $_.Name
-        if (Test-Path $dest) {
-            Copy-Item $dest "$dest.$backupSuffix"
-            Write-Host "    Backup: $($_.Name) → $($_.Name).$backupSuffix"
-        }
-        Copy-Item $_.FullName $dest -Force
-        Write-Host "    Restored: $($_.Name)" -ForegroundColor Green
+    $agentDir = Join-Path $env:USERPROFILE ".pi\agent"
+    New-Item -ItemType Directory -Force -Path $agentDir | Out-Null
+    Get-ChildItem -LiteralPath $tempDir -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $agentDir -Recurse -Force
     }
+
+    Write-Host "[5/5] Pi agent archive restored to $agentDir" -ForegroundColor Green
+    Write-Host "Next: install/update packages from settings.json, then restart Pi." -ForegroundColor Cyan
+} finally {
+    Remove-Item $tempArchive -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-# Restore skills
-if (Test-Path "$tempDir\skills") {
-    Write-Host "  → Restoring skills..." -ForegroundColor Yellow
-    $skillsDest = "$agentDir\skills"
-    if (Test-Path $skillsDest) {
-        Rename-Item $skillsDest "skills-$backupSuffix"
-        Write-Host "    Backup: skills → skills-$backupSuffix"
-    }
-    Copy-Item "$tempDir\skills" $skillsDest -Recurse
-    Write-Host "    Skills restored" -ForegroundColor Green
-}
-
-# Restore extensions
-if (Test-Path "$tempDir\extensions") {
-    Write-Host "  → Restoring extensions..." -ForegroundColor Yellow
-    $extDest = "$agentDir\extensions"
-    if (Test-Path $extDest) {
-        Rename-Item $extDest "extensions-$backupSuffix"
-        Write-Host "    Backup: extensions → extensions-$backupSuffix"
-    }
-    Copy-Item "$tempDir\extensions" $extDest -Recurse
-    Write-Host "    Extensions restored" -ForegroundColor Green
-}
-
-# Cleanup
-Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-
-Write-Host "[5/5] Done! Pi config restored to $agentDir" -ForegroundColor Green
-Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Restart Pi (or /reload)"
-Write-Host "  2. Run: pi update --extensions  (to install packages from settings.json)"
-Write-Host "  3. /sync pull  (to pull future updates)"

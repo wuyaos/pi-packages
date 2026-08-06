@@ -7,15 +7,12 @@ import { fetchWithTimeout } from "../_shared/fetch-utils";
 import { resolvePassword, type SyncConfig } from "./config";
 
 export const WEBDAV_FETCH_TIMEOUT_MS = 120_000;
-export const WEBDAV_CONFIG_DIR = "config/";
-export const WEBDAV_AGENT_SKILLS_DIR = "agent-skills/";
-export const WEBDAV_SESSIONS_DIR = "sessions/";
+export const WEBDAV_PI_BACKUP_DIR = "backup/pi/";
+export const WEBDAV_AGENT_SKILLS_DIR = "backup/skills/";
+export const WEBDAV_SESSIONS_ARCHIVE_DIR = "backup/sessions/";
 
 export const ensureTrailingSlash = (url: string): string => url.endsWith("/") ? url : `${url}/`;
 export const webdavDirBase = (config: SyncConfig, remoteDir: string): string => ensureTrailingSlash(config.webdavUrl) + remoteDir.replace(/^\/+/, "");
-export const configWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_CONFIG_DIR);
-export const agentSkillsWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_AGENT_SKILLS_DIR);
-export const sessionsWebdavBase = (config: SyncConfig): string => webdavDirBase(config, WEBDAV_SESSIONS_DIR);
 export const webdavAuth = (config: SyncConfig): string => "Basic " + Buffer.from(`${config.webdavUser}:${resolvePassword(config.webdavPass)}`).toString("base64");
 
 export async function webdavList(url: string, auth: string, ctx: ExtensionContext, filter?: (name: string) => boolean): Promise<string[]> {

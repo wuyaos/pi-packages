@@ -9,7 +9,7 @@
 |---|---|---|
 | pi-cc-tui | @wuyaos/pi-cc-tui | 99 主题、Pi 动画启动头、Codex 输入框、thinking 折叠、状态栏 |
 | pi-notify | @wuyaos/pi-notify | pi 任务完成后的桌面通知 |
-| pi-sync | @wuyaos/pi-sync | WebDAV 配置/技能/扩展/会话同步备份 |
+| pi-sync | @wuyaos/pi-sync | WebDAV 归档备份/恢复：Pi、共享 Skills、项目会话分包 |
 | pi-tool-gate | @wuyaos/pi-tool-gate | 按需工具开关,降低 tools[] token 占用 |
 | pi-model-roles | @wuyaos/pi-model-roles | 模型角色路由 |
 | pi-advisor | @wuyaos/pi-advisor | 顾问模型审查每轮输出 |

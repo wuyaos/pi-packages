@@ -1,95 +1,59 @@
 # pi-sync promotion drafts
 
-Repo: https://github.com/wuyaos/pi-packages  
-Install: `pi install git:github.com/wuyaos/pi-packages`  
-Release: https://github.com/wuyaos/pi-packages/releases/tag/v1.0.1
+## English
 
----
-
-## English (short)
-
-**pi-sync** — WebDAV backup/restore for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent).
-
-Open `/sync`, then **Upload Backup** on one machine and **Download Backup** on another.
+**pi-sync 1.2** — versioned WebDAV archives for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent).
 
 ```bash
-pi install git:github.com/wuyaos/pi-packages
-/sync   # main machine  → Upload Backup (Backup to cloud)
-/sync   # new machine   → Download Backup (Restore from cloud)
+pi install npm:@wuyaos/pi-sync
+/sync
 ```
 
-Works with any WebDAV (Nextcloud, 坚果云, TeraCLOUD, self-hosted). Restore keeps local `.bak` copies. MIT.
+Highlights:
 
-👉 https://github.com/wuyaos/pi-packages
+- Direct `~/.pi/agent` archive with configurable exclusions
+- Independent shared-Skills and per-project session archives
+- Automatic current-project archive when Pi exits
+- Back Up All / Restore All (latest)
+- English and Chinese menus
+- Streamed WebDAV transfers and safe archive validation
+- No live or per-turn synchronization
 
----
+WebDAV layout:
 
-## English (Discord / forum)
+```text
+backup/pi/
+backup/skills/
+backup/sessions/<project>/
+```
 
-Hey Pi users — I open-sourced **pi-sync**, a small package that syncs your Pi agent home over WebDAV.
+Repository: https://github.com/wuyaos/pi-packages/tree/master/pi-sync
 
-Problem: multi-machine setups mean re-copying `models.json`, skills, and extensions by hand.  
-Solution: `/sync push` on the main box, `/sync pull` on the next one.
+## 简体中文
 
-- Install: `pi install git:github.com/wuyaos/pi-packages`
-- Interactive menu: Upload Backup · Download Backup · Configure Sync Settings
-- Optional Windows bootstrap script for brand-new machines
-- Backup zips tagged by platform (`windows11`, `macos`, …)
-- Restore confirms and keeps timestamped local backups
-
-Feedback / issues welcome: https://github.com/wuyaos/pi-packages
-
----
-
-## 中文（短）
-
-**pi-sync**：给 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent) 用的 WebDAV 配置同步插件。
-
-多机之间一键备份 / 恢复 models、settings、skills、extensions。
+**pi-sync 1.2**：面向 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent) 的 WebDAV 有版本归档备份。
 
 ```bash
-pi install git:github.com/wuyaos/pi-packages
-/sync   # 主力机 → Upload Backup (Backup to cloud)
-/sync   # 新机器 → Download Backup (Restore from cloud)
+pi install npm:@wuyaos/pi-sync
+/sync
 ```
 
-支持任意 WebDAV（坚果云 / Nextcloud / 自建）。恢复前会做本地备份。MIT 开源。
+主要特性：
 
-👉 https://github.com/wuyaos/pi-packages
+- 直接归档 `~/.pi/agent`，支持黑名单排除
+- 共享 Skills 与项目会话独立归档
+- 退出 Pi 时自动归档当前项目会话
+- 全部备份 / 全部恢复（最新）
+- 中英文菜单切换
+- WebDAV 流式传输与安全归档校验
+- 不进行实时或每轮同步
 
----
+WebDAV 目录：
 
-## 中文（朋友圈 / 社区）
-
-换电脑重装 Pi 配置太烦？我做了个小工具 **pi-sync** 并开源了。
-
-- 主力机 `/sync` → **Upload Backup** 把配置打成 zip 传到 WebDAV
-- 新机器 `/sync` → **Download Backup** 选择备份并还原
-- 覆盖 models / settings / skills / extensions
-- 恢复前自动留本地备份，密码建议用应用专用密码 + 环境变量
-
-安装一行：
-
-```bash
-pi install git:github.com/wuyaos/pi-packages
+```text
+backup/pi/
+backup/skills/
+backup/sessions/<project>/
 ```
 
-仓库：https://github.com/wuyaos/pi-packages  
-Release：https://github.com/wuyaos/pi-packages/releases/tag/v1.0.1
-
-欢迎试用和提 issue。
-
----
-
-## Tweet / X (EN)
-
-Multi-machine Pi setup? I open-sourced pi-sync:
-
-`/sync` → Upload Backup → WebDAV  
-`/sync` → Download Backup → new machine
-
-models · settings · skills · extensions
-
-`pi install git:github.com/wuyaos/pi-packages`
-
-https://github.com/wuyaos/pi-packages
+仓库：https://github.com/wuyaos/pi-packages/tree/master/pi-sync

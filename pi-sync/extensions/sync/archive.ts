@@ -2,14 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runCommand } from "../_shared/spawn";
-import { type CustomPathArchiveEntry, resolveCustomSource } from "./custom-paths";
 import {
   AGENT_DIR,
-  AGENT_ROOT_MARKDOWN_FILES,
   AGENT_SKILLS_DIR,
   SESSIONS_DIR,
   ensureDir,
-  isProjectAllowed,
+  normalizePiExcludePaths,
   type ManifestFile,
   type SyncConfig,
 } from "./config";
@@ -91,19 +89,13 @@ export function collectManifest(dir: string, archivePrefix: string, sourcePrefix
   }
 }
 
-export function writeManifest(
-  tempDir: string,
-  agentDir: string,
-  files: ManifestFile[],
-  customPaths?: CustomPathArchiveEntry[],
-): void {
+export function writeManifest(tempDir: string, agentDir: string, files: ManifestFile[]): void {
   fs.writeFileSync(path.join(tempDir, "manifest.json"), JSON.stringify({
     version: 1,
     createdAt: new Date().toISOString(),
     agentDir,
     fileCount: files.length,
     files,
-    ...(customPaths?.length ? { customPaths } : {}),
   }, null, 2), "utf8");
 }
 
@@ -138,34 +130,15 @@ export async function validateArchiveEntryTypes(archivePath: string): Promise<vo
 }
 
 export function validateArchiveEntries(entries: string[]): void {
-  const allowed = new Set(["config", "skills", "extensions", "sessions", "custom", "agent-skills", "manifest.json"]);
-  const legacyConfigFiles = new Set(["models.json", "settings.json", "auth.json"]);
-  const rootMarkdownFiles = new Set<string>(AGENT_ROOT_MARKDOWN_FILES);
   if (entries.length === 0) throw new Error("Backup archive is empty or unreadable");
   for (const entry of entries) {
     const parts = entry.split("/");
-    if (entry.startsWith("/") || /^[a-zA-Z]:\//.test(entry) || parts.includes("..") || parts.some((part) => !part) || !allowed.has(parts[0]!)) {
+    if (
+      entry.startsWith("/")
+      || /^[a-zA-Z]:\//.test(entry)
+      || parts.some((part) => !part || part === "." || part === "..")
+    ) {
       throw new Error(`Unsafe archive path rejected: ${entry}`);
-    }
-    if (parts[0] === "custom") {
-      // tar emits parent directories too. A payload may be either a directory
-      // (custom/N/data/...) or one regular file at custom/N/data.
-      if (parts.length === 1) continue;
-      if (!/^\d+$/.test(parts[1] ?? "")) throw new Error(`Unexpected custom archive entry rejected: ${entry}`);
-      if (parts.length === 2) continue;
-      if (parts[2] !== "data") throw new Error(`Unexpected custom archive entry rejected: ${entry}`);
-      continue;
-    }
-    if (parts[0] !== "config" || !parts[1]) continue;
-    if (parts[1] === "root") {
-      if (!parts[2]) continue;
-      if (parts.length !== 3 || (!parts[2].endsWith(".json") && !rootMarkdownFiles.has(parts[2]))) {
-        throw new Error(`Unexpected root config file rejected: ${entry}`);
-      }
-    } else if (parts[1] === "sub") {
-      continue;
-    } else if (parts.length !== 2 || !legacyConfigFiles.has(parts[1])) {
-      throw new Error(`Unexpected config file rejected: ${entry}`);
     }
   }
 }
@@ -175,70 +148,53 @@ export async function packTemporaryArchive(tempDir: string, archivePath: string)
   await runTar(["-J", "-c", "-f", archivePath, "-C", tempDir, "."]);
 }
 
-export async function createConfigZip(config: SyncConfig, archivePath: string): Promise<string[]> {
-  const tempDir = path.join(os.tmpdir(), `pi_config_temp_${Date.now()}`);
-  const rootDir = path.join(tempDir, "config", "root");
-  const subDir = path.join(tempDir, "config", "sub");
-  const manifest: ManifestFile[] = [];
-  const contents: string[] = [];
-  ensureDir(rootDir);
-  ensureDir(subDir);
-  try {
-    if (config.backupProviders) {
-      const rootNames = fs.readdirSync(AGENT_DIR).filter((name) => name.endsWith(".json"));
-      for (const name of AGENT_ROOT_MARKDOWN_FILES) if (!rootNames.includes(name)) rootNames.push(name);
-      for (const name of rootNames) {
-        const src = path.join(AGENT_DIR, name);
-        if (!fs.existsSync(src) || !fs.statSync(src).isFile()) continue;
-        fs.copyFileSync(src, path.join(rootDir, name));
-        manifest.push({ archive: `config/root/${name}`, source: name });
-        contents.push(`Config: ${name}`);
-      }
-      const configDir = path.join(AGENT_DIR, "config");
-      if (fs.existsSync(configDir)) {
-        copyRecursiveSync(configDir, subDir);
-        collectManifest(subDir, "config/sub", "config", manifest);
-        contents.push("Config directory");
-      }
-    }
-    if (config.backupExtensions) {
-      const source = path.join(AGENT_DIR, "extensions");
-      const dest = path.join(tempDir, "extensions");
-      if (fs.existsSync(source)) {
-        copyRecursiveSync(source, dest);
-        fs.rmSync(path.join(dest, "sync"), { recursive: true, force: true });
-        collectManifest(dest, "extensions", "extensions", manifest);
-        contents.push("Extensions directory");
-      }
-    }
-    if (manifest.length === 0) throw new Error("No config or extension files found to back up.");
-    writeManifest(tempDir, AGENT_DIR, manifest);
-    await packTemporaryArchive(tempDir, archivePath);
-    return contents;
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+function isExcluded(relativePath: string, exclusions: readonly string[]): boolean {
+  return exclusions.some((excluded) => relativePath === excluded || relativePath.startsWith(`${excluded}/`));
 }
 
-export async function createCustomPathsZip(config: SyncConfig, archivePath: string): Promise<string[]> {
-  if (config.customPaths.length === 0) throw new Error("No custom Pi paths are configured.");
-  const tempDir = path.join(os.tmpdir(), `pi_custom_paths_temp_${Date.now()}`);
-  const manifest: ManifestFile[] = [];
-  const customPaths: CustomPathArchiveEntry[] = [];
-  try {
-    // Validate every source before creating a partial archive. This also makes
-    // persisted configuration with overlapping paths fail closed.
-    const sources = config.customPaths.map((relativePath) => ({ relativePath, source: resolveCustomSource(relativePath) }));
-    for (const [index, { relativePath, source }] of sources.entries()) {
-      const archiveRoot = `custom/${index}/data`;
-      const destination = path.join(tempDir, archiveRoot);
-      copyRecursiveSync(source.absolute, destination);
-      collectManifest(destination, archiveRoot, relativePath, manifest);
-      customPaths.push({ archiveRoot, relativePath, type: source.type });
+function validatePiAgentTree(sourceDir: string, exclusions: readonly string[]): number {
+  const root = lstatRegularOrDirectory(sourceDir);
+  if (!root.isDirectory()) throw new Error(`Pi agent path is not a directory: ${sourceDir}`);
+  let fileCount = 0;
+  const visit = (dir: string, relativeDir: string): void => {
+    for (const name of fs.readdirSync(dir)) {
+      const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
+      if (isExcluded(relativePath, exclusions)) continue;
+      const fullPath = path.join(dir, name);
+      const stats = lstatRegularOrDirectory(fullPath);
+      if (stats.isDirectory()) visit(fullPath, relativePath);
+      else fileCount += 1;
     }
-    if (manifest.length === 0) throw new Error("No files found in configured custom Pi paths.");
-    writeManifest(tempDir, AGENT_DIR, manifest, customPaths);
-    await packTemporaryArchive(tempDir, archivePath);
-    return customPaths.map((entry) => `Custom: ~/.pi/agent/${entry.relativePath}`);
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+  };
+  visit(sourceDir, "");
+  return fileCount;
+}
+
+/**
+ * Pack ~/.pi/agent directly without first copying it to a staging directory.
+ * A lightweight filesystem scan rejects links/special nodes before tar runs;
+ * excluded install/state trees are skipped during both scan and compression.
+ */
+export async function createPiAgentZip(
+  config: Pick<SyncConfig, "piExcludePaths">,
+  archivePath: string,
+  sourceDir = AGENT_DIR,
+): Promise<string[]> {
+  const source = path.resolve(sourceDir);
+  const output = path.resolve(archivePath);
+  if (output === source || output.startsWith(`${source}${path.sep}`)) {
+    throw new Error("Pi backup archive must be written outside ~/.pi/agent.");
+  }
+  const exclusions = normalizePiExcludePaths(config.piExcludePaths);
+  const fileCount = validatePiAgentTree(source, exclusions);
+  if (fileCount === 0) throw new Error("No Pi agent files found to back up.");
+  const excludeArgs = exclusions.map((relativePath) => `--exclude=./${relativePath}`);
+  await yieldToUI();
+  await runTar(["-J", "-c", "-f", output, ...excludeArgs, "-C", source, "."]);
+  return [
+    `Pi agent: ${fileCount} file(s)`,
+    `Excluded: ${exclusions.length ? exclusions.join(", ") : "none"}`,
+  ];
 }
 
 export async function createAgentSkillsZip(archivePath: string): Promise<string[]> {
@@ -269,47 +225,5 @@ export async function createSessionsArchiveZip(projectDir: string, archivePath: 
     writeManifest(tempDir, AGENT_DIR, manifest);
     await packTemporaryArchive(tempDir, archivePath);
     return [`Sessions: ${projectDir} (${manifest.length} file(s))`];
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
-}
-
-export async function createLegacyZip(config: SyncConfig, archivePath: string): Promise<string[]> {
-  const tempDir = path.join(os.tmpdir(), `pi_sync_temp_${Date.now()}`);
-  const manifest: ManifestFile[] = [];
-  const contents: string[] = [];
-  ensureDir(tempDir);
-  try {
-    if (config.backupProviders) {
-      const configDir = path.join(tempDir, "config");
-      ensureDir(configDir);
-      for (const name of ["models.json", "settings.json", "auth.json"]) {
-        const src = path.join(AGENT_DIR, name);
-        if (!fs.existsSync(src)) continue;
-        fs.copyFileSync(src, path.join(configDir, name));
-        manifest.push({ archive: `config/${name}`, source: name });
-        contents.push(`Config: ${name}`);
-      }
-    }
-    if (config.backupSkills) {
-      const src = path.join(AGENT_DIR, "skills"), dest = path.join(tempDir, "skills");
-      if (fs.existsSync(src)) { copyRecursiveSync(src, dest); collectManifest(dest, "skills", "skills", manifest); contents.push("Skills Directory"); }
-    }
-    if (config.backupExtensions) {
-      const src = path.join(AGENT_DIR, "extensions"), dest = path.join(tempDir, "extensions");
-      if (fs.existsSync(src)) { copyRecursiveSync(src, dest); fs.rmSync(path.join(dest, "sync"), { recursive: true, force: true }); collectManifest(dest, "extensions", "extensions", manifest); contents.push("Extensions Directory"); }
-    }
-    if (config.backupSessions) {
-      for (const entry of fs.existsSync(SESSIONS_DIR) ? fs.readdirSync(SESSIONS_DIR, { withFileTypes: true }) : []) {
-        if (!entry.isDirectory()) continue;
-        if (!isProjectAllowed(entry.name, config)) continue;
-        const dest = path.join(tempDir, "sessions", entry.name);
-        copyRecursiveSync(path.join(SESSIONS_DIR, entry.name), dest);
-      }
-      const sessionsDest = path.join(tempDir, "sessions");
-      if (fs.existsSync(sessionsDest)) { collectManifest(sessionsDest, "sessions", "sessions", manifest); contents.push("Sessions"); }
-    }
-    if (manifest.length === 0) throw new Error("No components selected or found to backup.");
-    writeManifest(tempDir, AGENT_DIR, manifest);
-    await packTemporaryArchive(tempDir, archivePath);
-    return contents;
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }

@@ -1,0 +1,203 @@
+export type SyncLanguage = "en" | "zh";
+
+const EN = {
+  on: "ON",
+  off: "OFF",
+  enabled: "enabled",
+  disabled: "disabled",
+  keepAll: "keep all",
+  cancel: "❌ Cancel",
+  back: "x Back",
+  save: "s Save",
+
+  menuTitle: "Pi WebDAV Backup",
+  uploadAllBackups: "⬆️  Back Up All",
+  restoreAllBackups: "⬇️  Restore All (latest)",
+  uploadPiBackup: "☁️  Upload Pi Backup",
+  uploadSkillsBackup: "📦 Upload Skills Backup",
+  uploadSessionsArchive: "🗂️  Upload Sessions Archive",
+  restorePiBackup: "📥 Restore Pi Backup",
+  restoreSkillsBackup: "📥 Restore Skills Backup",
+  restoreSessionsArchive: "📥 Restore Sessions Archive",
+  configureSettings: "⚙️  Configure Backup Settings",
+  switchLanguage: "🌐 Language: English → 中文",
+
+  configureTitle: "Configure Backup Settings",
+  webdavUrl: "WebDAV URL: {value}",
+  webdavUsername: "WebDAV Username: {value}",
+  webdavPassword: "WebDAV Password/Token: {value}",
+  piBackup: "Pi Backup: {value}",
+  skillsBackup: "Shared Skills Backup: {value}",
+  sessionsBackup: "Sessions Backup: {value}",
+  backupOnExit: "Archive Current Project On Exit: {value}",
+  piExcludePaths: "Pi Backup Exclusions: {value}",
+  sessionProjects: "Session Projects: {value}",
+  sessionProjectMode: "Session Project Mode: {value}",
+  maxCloudBackups: "Max Cloud Backups: {value}",
+  language: "Language: English",
+  notSet: "(not set)",
+  passwordSet: "(set)",
+  none: "(none)",
+  piKind: "Pi",
+  skillsKind: "Skills",
+  sessionsKind: "Sessions",
+
+  setupRequired: "WebDAV is not configured. Please set it up now.",
+  promptWebdavUrl: "WebDAV URL:",
+  promptWebdavUsername: "WebDAV username:",
+  promptWebdavPassword: "WebDAV token (or $ENV_VAR):",
+  promptExcludePaths: "Excluded paths (comma separated, relative to ~/.pi/agent):",
+  promptMaxBackups: "Maximum backups (0 = keep all):",
+  configSaved: "Backup configuration updated.",
+
+  backupDisabled: "{kind} backup is disabled.",
+  backupUploaded: "Uploaded {filename}\n{contents}{pruned}",
+  backupFailed: "{kind} backup failed: {error}",
+  prunedCount: "\nPruned: {count}",
+  noAllowedSessionProjects: "No allowed local session projects found.",
+  archiveSessionProject: "Archive session project",
+  sessionArchiveUploaded: "Uploaded {filename}\n{contents}",
+  sessionArchiveFailed: "Session archive failed: {error}",
+
+  noArchivesFound: "No {kind} archives found.",
+  restoreArchive: "Restore {kind} archive",
+  replaceSharedSkillsTitle: "Replace shared skills?",
+  replaceSharedSkillsBody: "The current ~/.agents/skills will be moved to a timestamped backup.",
+  restoreCompleted: "Restored {kind}:\n{contents}",
+  restoreFailed: "{kind} restore failed: {error}",
+  restoreSessionProject: "Restore session archive: project",
+  selectSessionArchive: "Select session archive",
+  sessionRestoreCompleted: "Session archive restored:\n{contents}",
+  sessionRestoreFailed: "Session restore failed: {error}",
+  noRemoteSessionProjects: "No remote session archives found.",
+  confirmPiRestoreTitle: "Restore Pi backup?",
+  confirmPiRestoreBody: "Entries: {count}\n{plan}",
+  confirmRestoreAllTitle: "Restore all latest backups?",
+  confirmRestoreAllBody: "This restores Pi, enabled Skills, and the latest archive for every allowed session project.",
+  allBackupCompleted: "All backups completed:\n{results}",
+  allRestoreCompleted: "Restore all completed:\n{results}",
+  reloadRuntimeTitle: "Reload Runtime?",
+  reloadRuntimeBody: "Reload Pi to apply the restored data?",
+
+  projectModeWhitelist: "whitelist",
+  projectModeBlacklist: "blacklist",
+  projectSelectionWhitelist: "only selected projects",
+  projectSelectionBlacklist: "all except selected projects",
+  projectSelectionAll: "all projects",
+  selectSessionProjects: "Select Session Projects [{mode}]",
+  switchProjectMode: "m Switch Mode: {mode}",
+  selectAllProjects: "a Select All",
+  resetProjects: "r Reset",
+
+  exitBackupFailed: "Exit session backup failed: {error}",
+} as const;
+
+export type TranslationKey = keyof typeof EN;
+type TranslationParams = Record<string, string | number | boolean>;
+
+const ZH: Record<TranslationKey, string> = {
+  on: "开启",
+  off: "关闭",
+  enabled: "已启用",
+  disabled: "已禁用",
+  keepAll: "全部保留",
+  cancel: "❌ 取消",
+  back: "x 返回",
+  save: "s 保存",
+
+  menuTitle: "Pi WebDAV 备份",
+  uploadAllBackups: "⬆️  全部备份",
+  restoreAllBackups: "⬇️  全部恢复（最新）",
+  uploadPiBackup: "☁️  上传 Pi 备份",
+  uploadSkillsBackup: "📦 上传 Skills 备份",
+  uploadSessionsArchive: "🗂️  上传会话归档",
+  restorePiBackup: "📥 恢复 Pi 备份",
+  restoreSkillsBackup: "📥 恢复 Skills 备份",
+  restoreSessionsArchive: "📥 恢复会话归档",
+  configureSettings: "⚙️  配置备份设置",
+  switchLanguage: "🌐 语言：中文 → English",
+
+  configureTitle: "配置备份设置",
+  webdavUrl: "WebDAV 地址：{value}",
+  webdavUsername: "WebDAV 用户名：{value}",
+  webdavPassword: "WebDAV 密码/令牌：{value}",
+  piBackup: "Pi 备份：{value}",
+  skillsBackup: "共享 Skills 备份：{value}",
+  sessionsBackup: "会话备份：{value}",
+  backupOnExit: "退出时归档当前项目：{value}",
+  piExcludePaths: "Pi 备份排除项：{value}",
+  sessionProjects: "会话项目：{value}",
+  sessionProjectMode: "会话项目模式：{value}",
+  maxCloudBackups: "云端最大备份数：{value}",
+  language: "语言：中文",
+  notSet: "（未设置）",
+  passwordSet: "（已设置）",
+  none: "（无）",
+  piKind: "Pi",
+  skillsKind: "Skills",
+  sessionsKind: "会话",
+
+  setupRequired: "尚未配置 WebDAV，请先完成设置。",
+  promptWebdavUrl: "WebDAV 地址：",
+  promptWebdavUsername: "WebDAV 用户名：",
+  promptWebdavPassword: "WebDAV 令牌（或 $ENV_VAR）：",
+  promptExcludePaths: "排除路径（以逗号分隔，相对于 ~/.pi/agent）：",
+  promptMaxBackups: "最大备份数（0 = 全部保留）：",
+  configSaved: "备份配置已更新。",
+
+  backupDisabled: "{kind} 备份已禁用。",
+  backupUploaded: "已上传 {filename}\n{contents}{pruned}",
+  backupFailed: "{kind} 备份失败：{error}",
+  prunedCount: "\n已清理旧备份：{count} 个",
+  noAllowedSessionProjects: "没有允许备份的本地会话项目。",
+  archiveSessionProject: "选择要归档的会话项目",
+  sessionArchiveUploaded: "已上传 {filename}\n{contents}",
+  sessionArchiveFailed: "会话归档失败：{error}",
+
+  noArchivesFound: "未找到 {kind} 归档。",
+  restoreArchive: "恢复 {kind} 归档",
+  replaceSharedSkillsTitle: "替换共享 Skills？",
+  replaceSharedSkillsBody: "当前 ~/.agents/skills 将移动到带时间戳的备份目录。",
+  restoreCompleted: "已恢复 {kind}：\n{contents}",
+  restoreFailed: "{kind} 恢复失败：{error}",
+  restoreSessionProject: "选择要恢复的会话项目",
+  selectSessionArchive: "选择会话归档",
+  sessionRestoreCompleted: "会话归档已恢复：\n{contents}",
+  sessionRestoreFailed: "会话恢复失败：{error}",
+  noRemoteSessionProjects: "未找到远端会话归档。",
+  confirmPiRestoreTitle: "恢复 Pi 备份？",
+  confirmPiRestoreBody: "归档条目：{count}\n{plan}",
+  confirmRestoreAllTitle: "恢复全部最新备份？",
+  confirmRestoreAllBody: "将恢复 Pi、已启用的 Skills，以及每个允许会话项目的最新归档。",
+  allBackupCompleted: "全部备份完成：\n{results}",
+  allRestoreCompleted: "全部恢复完成：\n{results}",
+  reloadRuntimeTitle: "重新加载运行时？",
+  reloadRuntimeBody: "现在重新加载 Pi 以应用恢复的数据？",
+
+  projectModeWhitelist: "白名单",
+  projectModeBlacklist: "黑名单",
+  projectSelectionWhitelist: "仅所选项目",
+  projectSelectionBlacklist: "除所选项目外全部",
+  projectSelectionAll: "全部项目",
+  selectSessionProjects: "选择会话项目［{mode}］",
+  switchProjectMode: "m 切换模式：{mode}",
+  selectAllProjects: "a 全选",
+  resetProjects: "r 重置",
+
+  exitBackupFailed: "退出时会话备份失败：{error}",
+};
+
+const STRINGS: Record<SyncLanguage, Record<TranslationKey, string>> = { en: EN, zh: ZH };
+
+export function normalizeLanguage(value: unknown): SyncLanguage {
+  return typeof value === "string" && value.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function t(language: SyncLanguage, key: TranslationKey, params?: TranslationParams): string {
+  let message = STRINGS[language][key];
+  if (!params) return message;
+  for (const [name, value] of Object.entries(params)) {
+    message = message.split(`{${name}}`).join(String(value));
+  }
+  return message;
+}
