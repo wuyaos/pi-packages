@@ -73,8 +73,9 @@ async function selectAction<T extends string>(
   ctx: ExtensionCommandContext,
   title: string,
   items: SelectItem<T>[],
+  initialIndex = 0,
 ): Promise<T | undefined> {
-  const selected = await enhancedSelect(ctx, title, items.map((item) => item.label));
+  const selected = await enhancedSelect(ctx, title, items.map((item) => item.label), { initialIndex });
   return items.find((item) => item.label === selected)?.id;
 }
 
@@ -135,6 +136,7 @@ function sessionSelectionLabel(config: SyncConfig): string {
 }
 
 async function showSessionProjectSelect(ctx: ExtensionCommandContext, config: SyncConfig): Promise<void> {
+  let cursor = 0;
   while (true) {
     const language = config.language;
     const projects = listSessionProjects();
@@ -149,8 +151,9 @@ async function showSessionProjectSelect(ctx: ExtensionCommandContext, config: Sy
       })),
       { id: "back", label: t(language, "back") },
     ];
-    const action = await selectAction(ctx, t(language, "selectSessionProjects", { mode: modeLabel }), items);
+    const action = await selectAction(ctx, t(language, "selectSessionProjects", { mode: modeLabel }), items, cursor);
     if (!action || action === "back") return;
+    cursor = Math.max(0, items.findIndex((item) => item.id === action));
     if (action === "mode") {
       config.sessionProjectMode = config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist";
     } else if (action === "all") {
@@ -182,6 +185,7 @@ export async function showSetupWizard(ctx: ExtensionCommandContext): Promise<boo
 
 export async function showConfigureSettings(ctx: ExtensionCommandContext): Promise<void> {
   const config = cloneConfig(loadConfig());
+  let cursor = 0;
   while (true) {
     const language = config.language;
     const items: SelectItem<string>[] = [
@@ -199,8 +203,9 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       { id: "save", label: t(language, "save") },
       { id: "back", label: t(language, "back") },
     ];
-    const action = await selectAction(ctx, t(language, "configureTitle"), items);
+    const action = await selectAction(ctx, t(language, "configureTitle"), items, cursor);
     if (!action || action === "back") return;
+    cursor = Math.max(0, items.findIndex((item) => item.id === action));
     if (action === "save") {
       saveConfig(config, ctx);
       ctx.ui.notify(t(language, "configSaved"), "info");

@@ -85,6 +85,12 @@ export interface EnhancedSelectOptions {
    * key takes precedence over filter input, mirroring shortcut-key behavior.
    */
   actionKeys?: Array<{ key: string; label: string }>;
+  /**
+   * Initial highlighted index (0-based). Defaults to 0. Clamped to the
+   * valid item range. Use to preserve cursor position across re-renders in
+   * looping menus (e.g. a config toggle that re-enters the select).
+   */
+  initialIndex?: number;
 }
 
 /** Sentinel prefix marking an action-key result from enhancedSelect. */
@@ -143,6 +149,13 @@ class EnhancedSelectComponent {
         this.shortcutMap.set(key, i);
       }
     }
+
+    // Preserve caller-provided cursor position; clamp to valid range so a
+    // stale index from a previous (longer) item list cannot overflow.
+    const initial = this.options.initialIndex ?? 0;
+    this.selectedIdx = this.items.length > 0
+      ? Math.max(0, Math.min(initial, this.items.length - 1))
+      : 0;
   }
 
   // ── Fuzzy filter state ──────────────────────────────────────────────
