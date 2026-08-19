@@ -366,6 +366,19 @@ async function showRestorePackage(
         )) return false;
       }
       const restored = kind === "pi" ? await extractPiAgentZip(local) : await extractAgentSkillsZip(local);
+      if (kind === "pi") {
+        try {
+          // ctx.reload() 只重载扩展等资源，不会刷新内存中的 ModelRegistry。
+          // 禁用网络请求，仅重读刚恢复的 ~/.pi/agent/models.json，使模型选择器立即可见最新目录。
+          const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
+          if (refresh.errors.size > 0) {
+            console.warn(`[pi-sync] Model catalog refresh completed with ${refresh.errors.size} error(s)`);
+          }
+        } catch (error) {
+          // 文件已恢复；模型刷新失败不应让整个恢复操作误报失败，重启 Pi 后仍会重新读取 models.json。
+          console.warn(`[pi-sync] Failed to refresh restored model catalog: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       ctx.ui.notify(t(language, "restoreCompleted", { kind: label, contents: restored.join("\n") }), "info");
       if (kind === "pi" && reloadAfter && await ctx.ui.confirm(t(language, "reloadRuntimeTitle"), t(language, "reloadRuntimeBody"))) {
         await ctx.reload();
