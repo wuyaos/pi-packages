@@ -39,7 +39,7 @@ async function configMenu(ctx: UiCtx): Promise<void> {
       `[${w.enabled ? "开" : "关"}] write.enabled — 写操作总开关（默认关）`,
       `[${w.tools.length ? "开" : "关"}] write.tools — 资源白名单: ${toolsLabel}`,
       `[${w.delete ? "开" : "关"}] write.delete — 永久删除总闸（默认关）`,
-      `[${w.rememberKey ? "开" : "关"}] write.rememberKey — 授权 key 复用（默认关=一次性）`,
+      `[${w.rememberKey ? "开" : "关"}] write.rememberKey — 持久化 Always Allow key（默认开；关闭后 /reload 删除）`,
       `[${w.enabled ? "开" : "关"}] baseUrl: ${cfg.baseUrl}`,
       `[timeoutMs: ${cfg.timeoutMs}] [cacheDir: ${cfg.cacheDir ?? "默认<cwd>/.zotero-cache"}] [maxItems: ${cfg.maxItems}]`,
       "── 完成（保存并退出） ──",

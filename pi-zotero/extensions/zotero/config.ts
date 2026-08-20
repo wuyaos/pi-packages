@@ -13,7 +13,7 @@ export interface ZoteroWriteConfig {
   tools: string[];
   /** 独立高危总闸：delete 类动作（永久删除） */
   delete: boolean;
-  /** authorize 是否允许 "Always Allow"（true 时 key 可跨请求复用；仍仅存内存） */
+  /** true 时仅把用户选择 Always Allow 后返回的可复用 key 持久化；false 时重载即删除磁盘 key */
   rememberKey: boolean;
 }
 

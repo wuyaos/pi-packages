@@ -110,7 +110,7 @@ export class ZoteroTimeoutError extends ZoteroApiError {
   }
 }
 
-interface ServerMeta {
+export interface ServerMeta {
   serverId: string;
   version: string;
 }
@@ -123,6 +123,8 @@ export class ZoteroClient {
   private meta: ServerMeta | null = null;
   /** 写授权 key（内存持有；方案 C 下可从磁盘恢复） */
   private apiKey: string | null = null;
+  /** true=Always Allow/磁盘恢复，可跨写请求复用；false=Allow，首个写请求后必须清空 */
+  private apiKeyReusable = false;
   private readonly rememberKey: boolean;
   private versionWarned = false;
   private storedKey: string | null = null;
@@ -134,7 +136,8 @@ export class ZoteroClient {
     this.userAgent = options.userAgent ?? "pi-zotero/0.1 (zotero-local-api)";
     this.maxItems = options.maxItems ?? 5000;
     this.rememberKey = options.rememberKey ?? false;
-    this.loadStoredKey();
+    if (this.rememberKey) this.loadStoredKey();
+    else this.clearStoredKey();
   }
 
   /** Zotero 是否可达（不抛错） */
@@ -175,14 +178,17 @@ export class ZoteroClient {
 
   // ---------- 读 ----------
 
-  /** 通用列表查询（自动分页：limit≤100，maxItems 兜底） */
+  /** 通用列表查询：limit 是总返回上限；内部按 ≤100 自动分页，并受 maxItems 硬上限约束。 */
   async list<T = ZoteroItem>(path: string, opts: ListOptions = {}): Promise<T[]> {
-    const limit = Math.min(opts.limit ?? 100, 100);
+    const hardLimit = Math.max(1, this.maxItems);
+    const totalLimit = Math.min(Math.max(1, opts.limit ?? hardLimit), hardLimit);
     const out: T[] = [];
-    for (let start = opts.start ?? 0; ; start += limit) {
+    let start = Math.max(0, opts.start ?? 0);
+    while (out.length < totalLimit) {
+      const pageSize = Math.min(100, totalLimit - out.length);
       const page = await this.rawFetch<T[]>(this.userPath(), path, {
         params: {
-          limit: String(limit),
+          limit: String(pageSize),
           start: String(start),
           ...(opts.since !== undefined ? { since: String(opts.since) } : {}),
           ...(opts.q ? { q: opts.q, qmode: opts.qmode ?? "everything" } : {}),
@@ -191,9 +197,9 @@ export class ZoteroClient {
           ...(opts.format ? { format: opts.format } : {}),
         },
       });
-      out.push(...page);
-      if (page.length < limit) break;
-      if (out.length >= this.maxItems) break;
+      out.push(...page.slice(0, totalLimit - out.length));
+      if (page.length < pageSize) break;
+      start += pageSize;
     }
     return out;
   }
@@ -269,6 +275,24 @@ export class ZoteroClient {
     return this.getCSLBatch(keys);
   }
 
+  /** 批量读取条目本地 version，用于 CSL 缓存失效。 */
+  async getItemVersions(keys: string[]): Promise<Record<string, number>> {
+    const requested = new Set(keys);
+    for (const key of requested) validateKey(key);
+    const out: Record<string, number> = {};
+    const list = [...requested];
+    for (let i = 0; i < list.length; i += 50) {
+      const page = list.slice(i, i + 50);
+      const values = await this.rawFetch<Record<string, number>>(this.userPath(), "/items", {
+        params: { format: "versions", itemKey: page.join(","), limit: "100", start: "0" },
+      });
+      for (const [key, version] of Object.entries(values)) {
+        if (requested.has(key) && Number.isInteger(version)) out[key] = version;
+      }
+    }
+    return out;
+  }
+
   /** 全文内容（无索引 → ZoteroApiError 404） */
   async getFulltext(key: string): Promise<{ content: string; indexedPages: number; totalPages: number }> {
     validateKey(key);
@@ -318,9 +342,10 @@ export class ZoteroClient {
 
   // ---------- 写（v0.2 启用；契约已就位） ----------
 
-  /** 设置写授权 key（仅内存；由 authorize 流程填充） */
-  setApiKey(key: string | null): void {
+  /** 设置写授权 key（主要供诊断/测试）；默认按一次性 key 处理。 */
+  setApiKey(key: string | null, reusable = false): void {
     this.apiKey = key;
+    this.apiKeyReusable = key !== null && reusable;
   }
 
   hasApiKey(): boolean {
@@ -355,6 +380,7 @@ export class ZoteroClient {
     }
     const data = (await res.json()) as { key: string; remember: boolean };
     this.apiKey = data.key;
+    this.apiKeyReusable = data.remember;
     // 方案 C：仅"始终允许"（remember=true，key 可无限复用）时落盘；
     // 一次性 key 落盘无意义（下个写即 401，还得重授权）
     if (this.rememberKey && data.remember) {
@@ -371,51 +397,73 @@ export class ZoteroClient {
   private loadStoredKey(): void {
     try {
       const raw = fs.readFileSync(ZoteroClient.authFilePath(), "utf-8");
-      const d = JSON.parse(raw) as { serverId: string; key: string };
-      // 预载时先不校验 serverId（ensureServerMeta 可能未跑）；writeRequest 前 ensureApiKey 校验
-      this.storedServerId = d.serverId;
-      this.storedKey = d.key;
+      const value = JSON.parse(raw) as { serverId?: unknown; key?: unknown };
+      if (typeof value.serverId !== "string" || typeof value.key !== "string" || value.key.length < 16) {
+        throw new Error("invalid auth cache");
+      }
+      // 预载时先不校验 serverId（ensureServerMeta 尚未运行）；写前再校验。
+      this.storedServerId = value.serverId;
+      this.storedKey = value.key;
     } catch {
-      // 无缓存或损坏：忽略
+      this.storedServerId = null;
+      this.storedKey = null;
     }
   }
 
   private storeKey(key: string, serverId: string): void {
+    const target = ZoteroClient.authFilePath();
+    const temporary = `${target}.${process.pid}.${randomToken().slice(0, 8)}.tmp`;
     try {
-      const p = ZoteroClient.authFilePath();
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, JSON.stringify({ serverId, key, savedAt: Date.now() }), { mode: 0o600 });
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(temporary, JSON.stringify({ serverId, key, savedAt: Date.now() }), { mode: 0o600 });
+      fs.renameSync(temporary, target);
+      fs.chmodSync(target, 0o600);
+      this.storedServerId = serverId;
+      this.storedKey = key;
     } catch {
-      // 落盘失败不阻塞（仅影响跨会话复用）
+      fs.rmSync(temporary, { force: true });
+      // 落盘失败不阻塞当前会话写入（仅影响跨会话复用）。
     }
   }
 
   private clearStoredKey(): void {
+    this.storedServerId = null;
+    this.storedKey = null;
     try {
       fs.rmSync(ZoteroClient.authFilePath(), { force: true });
     } catch {
-      // 忽略
+      // 忽略权限/文件不存在；内存中已禁用该缓存。
     }
   }
 
-  /** 写前确保 apiKey 可用：内存无 → 磁盘恢复（校验 serverId）→ 仍无则报错提示授权 */
+  /** 写前恢复可复用 key；rememberKey=false 时不会读取磁盘。 */
   private async ensureApiKey(): Promise<void> {
     if (this.apiKey) return;
     const meta = await this.ensureServerMeta();
-    if (this.storedKey && this.storedServerId === meta.serverId) {
+    if (this.rememberKey && this.storedKey && this.storedServerId === meta.serverId) {
       this.apiKey = this.storedKey;
+      this.apiKeyReusable = true;
       return;
     }
+    if (this.storedKey && this.storedServerId !== meta.serverId) this.clearStoredKey();
     this.apiKey = null;
+    this.apiKeyReusable = false;
+  }
+
+  private clearInMemoryApiKey(): void {
+    this.apiKey = null;
+    this.apiKeyReusable = false;
   }
 
   /** 创建集合 */
   async createCollection(name: string, parentCollection?: string | false): Promise<{ key: string; version: number }> {
-    const res = await this.writeRequest<{ successful: { key: string; version: number }[] }>("/collections", {
+    const res = await this.writeRequest<{ successful?: { key: string; version: number }[]; failed?: unknown[] }>("/collections", {
       method: "POST",
       body: JSON.stringify([{ name, ...(parentCollection !== undefined ? { parentCollection } : {}) }]),
-    }, false, false);
-    return res.successful?.[0] ?? { key: "", version: 0 };
+    });
+    const created = res.successful?.[0];
+    if (!created) throw new ZoteroApiError(`集合创建失败: ${JSON.stringify(res.failed ?? res).slice(0, 300)}`);
+    return created;
   }
 
   /** 更新集合（重命名/换父） */
@@ -447,11 +495,13 @@ export class ZoteroClient {
 
   /** 创建保存搜索（conditions 为 Zotero 10 条件 JSON 数组） */
   async createSearch(name: string, conditions: unknown[]): Promise<{ key: string; version: number }> {
-    const res = await this.writeRequest<{ successful: { key: string; version: number }[] }>("/searches", {
+    const res = await this.writeRequest<{ successful?: { key: string; version: number }[]; failed?: unknown[] }>("/searches", {
       method: "POST",
       body: JSON.stringify([{ name, conditions }]),
-    }, false, false);
-    return res.successful?.[0] ?? { key: "", version: 0 };
+    });
+    const created = res.successful?.[0];
+    if (!created) throw new ZoteroApiError(`保存搜索创建失败: ${JSON.stringify(res.failed ?? res).slice(0, 300)}`);
+    return created;
   }
 
   /** 单个保存搜索 */
@@ -486,9 +536,11 @@ export class ZoteroClient {
 
   /**
    * 附件三段式上传（Zotero 10 本地文件上传）：
-   * 1) POST /items/:key/file（md5/filename/filesize/mtime + If-None-Match:*）→ {exists:1} 或 {url, uploadKey}
-   * 2) 已存在则跳过；否则 POST 文件内容到 url（uploadKey 授权，无需 Server-ID/API-Key）
-   * @returns {exists} 是否已存在（跳过上传）
+   * 1) Local API 初始化（一次写授权）→ {exists:1} 或 {url, uploadKey}
+   * 2) 向暂存 URL 上传内容（uploadKey 授权，不消耗 Local API key）
+   * 3) Local API register（另一次写授权）→ 把暂存文件移入 storage
+   *
+   * 用户选择 Allow 时步骤 1/3 会各弹一次授权；Always Allow 时复用同一 key。
    */
   async uploadFile(attachmentKey: string, filePath: string): Promise<{ exists: boolean }> {
     validateKey(attachmentKey, "attachmentKey");
@@ -496,83 +548,57 @@ export class ZoteroClient {
     const content = fs.readFileSync(filePath);
     const md5 = createHash("md5").update(content).digest("hex");
     const filename = path.basename(filePath);
-    // mtime 必须毫秒（实测 400 提示）
-    return this.uploadInit(attachmentKey, { md5, filename, filesize: stat.size, mtime: Math.floor(stat.mtimeMs) }, content, false);
-  }
+    const metadata = { md5, filename, filesize: stat.size, mtime: Math.floor(stat.mtimeMs) };
 
-  /** 上传初始化（含 401 自动授权重试一次；幂等：初始化未处理时重试安全） */
-  private async uploadInit(
-    attachmentKey: string,
-    meta: { md5: string; filename: string; filesize: number; mtime: number },
-    content: Buffer,
-    retried: boolean,
-  ): Promise<{ exists: boolean }> {
-    await this.ensureApiKey();
-    const server = await this.ensureServerMeta();
-    const initRes = await fetch(`${this.userPath()}/items/${attachmentKey}/file`, {
-      method: "POST",
-      headers: {
-        "User-Agent": this.userAgent,
-        "Zotero-API-Version": "3",
-        "Zotero-Server-ID": server.serverId,
-        "Zotero-Write-Token": randomToken(),
-        "If-None-Match": "*",
-        "Content-Type": "application/json",
-        ...(this.apiKey ? { "Zotero-API-Key": this.apiKey } : {}),
+    const initRes = await this.authorizedWriteFetch(
+      `${this.userPath()}/items/${attachmentKey}/file`,
+      {
+        method: "POST",
+        headers: { "If-None-Match": "*", "Content-Type": "application/json" },
+        body: JSON.stringify(metadata),
       },
-      body: JSON.stringify(meta),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    if (initRes.status === 401 && !retried) {
-      // 未授权或 key 失效：自动授权后重试一次（初始化未处理时重试安全）
-      await this.authorize("pi-zotero");
-      return this.uploadInit(attachmentKey, meta, content, true);
-    }
+    );
     if (!initRes.ok) {
       const body = await initRes.text().catch(() => "");
       throw new ZoteroApiError(`上传初始化失败 ${initRes.status}: ${body.slice(0, 200)}`, initRes.status);
     }
     const data = (await initRes.json()) as { exists?: number; url?: string; uploadKey?: string };
     if (data.exists) return { exists: true };
-    if (!data.url) throw new ZoteroApiError("上传初始化响应缺少 url");
-    // 第二段：上传内容（uploadKey 授权，无需 Server-ID/API-Key）
-    const upRes = await fetch(data.url, {
-      method: "POST",
-      headers: {
-        "User-Agent": this.userAgent,
-        "Content-Type": "application/octet-stream",
-        "Content-Length": String(content.length),
-      },
-      body: new Uint8Array(content),
-      signal: AbortSignal.timeout(Math.max(this.timeoutMs, 60_000)),
-    });
-    if (!upRes.ok) {
-      const body = await upRes.text().catch(() => "");
-      throw new ZoteroApiError(`上传失败 ${upRes.status}: ${body.slice(0, 200)}`, upRes.status);
+    if (!data.url || !data.uploadKey) {
+      throw new ZoteroApiError("上传初始化响应缺少 url 或 uploadKey");
     }
-    // 第三段：register（body 带 upload=<key>，源码 registerUpload 从 POST body 读），
-    // 把暂存文件移入 storage 并更新附件元数据
-    const regRes = await fetch(`${this.userPath()}/items/${attachmentKey}/file`, {
-      method: "POST",
-      headers: {
-        "User-Agent": this.userAgent,
-        "Zotero-API-Version": "3",
-        "Zotero-Server-ID": server.serverId,
-        "Zotero-Write-Token": randomToken(),
-        "If-None-Match": "*",
-        "Content-Type": "application/json",
-        ...(this.apiKey ? { "Zotero-API-Key": this.apiKey } : {}),
-      },
-      body: JSON.stringify({ upload: data.uploadKey }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    if (regRes.status === 401 && !retried) {
-      await this.authorize("pi-zotero");
-      return this.uploadInit(attachmentKey, meta, content, true);
+
+    let uploadResponse: Response;
+    try {
+      uploadResponse = await fetch(data.url, {
+        method: "POST",
+        headers: {
+          "User-Agent": this.userAgent,
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(content.length),
+        },
+        body: new Uint8Array(content),
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 60_000)),
+      });
+    } catch (err) {
+      throw classifyFetchError(err, Math.max(this.timeoutMs, 60_000));
     }
-    if (!regRes.ok) {
-      const body = await regRes.text().catch(() => "");
-      throw new ZoteroApiError(`上传注册失败 ${regRes.status}: ${body.slice(0, 200)}`, regRes.status);
+    if (!uploadResponse.ok) {
+      const body = await uploadResponse.text().catch(() => "");
+      throw new ZoteroApiError(`上传失败 ${uploadResponse.status}: ${body.slice(0, 200)}`, uploadResponse.status);
+    }
+
+    const registerResponse = await this.authorizedWriteFetch(
+      `${this.userPath()}/items/${attachmentKey}/file`,
+      {
+        method: "POST",
+        headers: { "If-None-Match": "*", "Content-Type": "application/json" },
+        body: JSON.stringify({ upload: data.uploadKey }),
+      },
+    );
+    if (!registerResponse.ok) {
+      const body = await registerResponse.text().catch(() => "");
+      throw new ZoteroApiError(`上传注册失败 ${registerResponse.status}: ${body.slice(0, 200)}`, registerResponse.status);
     }
     return { exists: false };
   }
@@ -582,40 +608,28 @@ export class ZoteroClient {
    * @returns 创建的 { key, version }
    */
   async createItems(items: Record<string, unknown>[]): Promise<{ key: string; version: number }[]> {
-    // POST 非幂等：401 不自动重试（重试会重复创建，实测踩坑）
+    // Local API 的 401 表示 key 未通过验证、请求未执行，因此可在重新授权后安全重试一次。
     const res = await this.writeRequest<{ successful: { key: string; version: number }[]; failed: unknown[] }>(
       "/items",
       { method: "POST", body: JSON.stringify(items) },
-      false,
-      false,
     );
     if (res.failed?.length) {
       throw new ZoteroApiError(`部分条目创建失败: ${JSON.stringify(res.failed).slice(0, 300)}`);
+    }
+    if (items.length > 0 && !res.successful?.length) {
+      throw new ZoteroApiError("条目创建失败：响应中没有 successful 结果");
     }
     return res.successful ?? [];
   }
 
   /**
-   * 更新条目（读-改-写：412 冲突时重取 version 重试一次）。
-   * data 为部分字段；version 用条目当前 version（If-Unmodified-Since-Version）。
+   * 更新条目（If-Unmodified-Since-Version）。
+   * 412 直接上抛：通用层不能安全重放由旧 tags/collections 计算出的完整数组；
+   * 需要 merge 的调用方必须重新读取条目、重新计算 patch 后再重试。
    */
   async updateItem(key: string, data: Record<string, unknown>, version: number): Promise<void> {
     validateKey(key);
-    try {
-      await this.writeRequest(`/items/${key}`, { method: "PATCH", body: JSON.stringify(data), version });
-    } catch (err) {
-      if (err instanceof ZoteroApiError && err.status === 412) {
-        // 乐观并发冲突：重读最新 version 后重放一次
-        const fresh = await this.getItem(key);
-        await this.writeRequest(`/items/${key}`, {
-          method: "PATCH",
-          body: JSON.stringify(data),
-          version: fresh.version,
-        });
-        return;
-      }
-      throw err;
-    }
+    await this.writeRequest(`/items/${key}`, { method: "PATCH", body: JSON.stringify(data), version });
   }
 
   // ---------- 内部 ----------
@@ -665,54 +679,80 @@ export class ZoteroClient {
     }
   }
 
-  /** 写请求：Server-ID + API-Key + Write-Token + 版本并发；401 自动重授权重试一次。
-   * retryOnAuth=false 用于 POST（非幂等，重试会重复创建——实测踩坑）。 */
+  /**
+   * 发送带 Local API 写授权的请求。
+   * - 无 key 时先 authorize，不再用一次无授权请求探测。
+   * - Allow key 在一次请求收到响应后立即清空；Always Allow key 保留复用。
+   * - 401 明确表示请求未通过认证、未执行，因此包括 POST 在内可安全重授权重试一次。
+   * - 428 清空 Server-ID/key 后重新初始化并重试一次。
+   */
+  private async authorizedWriteFetch(
+    url: string,
+    init: { method: string; body: string; headers?: Record<string, string>; timeoutMs?: number },
+    authRetried = false,
+    serverRetried = false,
+  ): Promise<Response> {
+    await this.ensureApiKey();
+    if (!this.apiKey) await this.authorize("pi-zotero");
+    const meta = await this.ensureServerMeta();
+    const apiKey = this.apiKey;
+    if (!apiKey) throw new ZoteroApiError("Zotero 未返回写授权 key");
+    const singleUse = !this.apiKeyReusable;
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: init.method,
+        headers: {
+          "User-Agent": this.userAgent,
+          "Zotero-API-Version": "3",
+          "Zotero-Server-ID": meta.serverId,
+          "Zotero-Write-Token": randomToken(),
+          "Zotero-API-Key": apiKey,
+          ...init.headers,
+        },
+        body: init.body,
+        signal: AbortSignal.timeout(init.timeoutMs ?? this.timeoutMs),
+      });
+    } catch (err) {
+      throw classifyFetchError(err, init.timeoutMs ?? this.timeoutMs);
+    }
+
+    // 一次性 key 的生命周期以请求为单位；收到任意响应后均不再复用。
+    if (singleUse) this.clearInMemoryApiKey();
+
+    if (response.status === 428 && !serverRetried) {
+      this.meta = null;
+      this.clearInMemoryApiKey();
+      this.clearStoredKey();
+      return this.authorizedWriteFetch(url, init, authRetried, true);
+    }
+    if (response.status === 401 && !authRetried) {
+      this.clearInMemoryApiKey();
+      this.clearStoredKey();
+      return this.authorizedWriteFetch(url, init, true, serverRetried);
+    }
+    return response;
+  }
+
+  /** 写请求：Server-ID + API-Key + Write-Token + 版本并发。 */
   private async writeRequest<T>(
     path: string,
     init: { method: string; body: string; version?: number },
-    retried = false,
-    retryOnAuth = true,
   ): Promise<T> {
-    await this.ensureApiKey();
-    const meta = await this.ensureServerMeta();
-    const headers: Record<string, string> = {
-      "User-Agent": this.userAgent,
-      "Zotero-API-Version": "3",
-      "Content-Type": "application/json",
-      "Zotero-Server-ID": meta.serverId,
-      "Zotero-Write-Token": randomToken(),
-      ...(this.apiKey ? { "Zotero-API-Key": this.apiKey } : {}),
-    };
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (init.version !== undefined) headers["If-Unmodified-Since-Version"] = String(init.version);
-    let res: Response;
-    try {
-      res = await fetch(`${this.userPath()}${path}`, {
-        method: init.method,
-        headers,
-        body: init.body,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err) {
-      throw classifyFetchError(err, this.timeoutMs);
+    const res = await this.authorizedWriteFetch(`${this.userPath()}${path}`, {
+      method: init.method,
+      headers,
+      body: init.body,
+    });
+
+    if (res.status === 401) {
+      throw new ZoteroApiError("Zotero 写授权失败（401）：授权被拒绝、吊销或无法复用。", 401);
     }
     if (res.status === 428) {
-      // Server-ID 失效（数据库迁移/恢复）：重初始化后重试一次
-      this.meta = null;
-      throw new ZoteroApiError("Zotero 要求先提供 Server-ID（428）", 428);
-    }
-    if (res.status === 401) {
-      // 从未授权（apiKey=null，请求未被处理）→ 任何写都自动授权后重试（安全）
-      // 已授权但 key 失效 → 仅幂等操作重试（POST 可能已处理，防重复创建）
-      if (!retried && (!this.apiKey || retryOnAuth)) {
-        await this.authorize("pi-zotero");
-        return this.writeRequest<T>(path, init, true, retryOnAuth);
-      }
-      throw new ZoteroApiError(
-        this.apiKey
-          ? "Zotero 写授权 key 已失效（401），可能被消耗或吊销。请在 Zotero 设置 → 高级 → 清除写授权后重试。"
-          : "Zotero 写授权失败（401），弹窗可能被拒绝。",
-        401,
-      );
+      throw new ZoteroApiError("Zotero 要求有效的 Server-ID（428），重新初始化后仍失败。", 428);
     }
     if (res.status === 429) {
       const retry = res.headers.get("retry-after");
@@ -722,10 +762,7 @@ export class ZoteroClient {
       const body = await res.text().catch(() => "");
       throw new ZoteroApiError(`Zotero 写请求失败 ${res.status}: ${body.slice(0, 300)}`, res.status, body);
     }
-    // PATCH/DELETE 成功常为 204 No Content（实测）
-    if (res.status === 204) {
-      return undefined as T;
-    }
+    if (res.status === 204) return undefined as T;
     try {
       return (await res.json()) as T;
     } catch {

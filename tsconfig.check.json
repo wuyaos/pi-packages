@@ -10,6 +10,14 @@
     "allowImportingTsExtensions": true
   },
   "files": [
+    "pi-zotero/extensions/index.ts",
+    "pi-zotero/extensions/zotero/build_map.ts",
+    "pi-zotero/extensions/zotero/cache.ts",
+    "pi-zotero/extensions/zotero/citation.ts",
+    "pi-zotero/extensions/zotero/client.ts",
+    "pi-zotero/extensions/zotero/config-ui.ts",
+    "pi-zotero/extensions/zotero/config.ts",
+    "pi-zotero/extensions/zotero/docx_fields.ts",
     "pi-notify/extensions/notify.ts",
     "pi-sync/extensions/_shared/fetch-utils.ts",
     "pi-sync/extensions/sync/archive.ts",

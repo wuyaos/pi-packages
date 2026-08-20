@@ -10,10 +10,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { ZoteroClient, ZoteroApiError, validateKey } from "./zotero/client.ts";
-import { JsonCache, defaultCacheDir, cacheNamespace } from "./zotero/cache.ts";
+import {
+  JsonCache,
+  cacheNamespace,
+  cslCacheData,
+  defaultCacheDir,
+  emptyCslCache,
+  isCslCacheState,
+  type CslCacheState,
+} from "./zotero/cache.ts";
 import { loadConfig, saveConfig, ensureConfigFile, writeActionAllowed, deleteActionAllowed, RELOAD_HINT, type ZoteroConfig } from "./zotero/config.ts";
 import { auditCitations, expandMarker, extractMarkers, normalizeMarker } from "./zotero/citation.ts";
-import { buildCiteMap } from "./zotero/build_map.ts";
+import { extractTitleCandidates, matchTitleDetailed } from "./zotero/build_map.ts";
+import { writeZoteroDocxFields } from "./zotero/docx_fields.ts";
 
 /** 工具执行上下文中的 cwd（pi 工具 ctx 未暴露 cwd 时回退 process.cwd） */
 function toolCwd(_ctx: unknown): string {
@@ -38,6 +47,29 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
 
   const zoteroErr = (err: unknown): string =>
     err instanceof ZoteroApiError ? err.message : err instanceof Error ? err.message : String(err);
+  const configuredCacheDir = (ctx: unknown): string =>
+    defaultCacheDir(toolCwd(ctx), loadConfig().cacheDir);
+  const serverCacheDir = async (c: ZoteroClient, ctx: unknown): Promise<string> => {
+    const meta = await c.ensureServerMeta();
+    return cacheNamespace(configuredCacheDir(ctx), meta.serverId, 0);
+  };
+
+  /** 对读-改-写字段做一次安全的 412 重算；禁止把旧数组直接套用到新 version。 */
+  const updateItemWithFreshMerge = async (
+    c: ZoteroClient,
+    key: string,
+    buildPatch: (item: Awaited<ReturnType<ZoteroClient["getItem"]>>) => Record<string, unknown>,
+  ): Promise<void> => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const item = await c.getItem(key);
+      try {
+        await c.updateItem(key, buildPatch(item), item.version);
+        return;
+      } catch (err) {
+        if (!(err instanceof ZoteroApiError && err.status === 412 && attempt === 0)) throw err;
+      }
+    }
+  };
 
   // ---------- zotero_search ----------
   pi.registerTool({
@@ -121,7 +153,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           itemType: String(it.data.itemType ?? ""),
           year: String(it.meta?.parsedDate ?? ""),
         }));
-        const outPath = params.output ?? path.join(defaultCacheDir(toolCwd(ctx)), `${params.collectionKey}_index.json`);
+        const outPath = params.output ?? path.join(await serverCacheDir(c, ctx), `${params.collectionKey}_index.json`);
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         fs.writeFileSync(
           outPath,
@@ -150,13 +182,13 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     name: "zotero_batch_csl",
     label: "Zotero CSL 批量",
     description:
-      "批量获取条目 CSL JSON 并增量缓存到本地文件（只拉缺失；refresh 强制重拉）。" +
+      "批量获取条目 CSL JSON 并缓存到本地文件（按 Server-ID 隔离并对比 item version 自动更新；refresh 强制重拉）。" +
       "用于引用审计/文献表渲染的数据准备。触发词：取 CSL、缓存文献数据。",
     promptSnippet: "Batch-fetch Zotero CSL JSON into a local cache",
     parameters: Type.Object({
       keys: Type.Optional(Type.Array(Type.String(), { description: "条目 keys（与 collectionKey 二选一）" })),
       collectionKey: Type.Optional(Type.String({ description: "集合 key（取集合全部顶层条目）" })),
-      cachePath: Type.Optional(Type.String({ description: "缓存文件路径；默认 <cacheDir>/csl.json" })),
+      cachePath: Type.Optional(Type.String({ description: "缓存文件路径；默认 <cacheDir>/<Server-ID>-0/csl.json" })),
       refresh: Type.Optional(Type.Boolean({ description: "强制重拉（默认 false 增量）" })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -171,21 +203,39 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         } else {
           return { content: [{ type: "text", text: "需提供 keys 或 collectionKey" }], details: {} };
         }
-        const cachePath = params.cachePath ?? path.join(defaultCacheDir(toolCwd(ctx)), "csl.json");
-        const cache = new JsonCache<Record<string, unknown>>(cachePath);
-        const existing = cache.load() ?? {};
-        const missing = params.refresh ? keys : cache.missingKeys(keys);
+        keys = [...new Set(keys)];
+        const meta = await c.ensureServerMeta();
+        const cachePath = params.cachePath ?? path.join(await serverCacheDir(c, ctx), "csl.json");
+        const cache = new JsonCache<unknown>(cachePath);
+        const loaded = cache.load();
+        const state: CslCacheState = isCslCacheState(loaded) && loaded.serverId === meta.serverId
+          ? loaded
+          : emptyCslCache(meta.serverId);
+        const versions = await c.getItemVersions(keys);
+        const missingVersions = keys.filter((key) => versions[key] === undefined);
+        if (missingVersions.length > 0) {
+          throw new ZoteroApiError(`以下条目不存在或无法读取 version: ${missingVersions.join(", ")}`);
+        }
+        const missing = params.refresh
+          ? keys
+          : keys.filter((key) => !state.items[key] || state.items[key].version !== versions[key]);
         const fetched = await c.getCSLBatch(missing);
-        const merged = { ...existing, ...fetched };
-        cache.save(merged);
+        const unfetched = missing.filter((key) => !fetched[key]);
+        if (unfetched.length > 0) {
+          throw new ZoteroApiError(`以下条目 CSL 获取失败，缓存未写入: ${unfetched.join(", ")}`);
+        }
+        for (const [key, data] of Object.entries(fetched)) {
+          state.items[key] = { version: versions[key], data };
+        }
+        new JsonCache<CslCacheState>(cachePath).save(state);
         return {
           content: [
             {
               type: "text",
-              text: `CSL 缓存: 已有 ${keys.length - missing.length} 条，新取 ${missing.length} 条 → ${cachePath}`,
+              text: `CSL 缓存: 有效 ${keys.length - missing.length} 条，更新 ${missing.length} 条 → ${cachePath}`,
             },
           ],
-          details: { cachePath, cached: keys.length - missing.length, fetched: missing.length },
+          details: { cachePath, serverId: meta.serverId, cached: keys.length - missing.length, fetched: missing.length },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_batch_csl 失败: ${zoteroErr(err)}` }], details: {} };
@@ -245,10 +295,18 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         }
         let csls: Record<string, Record<string, unknown>> | undefined;
         if (params.cslCachePath) {
-          csls = new JsonCache<Record<string, unknown>>(params.cslCachePath).load() ?? undefined;
+          const cached = new JsonCache<unknown>(params.cslCachePath).load();
+          if (!isCslCacheState(cached)) {
+            throw new ZoteroApiError("CSL 缓存格式过旧或损坏，请用 zotero_batch_csl 重新生成");
+          }
+          const meta = await getClient().ensureServerMeta();
+          if (cached.serverId !== meta.serverId) {
+            throw new ZoteroApiError(`CSL 缓存属于其他 Zotero 数据库（${cached.serverId} ≠ ${meta.serverId}）`);
+          }
+          csls = cslCacheData(cached);
         }
         const res = auditCitations({ text, numberMap, expectedMarkers: expected, csls });
-        const outPath = params.output ?? path.join(defaultCacheDir(toolCwd(ctx)), "citation_audit.md");
+        const outPath = params.output ?? path.join(configuredCacheDir(ctx), "citation_audit.md");
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         fs.writeFileSync(outPath, res.report, "utf-8");
         const summary =
@@ -292,7 +350,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         const truncated = !params.full && ft.content.length > 2000;
         const text = truncated ? ft.content.slice(0, 2000) + `\n…[已截断，共 ${ft.content.length} 字，需全文请加 full=true]` : ft.content;
         return {
-          content: [{ type: "text", text: `[${params.key}] 全文 ${ft.content.length} 字（${ft.totalPages} 页）\n${text.slice(0, 3000)}` }],
+          content: [{ type: "text", text: `[${params.key}] 全文 ${ft.content.length} 字（${ft.totalPages} 页）\n${text}` }],
           details: { key: params.key, length: ft.content.length, totalPages: ft.totalPages, truncated },
         };
       } catch (err) {
@@ -420,7 +478,8 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
   const canDeleteItems = deleteActionAllowed(cfg, "items");
   const canDeleteCollections = deleteActionAllowed(cfg, "collections");
   const canDeleteSearches = deleteActionAllowed(cfg, "searches");
-  const canDeleteTags = cfg.write.delete;
+  // 全局删除标签会改写所有条目，必须同时通过 items 写白名单和 delete 总闸。
+  const canDeleteTags = canDeleteItems;
   const writeHint = "（写操作会修改 Zotero 库，调用前需用户确认）";
 
   /** 按门控构建 action 枚举（未启用时 LLM 在 schema 层不可见） */
@@ -512,17 +571,18 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           const tags = params.tags ?? [];
           const mode = params.mode ?? "append";
           for (const k of keys) {
-            const it = await c.getItem(k);
-            const cur = (it.data.tags as { tag: string; type?: number }[] | undefined) ?? [];
-            let next: { tag: string; type: number }[];
-            if (mode === "replace") next = tags.map((t) => ({ tag: t, type: 1 }));
-            else if (mode === "remove") next = cur.filter((x) => !tags.includes(x.tag)).map((x) => ({ tag: x.tag, type: (x.type ?? 0) as number }));
-            else {
-              const have = new Set(cur.map((x) => x.tag));
-              next = cur.map((x) => ({ tag: x.tag, type: (x.type ?? 0) as number }));
-              for (const t of tags) if (!have.has(t)) next.push({ tag: t, type: 1 });
-            }
-            await c.updateItem(k, { tags: next }, it.version);
+            await updateItemWithFreshMerge(c, k, (item) => {
+              const cur = (item.data.tags as { tag: string; type?: number }[] | undefined) ?? [];
+              let next: { tag: string; type: number }[];
+              if (mode === "replace") next = tags.map((t) => ({ tag: t, type: 1 }));
+              else if (mode === "remove") next = cur.filter((x) => !tags.includes(x.tag)).map((x) => ({ tag: x.tag, type: x.type ?? 0 }));
+              else {
+                const have = new Set(cur.map((x) => x.tag));
+                next = cur.map((x) => ({ tag: x.tag, type: x.type ?? 0 }));
+                for (const tag of tags) if (!have.has(tag)) next.push({ tag, type: 1 });
+              }
+              return { tags: next };
+            });
           }
           return { content: [{ type: "text", text: `已 ${mode} 标签 ${tags.join(",")} → ${keys.length} 条` }], details: { keys, tags, mode } };
         }
@@ -540,12 +600,12 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         }
         if (params.action === "move") {
           for (const k of params.keys ?? []) {
-            const it = await c.getItem(k);
-            const cur = [...(it.data.collections ?? [])];
-            const next = new Set(cur);
-            for (const ck of params.addCollections ?? []) next.add(ck);
-            for (const ck of params.removeCollections ?? []) next.delete(ck);
-            await c.updateItem(k, { collections: [...next] }, it.version);
+            await updateItemWithFreshMerge(c, k, (item) => {
+              const next = new Set(item.data.collections ?? []);
+              for (const collectionKey of params.addCollections ?? []) next.add(collectionKey);
+              for (const collectionKey of params.removeCollections ?? []) next.delete(collectionKey);
+              return { collections: [...next] };
+            });
           }
           return { content: [{ type: "text", text: `已调整 ${(params.keys ?? []).length} 条的集合归属` }], details: { keys: params.keys } };
         }
@@ -703,7 +763,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     label: "Zotero 引用映射构建",
     description:
       "从正文（引用标记序列 + 文献表区 [n] 行）自动构建 cite_map.json：" +
-      "文献表标题 → Zotero 条目匹配（集合内优先，未匹配自动全库 fallback）→ markers:[{marker,keys}]。" +
+      "文献表标题 → Zotero 条目匹配（集合内优先，未匹配自动全库 fallback；同标题多版本进入 ambiguous，不静默选第一条）→ markers:[{marker,keys}]。" +
       "产物可直接被 zotero_audit_citations 消费。触发词：构建引用映射、生成 cite_map、文献匹配。",
     promptSnippet: "Build a citation map (marker→Zotero keys) from a manuscript",
     parameters: Type.Object({
@@ -711,14 +771,13 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       text: Type.Optional(Type.String({ description: "正文文本" })),
       collectionKey: Type.Optional(Type.String({ description: "优先匹配的集合（缺省全库）" })),
       fullLibraryFallback: Type.Optional(Type.Boolean({ description: "集合未匹配时全库匹配，默认 true" })),
-      output: Type.Optional(Type.String({ description: "cite_map 输出路径；默认 <cacheDir>/cite_map.json" })),
+      output: Type.Optional(Type.String({ description: "cite_map 输出路径；默认 <cacheDir>/<Server-ID>-0/cite_map.json" })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       try {
         const text = params.text ?? (params.manuscriptPath ? fs.readFileSync(params.manuscriptPath, "utf-8") : null);
         if (!text) return { content: [{ type: "text", text: "需提供 manuscriptPath 或 text" }], details: {} };
         const c = getClient();
-        const { matchTitle, extractTitleCandidates } = await import("./zotero/build_map.ts");
         // 标题池：集合优先，全库 fallback
         const pool: { key: string; title: string }[] = [];
         if (params.collectionKey) {
@@ -738,19 +797,24 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         }
         const refToKey = new Map<string, string>();
         const unmatched: { ref: string; candidate: string }[] = [];
+        const ambiguous: { ref: string; candidate: string; matches: { key: string; title: string }[] }[] = [];
         let libTitles: { key: string; title: string }[] | null = null;
         for (const [ref, rest] of refLines) {
-          const cands = extractTitleCandidates(`[${ref}] ${rest}`);
-          let key = matchTitle(cands, pool);
-          if (!key && params.fullLibraryFallback !== false) {
+          const candidates = extractTitleCandidates(`[${ref}] ${rest}`);
+          let match = matchTitleDetailed(candidates, pool);
+          if (!match.key && match.ambiguous.length === 0 && params.fullLibraryFallback !== false) {
             if (!libTitles) {
               const items = await c.getItems({});
-              libTitles = items.map((it) => ({ key: it.key, title: String(it.data.title ?? "") }));
+              libTitles = items.map((item) => ({ key: item.key, title: String(item.data.title ?? "") }));
             }
-            key = matchTitle(cands, libTitles);
+            match = matchTitleDetailed(candidates, libTitles);
           }
-          if (key) refToKey.set(ref, key);
-          else unmatched.push({ ref, candidate: cands[0] ?? rest.slice(0, 100) });
+          if (match.key) refToKey.set(ref, match.key);
+          else if (match.ambiguous.length > 0) {
+            ambiguous.push({ ref, candidate: candidates[0] ?? rest.slice(0, 100), matches: match.ambiguous });
+          } else {
+            unmatched.push({ ref, candidate: candidates[0] ?? rest.slice(0, 100) });
+          }
         }
         // 正文 marker 序列 → keys（与展开 refs 等长，未匹配用空串占位防错位）
         const hits = extractMarkers(text);
@@ -762,21 +826,25 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           }
           return { marker: m, keys };
         });
-        const outPath = params.output ?? path.join(defaultCacheDir(toolCwd(ctx)), "cite_map.json");
+        const meta = await c.ensureServerMeta();
+        const outPath = params.output ?? path.join(await serverCacheDir(c, ctx), "cite_map.json");
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         fs.writeFileSync(outPath, JSON.stringify({
           generatedAt: new Date().toISOString(),
+          serverId: meta.serverId,
           collectionKey: params.collectionKey ?? null,
           markers,
           unmatched,
+          ambiguous,
         }, null, 2), "utf-8");
         return {
           content: [{
             type: "text",
-            text: `文献表 ${refLines.size} 条，匹配 ${refToKey.size}，未匹配 ${unmatched.length}；markers ${markers.length} 个 → ${outPath}` +
-              (unmatched.length ? `\n未匹配: ${unmatched.map((u) => `[${u.ref}]${u.candidate.slice(0, 30)}`).join("; ")}` : ""),
+            text: `文献表 ${refLines.size} 条，匹配 ${refToKey.size}，歧义 ${ambiguous.length}，未匹配 ${unmatched.length}；markers ${markers.length} 个 → ${outPath}` +
+              (ambiguous.length ? `\n歧义: ${ambiguous.map((entry) => `[${entry.ref}] ${entry.matches.map((item) => item.key).join("/")}`).join("; ")}` : "") +
+              (unmatched.length ? `\n未匹配: ${unmatched.map((entry) => `[${entry.ref}]${entry.candidate.slice(0, 30)}`).join("; ")}` : ""),
           }],
-          details: { path: outPath, matched: refToKey.size, unmatched, markers: markers.length },
+          details: { path: outPath, serverId: meta.serverId, matched: refToKey.size, ambiguous, unmatched, markers: markers.length },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_build_map 失败: ${zoteroErr(err)}` }], details: {} };
@@ -789,32 +857,33 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     name: "zotero_docx_fields",
     label: "Zotero 引用域写入",
     description:
-      "把 docx 正文中的方括号引用标记（[8-13]/[42]）原地替换为 Zotero Word 动态域（ZOTERO_ITEM + 文末 BIBL），" +
+      "把 docx 正文中的方括号引用标记（[8-13]/[42]）按出现顺序替换为 Zotero Word 动态域（ZOTERO_ITEM + 文末 BIBL），" +
+      "保留标记所在 run 的前后正文，支持重复标记及同一 XML 容器内的跨 run 标记；复杂 run 会安全中止，不生成损坏文档。" +
       "刷新后由 Zotero 生成引用与文献表。uris 方案（id 占位+正确 uris+itemData，实测 Zotero 10.0 回填真 itemID），" +
       "无需整数 itemID、无需 MCP。mapPath 用 zotero_build_map 产物。" +
-      "生成新 docx（不修改 Zotero 库）；Word 刷新需在 Windows 端进行。触发词：插入 Zotero 引用域、方括号转引用、生成引用文档。" +
-      "限制：标记须在单个 run 内（Word 排版拆分的标记会报 not found）。",
+      "生成新 docx（不修改 Zotero 库）；Word 刷新需在 Windows 端进行。触发词：插入 Zotero 引用域、方括号转引用、生成引用文档。",
     promptSnippet: "Replace [n] markers in a docx with Zotero Word fields (uris-based)",
     parameters: Type.Object({
       src: Type.String({ description: "输入 docx 路径（必填）" }),
       out: Type.String({ description: "输出 docx 路径（必填）" }),
       mapPath: Type.String({ description: "cite_map.json 路径（markers:[{marker,keys}]，zotero_build_map 产物）" }),
-      cslCache: Type.Optional(Type.String({ description: "CSL 缓存路径（可选，复用 zotero_batch_csl 缓存提速）" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       try {
-        const script = path.join(__dirname, "..", "scripts", "docx_fields.py");
-        const { execFile } = await import("node:child_process");
-        const { promisify } = await import("node:util");
-        const execFileP = promisify(execFile);
-        const args = ["--src", params.src, "--out", params.out, "--map", params.mapPath];
-        if (params.cslCache) args.push("--csl-cache", params.cslCache);
-        const { stdout, stderr } = await execFileP("python3", [script, ...args], { timeout: 120_000 });
-        const out = stdout + (stderr || "");
-        return { content: [{ type: "text", text: out.slice(0, 1500) }], details: { output: out } };
+        const result = await writeZoteroDocxFields(getClient(), {
+          src: params.src,
+          out: params.out,
+          mapPath: params.mapPath,
+        });
+        return {
+          content: [{
+            type: "text",
+            text: `已替换 ${result.markersReplaced} 个引用标记，文献表${result.bibliography === "placeholder" ? "已替换占位符" : "已追加到文末"} → ${result.output}`,
+          }],
+          details: result,
+        };
       } catch (err) {
-        const e = err as { stderr?: string; message?: string };
-        return { content: [{ type: "text", text: `zotero_docx_fields 失败: ${e.stderr ?? e.message ?? String(err)}` }], details: {} };
+        return { content: [{ type: "text", text: `zotero_docx_fields 失败: ${zoteroErr(err)}` }], details: {} };
       }
     },
   });
@@ -823,7 +892,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     name: "zotero_tags",
     label: "Zotero 标签",
     description:
-      `全局标签清单（list 常驻）；delete=从全部条目移除该标签${canDeleteTags ? `（${writeHint}）` : `（未启用：write.delete）`}。` +
+      `全局标签清单（list 常驻）；delete=从全部条目移除该标签${canDeleteTags ? `（${writeHint}）` : `（未启用：需 write.enabled、items 白名单和 write.delete）`}。` +
       "增/改标签请用 zotero_items tag（按条目）。",
     promptSnippet: "List or delete Zotero tags (delete gated)",
     parameters: Type.Object({
@@ -838,7 +907,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           return { content: [{ type: "text", text: `共 ${t.length} 个标签\n` + t.map((x) => x.tag).slice(0, 50).join(", ") }], details: { count: t.length, tags: t } };
         }
         if (!canDeleteTags) {
-          return { content: [{ type: "text", text: "delete 未启用：需 write.delete=true" }], details: {} };
+          return { content: [{ type: "text", text: "delete 未启用：需 write.enabled=true、write.tools 含 items 且 write.delete=true" }], details: {} };
         }
         await c.deleteTag(params.tag ?? "");
         return { content: [{ type: "text", text: `已从全部条目移除标签「${params.tag}」` }], details: { tag: params.tag } };
