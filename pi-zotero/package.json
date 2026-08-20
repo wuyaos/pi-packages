@@ -1,0 +1,39 @@
+{
+  "name": "@wuyaos/pi-zotero",
+  "version": "0.1.0",
+  "description": "Zotero 10 Local API 原生工具：搜索、集合导出、CSL 批量、引用审计、文献整理，供 pi agent 直接调用（不依赖 MCP）",
+  "keywords": [
+    "pi-package",
+    "zotero",
+    "csl",
+    "citation",
+    "literature"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-zotero"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "extensions",
+    "!extensions/**/*.test.ts",
+    "instructions",
+    "README.md"
+  ],
+  "bugs": {
+    "url": "https://github.com/wuyaos/pi-packages/issues"
+  },
+  "homepage": "https://github.com/wuyaos/pi-packages#readme",
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT"
+}
