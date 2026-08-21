@@ -15,6 +15,9 @@ async function extractToTemp(archivePath: string, prefix: string): Promise<strin
 }
 
 function assertSafeRestoreParent(root: string, destination: string): void {
+  // destination 就是 root 本身（sessions 顶层合并的目标）是安全的：
+  // 此时 dirname(destination) 在 root 之外，会被下面的检查误判为路径逃逸。
+  if (path.resolve(destination) === path.resolve(root)) return;
   const relative = path.relative(root, path.dirname(destination));
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`Restore destination escapes root: ${destination}`);
   let current = root;
@@ -134,13 +137,14 @@ export async function extractAgentSkillsZip(archivePath: string, targetDir = AGE
   }
 }
 
-export async function extractSessionsArchiveZip(archivePath: string): Promise<string[]> {
+export async function extractSessionsArchiveZip(archivePath: string, targetDir = SESSIONS_DIR): Promise<string[]> {
   const tempDir = await extractToTemp(archivePath, "pi_sessions_extract");
   try {
     const source = path.join(tempDir, "sessions");
     if (!fs.existsSync(source)) throw new Error("Archive does not contain sessions/.");
-    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-    const fileCount = copyExtractedTree(source, SESSIONS_DIR, SESSIONS_DIR);
+    const target = path.resolve(targetDir);
+    fs.mkdirSync(target, { recursive: true });
+    const fileCount = copyExtractedTree(source, target, target);
     return [`Session archive merged: ${fileCount} file(s)`];
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }

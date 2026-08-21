@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { createPiAgentZip } from "./archive.ts";
-import { extractAgentSkillsZip, extractPiAgentZip } from "./restore.ts";
+import { extractAgentSkillsZip, extractPiAgentZip, extractSessionsArchiveZip } from "./restore.ts";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-restore-"));
@@ -76,4 +76,21 @@ test("Pi restore rejects a symlink in the destination path", async (t) => {
   await createPiAgentZip({ piExcludePaths: [] }, archive, source);
   await assert.rejects(() => extractPiAgentZip(archive, target), /Unsafe restore destination rejected/);
   assert.ok(!fs.existsSync(path.join(outside, "sync.json")));
+});
+
+test("Sessions restore merges the archive root into the sessions directory", async (t) => {
+  const root = tempDir();
+  const payload = path.join(root, "payload");
+  const target = path.join(root, "sessions");
+  const archive = path.join(root, "sessions.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(payload, "sessions", "--cwd--"), { recursive: true });
+  fs.writeFileSync(path.join(payload, "sessions", "--cwd--", "a.jsonl"), "line");
+  execFileSync("tar", ["-J", "-c", "-f", archive, "-C", payload, "."]);
+
+  const restored = await extractSessionsArchiveZip(archive, target);
+
+  assert.deepEqual(restored, ["Session archive merged: 1 file(s)"]);
+  assert.equal(fs.readFileSync(path.join(target, "--cwd--", "a.jsonl"), "utf8"), "line");
 });
