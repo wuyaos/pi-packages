@@ -1,15 +1,13 @@
 /**
- * pi-zotero 扩展入口（v0.1 读层）。
- * 注册工具：zotero_search / zotero_collections(读) / zotero_export_collection /
- *           zotero_batch_csl / zotero_audit_citations
- * 门控：读 action 常驻；写 action（create/update/delete）按配置在注册时收敛（阶段 5 接入）。
+ * pi-zotero 扩展入口。
+ * 读层、引用产物和 DOCX 工具常驻；写 action 按 write.enabled/tools/delete 配置在注册时收敛。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { ZoteroClient, ZoteroApiError, validateKey } from "./zotero/client.ts";
+import { ZoteroClient, ZoteroApiError, validateKey, type ZoteroItem } from "./zotero/client.ts";
 import {
   JsonCache,
   cacheNamespace,
@@ -21,12 +19,38 @@ import {
 } from "./zotero/cache.ts";
 import { loadConfig, saveConfig, ensureConfigFile, writeActionAllowed, deleteActionAllowed, RELOAD_HINT, type ZoteroConfig } from "./zotero/config.ts";
 import { auditCitations, expandMarker, extractMarkers, normalizeMarker } from "./zotero/citation.ts";
-import { extractTitleCandidates, matchTitleDetailed } from "./zotero/build_map.ts";
+import {
+  extractReferenceEvidence,
+  matchReferenceDetailed,
+  type AmbiguousTitleMatch,
+  type BibliographicCandidate,
+  type MatchedReference,
+} from "./zotero/build_map.ts";
 import { writeZoteroDocxFields } from "./zotero/docx_fields.ts";
+import { batchWriteText, runKeyBatch } from "./zotero/batch.ts";
+import { writeFileAtomic, writeJsonAtomic } from "./zotero/atomic.ts";
 
 /** 工具执行上下文中的 cwd（pi 工具 ctx 未暴露 cwd 时回退 process.cwd） */
 function toolCwd(_ctx: unknown): string {
   return process.cwd();
+}
+
+function bibliographicCandidate(item: ZoteroItem): BibliographicCandidate {
+  const creatorSummary = String(item.meta?.creatorSummary ?? "");
+  const creators = creatorSummary || JSON.stringify(item.data.creators ?? []);
+  return {
+    key: item.key,
+    title: String(item.data.title ?? ""),
+    doi: String(item.data.DOI ?? ""),
+    year: String(item.meta?.parsedDate ?? item.data.date ?? ""),
+    creators,
+  };
+}
+
+function summarizeMatchMethods(matches: MatchedReference[]): string {
+  const counts = new Map<string, number>();
+  for (const match of matches) counts.set(match.matchMethod, (counts.get(match.matchMethod) ?? 0) + 1);
+  return [...counts].map(([method, count]) => `${method}=${count}`).join(", ");
 }
 
 import { registerZoteroConfigCommand } from "./zotero/config-ui.ts";
@@ -93,18 +117,18 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     async execute(_id, params, _signal, _onUpdate, ctx) {
       try {
         const c = getClient();
-        const items = params.collectionKey
-          ? await c.searchCollection(params.collectionKey, params.q, {
+        const result = params.collectionKey
+          ? await c.searchCollectionWithMeta(params.collectionKey, params.q, {
               limit: params.limit ?? 20,
               qmode: params.qmode ?? "everything",
               itemType: params.itemType,
             })
-          : await c.search(params.q, {
+          : await c.searchWithMeta(params.q, {
               limit: params.limit ?? 20,
               qmode: params.qmode ?? "everything",
               itemType: params.itemType,
             });
-        const out = items.map((it) => ({
+        const out = result.items.map((it) => ({
           key: it.key,
           title: String(it.data.title ?? "(无标题)").slice(0, 120),
           year: (it.meta?.parsedDate ?? "") as string,
@@ -115,11 +139,11 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           content: [
             {
               type: "text",
-              text: `命中 ${out.length} 条${params.collectionKey ? `（集合 ${params.collectionKey}）` : ""}\n` +
+              text: `命中 ${out.length} 条${result.truncated ? "（结果已截断）" : ""}${params.collectionKey ? `（集合 ${params.collectionKey}）` : ""}\n` +
                 out.slice(0, 20).map((x) => `[${x.key}] ${x.title} (${x.itemType} ${x.year}) ${x.creators}`).join("\n"),
             },
           ],
-          details: { count: out.length, items: out.slice(0, 20) },
+          details: { count: out.length, total: result.total, sourceTotal: result.sourceTotal ?? result.total, truncated: result.truncated, items: out.slice(0, 20) },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_search 失败: ${zoteroErr(err)}` }], details: {} };
@@ -143,11 +167,14 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       try {
         validateKey(params.collectionKey, "collectionKey");
         const c = getClient();
-        const [items, trashed, meta] = await Promise.all([
-          c.getCollectionItems(params.collectionKey),
-          c.getCollectionTrashItems(params.collectionKey),
+        const [collectionResult, trashResult, meta] = await Promise.all([
+          c.getCollectionItemsWithMeta(params.collectionKey),
+          c.getCollectionTrashItemsWithMeta(params.collectionKey),
           c.ensureServerMeta(),
         ]);
+        const items = collectionResult.items;
+        const trashed = trashResult.items;
+        const truncated = collectionResult.truncated || trashResult.truncated;
         const indexed = items.map((it) => ({
           key: it.key,
           title: String(it.data.title ?? ""),
@@ -158,31 +185,38 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           year: String(it.meta?.parsedDate ?? ""),
         }));
         const outPath = params.output ?? path.join(await serverCacheDir(c, ctx), `${params.collectionKey}_index.json`);
-        fs.mkdirSync(path.dirname(outPath), { recursive: true });
-        fs.writeFileSync(
-          outPath,
-          JSON.stringify({
-            generatedAt: new Date().toISOString(),
-            serverId: meta.serverId,
-            collectionKey: params.collectionKey,
-            count: indexed.length,
-            excludedTrashCount: trashed.length,
-            excludedTrash: trashed.map((item) => ({ key: item.key, title: String(item.data.title ?? "") })),
-            items: indexed,
-          }, null, 2),
-          "utf-8",
-        );
+        writeJsonAtomic(outPath, {
+          generatedAt: new Date().toISOString(),
+          serverId: meta.serverId,
+          collectionKey: params.collectionKey,
+          count: indexed.length,
+          sourceTotal: collectionResult.sourceTotal ?? collectionResult.total,
+          truncated,
+          excludedTrashCount: trashed.length,
+          trashSourceTotal: trashResult.sourceTotal ?? trashResult.total,
+          excludedTrash: trashed.map((item) => ({ key: item.key, title: String(item.data.title ?? "") })),
+          items: indexed,
+        });
         return {
           content: [
             {
               type: "text",
               text: `已导出 ${indexed.length} 条活动文献 → ${outPath}` +
+                (truncated ? `\n⚠ 原始端点结果已截断（集合源总数 ${collectionResult.sourceTotal ?? collectionResult.total}，回收站源总数 ${trashResult.sourceTotal ?? trashResult.total}），产物可能不完整` : "") +
                 (trashed.length ? `\n另有 ${trashed.length} 条在回收站（未导出）: ${trashed.map((item) => item.key).join(", ")}` : "\n回收站排除项: 0") +
                 `\n` + indexed.slice(0, 10).map((x) => `[${x.key}] ${x.title.slice(0, 60)} (${x.year})`).join("\n") +
                 (indexed.length > 10 ? `\n… 共 ${indexed.length} 条` : ""),
             },
           ],
-          details: { path: outPath, count: indexed.length, excludedTrashCount: trashed.length, excludedTrash: trashed.map((item) => item.key), preview: indexed.slice(0, 10) },
+          details: {
+            path: outPath,
+            count: indexed.length,
+            sourceTotal: collectionResult.sourceTotal ?? collectionResult.total,
+            truncated,
+            excludedTrashCount: trashed.length,
+            excludedTrash: trashed.map((item) => item.key),
+            preview: indexed.slice(0, 10),
+          },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_export_collection 失败: ${zoteroErr(err)}` }], details: {} };
@@ -290,6 +324,9 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
             for (const m of markers) {
               // marker 展开顺序与 keys 一一对应：[1-2] → refs [1,2] → keys [k1,k2]
               const refs = expandMarker(m.marker);
+              if (!Array.isArray(m.keys) || refs.length !== m.keys.length) {
+                throw new ZoteroApiError(`citation map 中 ${m.marker} 展开为 ${refs.length} 项，但 keys 有 ${Array.isArray(m.keys) ? m.keys.length : 0} 项`);
+              }
               refs.forEach((r, i) => {
                 const k = m.keys[i];
                 if (k) nm[String(r)] = k;
@@ -320,8 +357,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         }
         const res = auditCitations({ text, numberMap, expectedMarkers: expected, csls });
         const outPath = params.output ?? path.join(configuredCacheDir(ctx), "citation_audit.md");
-        fs.mkdirSync(path.dirname(outPath), { recursive: true });
-        fs.writeFileSync(outPath, res.report, "utf-8");
+        writeFileAtomic(outPath, res.report);
         const summary =
           `标记 ${res.totalMarkers} | 唯一编号 ${res.uniqueRefs.length} | 映射 ${res.refCount} | ` +
           `错位 ${res.mismatches.length} | 缺失 ${res.missing.length} | 未引用 ${res.unused.length} | 乱序 ${res.outOfOrder.length}\n` +
@@ -447,18 +483,15 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     promptSnippet: "Scan a Zotero collection for likely duplicate items",
     parameters: Type.Object({
       collectionKey: Type.Optional(Type.String({ description: "限定集合；缺省扫全库（较慢）" })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "扫描条目上限，默认 1000" })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 5000, description: "扫描条目上限，默认 1000；达到上限会报告 truncated" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       try {
         const c = getClient();
-        let items;
-        if (params.collectionKey) {
-          validateKey(params.collectionKey, "collectionKey");
-          items = await c.getCollectionItems(params.collectionKey);
-        } else {
-          items = await c.getItems({ limit: params.limit ?? 1000 });
-        }
+        const result = params.collectionKey
+          ? await c.getCollectionItemsWithMeta(params.collectionKey)
+          : await c.getItemsWithMeta({ limit: params.limit ?? 1000 });
+        const items = result.items;
         const groups = new Map<string, { key: string; title: string }[]>();
         for (const it of items) {
           const title = String(it.data.title ?? "");
@@ -471,11 +504,11 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         return {
           content: [{
             type: "text",
-            text: `扫描 ${items.length} 条，疑似重复组 ${dups.length} 组\n` +
+            text: `扫描 ${items.length}/${result.total} 条${result.truncated ? "（已截断，结论可能不完整）" : ""}，疑似重复组 ${dups.length} 组\n` +
               dups.slice(0, 10).map((g) => g.map((x) => `[${x.key}] ${x.title}`).join("  ║  ")).join("\n") +
               (dups.length > 10 ? `\n… 共 ${dups.length} 组` : ""),
           }],
-          details: { scanned: items.length, groups: dups.length, duplicates: dups.slice(0, 20) },
+          details: { scanned: items.length, total: result.total, truncated: result.truncated, groups: dups.length, duplicates: dups.slice(0, 20) },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_duplicates_scan 失败: ${zoteroErr(err)}` }], details: {} };
@@ -512,7 +545,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({
       action: Type.Union(itemActions.map((a) => Type.Literal(a)) as [never], { description: "操作类型" }),
       key: Type.Optional(Type.String({ description: "children/upload 必填：条目 key" })),
-      keys: Type.Optional(Type.Array(Type.String(), { description: "tag/move/trash/restore/delete 必填" })),
+      keys: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "tag/move/trash/restore/delete 必填，至少 1 个" })),
       collectionKey: Type.Optional(Type.String({ description: "trash-list 可选：仅列出仍保留此集合关系的回收站条目" })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "trash-list 返回上限，默认 100" })),
       items: Type.Optional(Type.Array(Type.Object({
@@ -524,15 +557,21 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         DOI: Type.Optional(Type.String()),
         parentItem: Type.Optional(Type.String({ description: "add 笔记时必填" })),
         note: Type.Optional(Type.String({ description: "add 笔记时必填" })),
-      }), { description: "add 必填" })),
-      fields: Type.Optional(Type.Object({}, { description: "update 必填：title/DOI/date/extra/url 白名单字段" })),
-      tags: Type.Optional(Type.Array(Type.String(), { description: "tag 必填" })),
+      }), { minItems: 1, description: "add 必填，至少 1 条" })),
+      fields: Type.Optional(Type.Object({
+        title: Type.Optional(Type.String()),
+        DOI: Type.Optional(Type.String()),
+        date: Type.Optional(Type.String()),
+        extra: Type.Optional(Type.String()),
+        url: Type.Optional(Type.String()),
+      }, { additionalProperties: false, description: "update 必填：仅允许 title/DOI/date/extra/url" })),
+      tags: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "tag 必填，至少 1 个" })),
       mode: Type.Optional(Type.Union([Type.Literal("append"), Type.Literal("replace"), Type.Literal("remove")], { description: "tag 模式，默认 append" })),
       parentKey: Type.Optional(Type.String({ description: "note 必填：父条目 key" })),
       noteKey: Type.Optional(Type.String({ description: "note 可选：笔记自身 key（缺省用父条目首条笔记）" })),
       content: Type.Optional(Type.String({ description: "note 必填：新笔记内容" })),
-      addCollections: Type.Optional(Type.Array(Type.String(), { description: "move：加入的集合" })),
-      removeCollections: Type.Optional(Type.Array(Type.String(), { description: "move：移出的集合" })),
+      addCollections: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "move：加入的集合" })),
+      removeCollections: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "move：移出的集合" })),
       version: Type.Optional(Type.Integer({ description: "update 可选：条目当前 version（缺省自动读取）" })),
       filePath: Type.Optional(Type.String({ description: "upload 必填：本地文件路径（WSL 路径）" })),
     }),
@@ -550,20 +589,18 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         }
         if (params.action === "trash-list") {
           const limit = params.limit ?? 100;
-          let trash;
-          if (params.collectionKey) {
-            validateKey(params.collectionKey, "collectionKey");
-            trash = (await c.getCollectionTrashItems(params.collectionKey)).slice(0, limit);
-          } else {
-            trash = await c.getTrashItems({ limit });
-          }
+          const result = params.collectionKey
+            ? await c.getCollectionTrashItemsWithMeta(params.collectionKey)
+            : await c.getTrashItemsWithMeta({ limit });
+          const trash = result.items.slice(0, limit);
+          const truncated = result.truncated || result.items.length > limit;
           return {
             content: [{
               type: "text",
-              text: `回收站 ${trash.length} 条${params.collectionKey ? `（仍关联集合 ${params.collectionKey}）` : ""}\n` +
+              text: `回收站返回 ${trash.length} 条${truncated ? "（已截断）" : ""}${params.collectionKey ? `（仍关联集合 ${params.collectionKey}）` : ` / 源总数 ${result.total}`}\n` +
                 trash.map((item) => `[${item.key}] ${String(item.data.title ?? "").slice(0, 80)}`).join("\n"),
             }],
-            details: { count: trash.length, items: trash },
+            details: { count: trash.length, total: result.total, sourceTotal: result.sourceTotal ?? result.total, truncated, items: trash },
           };
         }
         // ---------- 门控检查（双保险） ----------
@@ -574,36 +611,46 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           return { content: [{ type: "text", text: "delete 未启用：需 write.delete=true" }], details: {} };
         }
         if (params.action === "delete") {
-          for (const k of params.keys ?? []) await c.deleteItem(k);
-          return { content: [{ type: "text", text: `已彻底删除 ${(params.keys ?? []).length} 条` }], details: { deleted: params.keys } };
+          const keys = params.keys ?? [];
+          if (!keys.length) return { content: [{ type: "text", text: "delete 需提供非空 keys" }], details: {} };
+          const result = await runKeyBatch(keys, (key) => c.deleteItem(key));
+          return { content: [{ type: "text", text: batchWriteText("彻底删除", result) }], details: result };
         }
         if (params.action === "trash") {
           const keys = params.keys ?? [];
           if (!keys.length) return { content: [{ type: "text", text: "trash 需提供非空 keys" }], details: {} };
-          for (const key of keys) await c.trashItem(key);
-          return { content: [{ type: "text", text: `已移入回收站 ${keys.length} 条` }], details: { trashed: keys } };
+          const result = await runKeyBatch(keys, (key) => c.trashItem(key));
+          return { content: [{ type: "text", text: batchWriteText("移入回收站", result) }], details: result };
         }
         if (params.action === "restore") {
           const keys = params.keys ?? [];
           if (!keys.length) return { content: [{ type: "text", text: "restore 需提供非空 keys" }], details: {} };
-          const restored: string[] = [];
-          const alreadyActive: string[] = [];
-          for (const key of keys) {
-            if (await c.restoreItem(key)) restored.push(key);
-            else alreadyActive.push(key);
-          }
+          const result = await runKeyBatch(keys, (key) => c.restoreItem(key));
+          const restored = result.succeeded.filter((entry) => entry.value).map((entry) => entry.key);
+          const alreadyActive = result.succeeded.filter((entry) => !entry.value).map((entry) => entry.key);
           return {
-            content: [{ type: "text", text: `已从回收站恢复 ${restored.length} 条` + (alreadyActive.length ? `；原本已活动 ${alreadyActive.length} 条` : "") }],
-            details: { restored, alreadyActive },
+            content: [{ type: "text", text: batchWriteText("回收站恢复", result) + (alreadyActive.length ? `\n原本已活动: ${alreadyActive.join(", ")}` : "") }],
+            details: { ...result, restored, alreadyActive },
           };
         }
         if (params.action === "add") {
-          const created = await c.createItems(params.items ?? []);
-          return { content: [{ type: "text", text: `已创建 ${created.length} 条: ` + created.map((x) => x.key).join(", ") }], details: { created } };
+          const items = params.items ?? [];
+          if (!items.length) return { content: [{ type: "text", text: "add 需提供非空 items" }], details: {} };
+          const creation = await c.createItems(items);
+          return {
+            content: [{
+              type: "text",
+              text: `创建成功 ${creation.successful.length} 条，失败 ${creation.failed.length} 条` +
+                (creation.successful.length ? `\n成功 keys: ${creation.successful.map((entry) => entry.key).join(", ")}` : "") +
+                (creation.failed.length ? `\n失败: ${JSON.stringify(creation.failed).slice(0, 500)}` : ""),
+            }],
+            details: creation,
+          };
         }
         if (params.action === "update") {
+          validateKey(params.key ?? "", "key");
           const fields = params.fields as Record<string, unknown> | undefined;
-          if (!fields) return { content: [{ type: "text", text: "update 需提供 fields" }], details: {} };
+          if (!fields || Object.keys(fields).length === 0) return { content: [{ type: "text", text: "update 需提供至少一个 fields 字段" }], details: {} };
           const whitelist = ["title", "DOI", "date", "extra", "url"];
           const bad = Object.keys(fields).filter((k) => !whitelist.includes(k));
           if (bad.length) return { content: [{ type: "text", text: `字段不在白名单: ${bad.join(", ")}（允许: ${whitelist.join("/")}）` }], details: {} };
@@ -618,22 +665,21 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         if (params.action === "tag") {
           const keys = params.keys ?? [];
           const tags = params.tags ?? [];
+          if (!keys.length || !tags.length) return { content: [{ type: "text", text: "tag 需提供非空 keys 和 tags" }], details: {} };
           const mode = params.mode ?? "append";
-          for (const k of keys) {
-            await updateItemWithFreshMerge(c, k, (item) => {
-              const cur = (item.data.tags as { tag: string; type?: number }[] | undefined) ?? [];
-              let next: { tag: string; type: number }[];
-              if (mode === "replace") next = tags.map((t) => ({ tag: t, type: 1 }));
-              else if (mode === "remove") next = cur.filter((x) => !tags.includes(x.tag)).map((x) => ({ tag: x.tag, type: x.type ?? 0 }));
-              else {
-                const have = new Set(cur.map((x) => x.tag));
-                next = cur.map((x) => ({ tag: x.tag, type: x.type ?? 0 }));
-                for (const tag of tags) if (!have.has(tag)) next.push({ tag, type: 1 });
-              }
-              return { tags: next };
-            });
-          }
-          return { content: [{ type: "text", text: `已 ${mode} 标签 ${tags.join(",")} → ${keys.length} 条` }], details: { keys, tags, mode } };
+          const result = await runKeyBatch(keys, (key) => updateItemWithFreshMerge(c, key, (item) => {
+            const current = (item.data.tags as { tag: string; type?: number }[] | undefined) ?? [];
+            let next: { tag: string; type: number }[];
+            if (mode === "replace") next = tags.map((tag) => ({ tag, type: 1 }));
+            else if (mode === "remove") next = current.filter((entry) => !tags.includes(entry.tag)).map((entry) => ({ tag: entry.tag, type: entry.type ?? 0 }));
+            else {
+              const existing = new Set(current.map((entry) => entry.tag));
+              next = current.map((entry) => ({ tag: entry.tag, type: entry.type ?? 0 }));
+              for (const tag of tags) if (!existing.has(tag)) next.push({ tag, type: 1 });
+            }
+            return { tags: next };
+          }));
+          return { content: [{ type: "text", text: batchWriteText(`${mode} 标签 ${tags.join(",")}`, result) }], details: { ...result, tags, mode } };
         }
         if (params.action === "note") {
           validateKey(params.parentKey ?? "", "parentKey");
@@ -648,15 +694,20 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           return { content: [{ type: "text", text: `已更新笔记 [${noteKey}]（父 ${params.parentKey}）` }], details: { noteKey } };
         }
         if (params.action === "move") {
-          for (const k of params.keys ?? []) {
-            await updateItemWithFreshMerge(c, k, (item) => {
-              const next = new Set(item.data.collections ?? []);
-              for (const collectionKey of params.addCollections ?? []) next.add(collectionKey);
-              for (const collectionKey of params.removeCollections ?? []) next.delete(collectionKey);
-              return { collections: [...next] };
-            });
+          const keys = params.keys ?? [];
+          const addCollections = params.addCollections ?? [];
+          const removeCollections = params.removeCollections ?? [];
+          if (!keys.length || (!addCollections.length && !removeCollections.length)) {
+            return { content: [{ type: "text", text: "move 需提供非空 keys，并至少提供 addCollections/removeCollections 之一" }], details: {} };
           }
-          return { content: [{ type: "text", text: `已调整 ${(params.keys ?? []).length} 条的集合归属` }], details: { keys: params.keys } };
+          for (const collectionKey of [...addCollections, ...removeCollections]) validateKey(collectionKey, "collectionKey");
+          const result = await runKeyBatch(keys, (key) => updateItemWithFreshMerge(c, key, (item) => {
+            const next = new Set(item.data.collections ?? []);
+            for (const collectionKey of addCollections) next.add(collectionKey);
+            for (const collectionKey of removeCollections) next.delete(collectionKey);
+            return { collections: [...next] };
+          }));
+          return { content: [{ type: "text", text: batchWriteText("调整集合归属", result) }], details: { ...result, addCollections, removeCollections } };
         }
         if (params.action === "upload") {
           validateKey(params.key ?? "", "key");
@@ -686,7 +737,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       action: Type.Union(collActions.map((a) => Type.Literal(a)) as [never], { description: "操作类型" }),
       collectionKey: Type.Optional(Type.String({ description: "get/update/delete 必填" })),
       name: Type.Optional(Type.String({ description: "create 必填；update 可选（newName 或本字段）" })),
-      parentKey: Type.Optional(Type.String({ description: "create/update 可选（传 false 置顶）" })),
+      parentKey: Type.Optional(Type.Union([Type.String(), Type.Literal(false)], { description: "create/update 可选：集合 key；传 false 置顶" })),
       newName: Type.Optional(Type.String({ description: "update：新名称" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
@@ -812,7 +863,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     label: "Zotero 引用映射构建",
     description:
       "从正文（引用标记序列 + 文献表区 [n] 行）自动构建 cite_map.json：" +
-      "文献表标题 → Zotero 条目匹配（集合内优先，未匹配自动全库 fallback；同标题多版本进入 ambiguous，不静默选第一条）→ markers:[{marker,keys}]。" +
+      "按 DOI → 标题+年份/作者 → 标题分级匹配（集合优先、全库 fallback；同分候选进入 ambiguous）并记录 matchMethod/confidence → markers:[{marker,keys}]。" +
       "产物可直接被 zotero_audit_citations 消费。触发词：构建引用映射、生成 cite_map、文献匹配。",
     promptSnippet: "Build a citation map (marker→Zotero keys) from a manuscript",
     parameters: Type.Object({
@@ -827,42 +878,67 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         const text = params.text ?? (params.manuscriptPath ? fs.readFileSync(params.manuscriptPath, "utf-8") : null);
         if (!text) return { content: [{ type: "text", text: "需提供 manuscriptPath 或 text" }], details: {} };
         const c = getClient();
-        // 标题池：集合优先，全库 fallback
-        const pool: { key: string; title: string }[] = [];
+        // 元数据池：集合优先；没有唯一结果时再回退全库。
+        const pool: BibliographicCandidate[] = [];
+        let collectionTruncated = false;
         if (params.collectionKey) {
-          validateKey(params.collectionKey, "collectionKey");
-          const items = await c.getCollectionItems(params.collectionKey);
-          pool.push(...items.map((it) => ({ key: it.key, title: String(it.data.title ?? "") })));
+          const collectionResult = await c.getCollectionItemsWithMeta(params.collectionKey);
+          pool.push(...collectionResult.items.map(bibliographicCandidate));
+          collectionTruncated = collectionResult.truncated;
         }
-        // 文献表 [n] 行 → 候选 → 逐级匹配（集合 → 全库），统一 refToKey
         const refLines = new Map<string, string>();
         const lines = text.split("\n");
-        const refIdx = lines.findIndex((l) => /^#{1,6}\s*参考文献/.test(l.trim()));
+        const refIdx = lines.findIndex((line) => /^#{1,6}\s*参考文献/.test(line.trim()));
         if (refIdx !== -1) {
-          for (let i = refIdx + 1; i < lines.length; i++) {
-            const m = lines[i].match(/^\[\s*(\d+)\s*\]\s*(.+)$/);
-            if (m) refLines.set(m[1], m[2]);
+          for (let index = refIdx + 1; index < lines.length; index += 1) {
+            const match = lines[index].match(/^\[\s*(\d+)\s*\]\s*(.+)$/);
+            if (match) refLines.set(match[1], match[2]);
           }
         }
         const refToKey = new Map<string, string>();
         const unmatched: { ref: string; candidate: string }[] = [];
-        const ambiguous: { ref: string; candidate: string; matches: { key: string; title: string }[] }[] = [];
-        let libTitles: { key: string; title: string }[] | null = null;
+        const ambiguous: AmbiguousTitleMatch[] = [];
+        const matches: MatchedReference[] = [];
+        let libraryPool: BibliographicCandidate[] | null = null;
+        let libraryTotal: number | null = null;
+        let libraryTruncated = false;
         for (const [ref, rest] of refLines) {
-          const candidates = extractTitleCandidates(`[${ref}] ${rest}`);
-          let match = matchTitleDetailed(candidates, pool);
-          if (!match.key && match.ambiguous.length === 0 && params.fullLibraryFallback !== false) {
-            if (!libTitles) {
-              const items = await c.getItems({});
-              libTitles = items.map((item) => ({ key: item.key, title: String(item.data.title ?? "") }));
+          const evidence = extractReferenceEvidence(`[${ref}] ${rest}`);
+          let match = matchReferenceDetailed(evidence, pool);
+          if (!match.key && params.fullLibraryFallback !== false) {
+            if (!libraryPool) {
+              const libraryResult = await c.getItemsWithMeta();
+              libraryPool = libraryResult.items.map(bibliographicCandidate);
+              libraryTotal = libraryResult.total;
+              libraryTruncated = libraryResult.truncated;
             }
-            match = matchTitleDetailed(candidates, libTitles);
+            const fallbackMatch = matchReferenceDetailed(evidence, libraryPool);
+            if (fallbackMatch.key || fallbackMatch.ambiguous.length > 0) match = fallbackMatch;
           }
-          if (match.key) refToKey.set(ref, match.key);
-          else if (match.ambiguous.length > 0) {
-            ambiguous.push({ ref, candidate: candidates[0] ?? rest.slice(0, 100), matches: match.ambiguous });
+          if (match.key && match.matchMethod) {
+            refToKey.set(ref, match.key);
+            matches.push({
+              ref,
+              key: match.key,
+              matchMethod: match.matchMethod,
+              confidence: match.confidence,
+              evidence: {
+                doi: evidence.doi,
+                year: evidence.year,
+                firstAuthor: evidence.firstAuthor,
+                titleCandidate: match.matchedTitleCandidate,
+              },
+            });
+          } else if (match.ambiguous.length > 0) {
+            ambiguous.push({
+              ref,
+              candidate: evidence.titleCandidates[0] ?? rest.slice(0, 100),
+              matches: match.ambiguous,
+              suggestedMethod: match.matchMethod,
+              confidence: match.confidence,
+            });
           } else {
-            unmatched.push({ ref, candidate: candidates[0] ?? rest.slice(0, 100) });
+            unmatched.push({ ref, candidate: evidence.titleCandidates[0] ?? rest.slice(0, 100) });
           }
         }
         // 正文 marker 序列 → keys（与展开 refs 等长，未匹配用空串占位防错位）
@@ -877,23 +953,38 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         });
         const meta = await c.ensureServerMeta();
         const outPath = params.output ?? path.join(await serverCacheDir(c, ctx), "cite_map.json");
-        fs.mkdirSync(path.dirname(outPath), { recursive: true });
-        fs.writeFileSync(outPath, JSON.stringify({
+        const truncated = collectionTruncated || libraryTruncated;
+        writeJsonAtomic(outPath, {
           generatedAt: new Date().toISOString(),
           serverId: meta.serverId,
           collectionKey: params.collectionKey ?? null,
+          truncated,
+          librarySourceTotal: libraryTotal,
           markers,
+          matches,
           unmatched,
           ambiguous,
-        }, null, 2), "utf-8");
+        });
         return {
           content: [{
             type: "text",
             text: `文献表 ${refLines.size} 条，匹配 ${refToKey.size}，歧义 ${ambiguous.length}，未匹配 ${unmatched.length}；markers ${markers.length} 个 → ${outPath}` +
+              (truncated ? `\n⚠ Zotero 元数据源已截断${libraryTotal !== null ? `（全库总数 ${libraryTotal}）` : ""}，未匹配结论可能不完整` : "") +
+              (matches.length ? `\n匹配方式: ${summarizeMatchMethods(matches)}` : "") +
               (ambiguous.length ? `\n歧义: ${ambiguous.map((entry) => `[${entry.ref}] ${entry.matches.map((item) => item.key).join("/")}`).join("; ")}` : "") +
               (unmatched.length ? `\n未匹配: ${unmatched.map((entry) => `[${entry.ref}]${entry.candidate.slice(0, 30)}`).join("; ")}` : ""),
           }],
-          details: { path: outPath, serverId: meta.serverId, matched: refToKey.size, ambiguous, unmatched, markers: markers.length },
+          details: {
+            path: outPath,
+            serverId: meta.serverId,
+            matched: refToKey.size,
+            matches,
+            ambiguous,
+            unmatched,
+            markers: markers.length,
+            truncated,
+            librarySourceTotal: libraryTotal,
+          },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_build_map 失败: ${zoteroErr(err)}` }], details: {} };

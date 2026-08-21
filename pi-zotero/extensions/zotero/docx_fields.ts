@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -12,6 +12,7 @@ import {
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
 import type { ZoteroClient } from "./client.ts";
+import { writeFileAtomic } from "./atomic.ts";
 
 const DOCUMENT_XML = "word/document.xml";
 const DEFAULT_BIBL_PLACEHOLDER = "（此处由 Zotero 插入参考文献表）";
@@ -432,18 +433,6 @@ function insertBibliography(
   return "appended";
 }
 
-function atomicWrite(filePath: string, content: Uint8Array): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  try {
-    fs.writeFileSync(temporary, content);
-    fs.renameSync(temporary, filePath);
-  } catch (error) {
-    fs.rmSync(temporary, { force: true });
-    throw error;
-  }
-}
-
 function readDocx(src: string): { files: Record<string, Uint8Array>; document: XmlDocument } {
   let files: Record<string, Uint8Array>;
   try {
@@ -469,7 +458,7 @@ function writeDocx(out: string, files: Record<string, Uint8Array>, document: Xml
   const verification = unzipSync(archive)[DOCUMENT_XML];
   if (!verification) throw new DocxFieldsError(`生成的 docx 缺少 ${DOCUMENT_XML}`);
   parseXml(strFromU8(verification));
-  atomicWrite(out, archive);
+  writeFileAtomic(out, archive);
 }
 
 export async function writeZoteroDocxFields(

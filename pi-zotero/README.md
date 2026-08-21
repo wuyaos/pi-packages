@@ -11,6 +11,7 @@ pi 扩展：通过 **Zotero 10 Local API 原生 HTTP**（无 MCP、无插件、�
 | `zotero_export_collection` | 集合索引导出（JSON 写盘） |
 | `zotero_batch_csl` | CSL 批量版本感知缓存（按 Server-ID 隔离） |
 | `zotero_audit_citations` | 引用审计（序列/乱序/缺失/未引用，工作簿写盘） |
+| `zotero_build_map` | DOI、标题、年份、作者分级匹配，输出匹配证据和歧义候选 |
 | `zotero_fulltext` | 条目全文内容（默认截断） |
 | `zotero_attachment_path` | 附件磁盘路径（WSL 可读） |
 | `zotero_saved_searches` | 保存搜索 list/execute |
@@ -44,6 +45,18 @@ pi 扩展：通过 **Zotero 10 Local API 原生 HTTP**（无 MCP、无插件、�
 
 env：`ZOTERO_BASE_URL` / `ZOTERO_TIMEOUT_MS` / `ZOTERO_CACHE_DIR`（优先级高于配置文件）。默认缓存按 `<cacheDir>/<Server-ID>-0/` 隔离；CSL 条目记录 Zotero item version，元数据变更后自动失效。
 
+## v0.2 数据完整性
+
+- 列表读取保留 Zotero `Total-Results`，达到调用 `limit` 或 `maxItems` 时返回 `truncated=true`；查重、集合导出和引用映射不再静默给出不完整结论
+- cite_map 为每条成功匹配记录 `matchMethod`、`confidence` 和 DOI/年份/作者证据；优先级为 DOI → 标题精确+年份/作者消歧；低置信标题包含及 DOI 冲突只进入 `ambiguous`，不自动写入 Word 引用
+- 批量 tag/move/trash/restore/delete 顺序执行并返回逐 key 的 `succeeded/failed/skipped`；401/403/429 后停止，避免连续弹授权或继续撞限流
+- 附件上传采用“两遍流式”：第一遍计算 MD5，第二遍通过 HTTP `application/octet-stream` 发送原始二进制流（非 Base64、不直写 Zotero/storage），不把整个 PDF 载入 Pi 进程内存
+- 配置、CSL 缓存、集合索引、审计报告和 cite_map 均使用同目录临时文件 + fsync + rename 原子写入
+
+## Word 动态域
+
+完整的 Word COM 打开验证、`ZoteroRefresh` 和故障排查见 [`instructions/zotero-word-fields.md`](instructions/zotero-word-fields.md)。旧 Python/MCP skill 不属于 npm 运行时依赖。
+
 ## 边界
 
 - 整数 itemID 不暴露（Local API 限制），但 **uris 方案已实测通过**（Zotero 10.0）：Word 动态域 `id` 可占位 0 + 正确 `uris` + 完整 `itemData`，刷新时 Zotero 自动解析 uris 并回填真 itemID（实测 8885/8506）、生成 GB/T 文献表；运行时实现位于 `extensions/zotero/docx_fields.ts`
@@ -51,4 +64,5 @@ env：`ZOTERO_BASE_URL` / `ZOTERO_TIMEOUT_MS` / `ZOTERO_CACHE_DIR`（优先级�
 - fulltext/附件路径内容会进入 LLM 上下文（出网），fulltext 默认截断，工具描述已标注
 - 集合导出默认排除回收站条目，并在结果中报告仍保留该集合关系的回收站 key；可用 `zotero_items action=restore` 恢复
 - `write.rememberKey=true` 时，仅持久化用户选择 **Always Allow** 后返回的可复用 key，路径为 `~/.local/state/pi-zotero/auth.json`（0600，不写入 Pi 配置目录）；改为 `false` 并 `/reload` 会删除该文件
-- `zotero_build_map` 遇到同标题多版本会写入 `ambiguous` 而不自动选第一条；解决歧义/缺失 key 后才能生成 Word 动态域
+- `zotero_build_map` 只有在 DOI 或标题+年份/作者证据能唯一消歧时才自动匹配；其余同分候选写入 `ambiguous`，解决歧义/缺失 key 后才能生成 Word 动态域
+- 一次性 **Allow** key 只允许一个 Local API 写请求；批量整理建议在 Zotero 授权框选择 **Always Allow**，否则可能逐项弹窗

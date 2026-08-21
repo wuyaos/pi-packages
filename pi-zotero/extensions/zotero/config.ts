@@ -5,6 +5,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { writeJsonAtomic } from "./atomic.ts";
 
 export interface ZoteroWriteConfig {
   /** 总开关：false 时所有写 action 收敛（LLM 不可见） */
@@ -51,15 +52,13 @@ export function ensureConfigFile(): void {
     maxItems: DEFAULT_CONFIG.maxItems,
     write: DEFAULT_CONFIG.write,
   };
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaults, null, 2) + "\n", "utf-8");
+  writeJsonAtomic(CONFIG_PATH, defaults, { mode: 0o600 });
 }
 
 /** 保存配置（TUI 用） */
 export function saveConfig(cfg: ZoteroConfig): void {
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
   const out = { ...cfg };
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n", "utf-8");
+  writeJsonAtomic(CONFIG_PATH, out, { mode: 0o600 });
   cached = cfg;
 }
 

@@ -4,9 +4,9 @@
  * - Server-ID 命名空间与文件内双重校验，防跨库复用
  * - 每条 CSL 记录 Zotero item version，元数据更新后自动失效
  */
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeJsonAtomic } from "./atomic.ts";
 
 export class JsonCache<T> {
   constructor(readonly filePath: string) {}
@@ -20,15 +20,7 @@ export class JsonCache<T> {
   }
 
   save(data: T): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-    try {
-      fs.writeFileSync(temporary, JSON.stringify(data, null, 2), "utf-8");
-      fs.renameSync(temporary, this.filePath);
-    } catch (error) {
-      fs.rmSync(temporary, { force: true });
-      throw error;
-    }
+    writeJsonAtomic(this.filePath, data, { mode: 0o600 });
   }
 }
 

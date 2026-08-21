@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -46,6 +46,17 @@ export interface ZoteroItem {
   meta?: Record<string, unknown>;
 }
 
+export interface CreateItemsResult {
+  successful: { key: string; version: number }[];
+  failed: unknown[];
+}
+
+type IndexedWriteValues<T> = T[] | Record<string, T>;
+interface RawWriteResult<T> {
+  successful?: IndexedWriteValues<T>;
+  failed?: IndexedWriteValues<unknown>;
+}
+
 export interface ZoteroTag {
   tag: string;
   meta?: Record<string, unknown>;
@@ -74,6 +85,16 @@ export interface ListOptions {
   itemType?: string;
   tag?: string;
   format?: "json" | "csljson" | "versions";
+}
+
+export interface ListResult<T> {
+  items: T[];
+  /** 当前语义结果总数；若 truncated=true，则为已读取结果的已知下界。 */
+  total: number;
+  /** 内存过滤前端点的 Total-Results；仅集合等二次过滤接口提供。 */
+  sourceTotal?: number;
+  /** 仍有源结果未读取，原因可能是调用 limit 或 maxItems 硬上限。 */
+  truncated: boolean;
 }
 
 /** Zotero itemKey / collectionKey 格式（实测为 8 位大写字母数字） */
@@ -138,7 +159,7 @@ export class ZoteroClient {
   constructor(options: ZoteroClientOptions = {}) {
     this.apiBase = (options.apiBase ?? "http://127.0.0.1:23119/api").replace(/\/+$/, "");
     this.timeoutMs = options.timeoutMs ?? 15_000;
-    this.userAgent = options.userAgent ?? "pi-zotero/0.1 (zotero-local-api)";
+    this.userAgent = options.userAgent ?? "pi-zotero/0.2 (zotero-local-api)";
     this.maxItems = options.maxItems ?? 5000;
     this.rememberKey = options.rememberKey ?? false;
     if (this.rememberKey) this.loadStoredKey();
@@ -175,7 +196,7 @@ export class ZoteroClient {
     this.meta = { serverId: sid, version: ver };
     if (!this.versionWarned && ver !== "?" && !ver.startsWith("10")) {
       // 快速发布周期护栏：行为基线在 10.x 实测，跨 major 需重跑 probe
-      console.warn(`[pi-zotero] Zotero 版本 ${ver} ≠ 实测基线 10.x，API 行为可能变化，请重跑 scripts/zotero_api_probe.py`);
+      console.warn(`[pi-zotero] Zotero 版本 ${ver} ≠ 实测基线 10.x，API 行为可能变化；请从源码仓库运行 API probe`);
       this.versionWarned = true;
     }
     return this.meta;
@@ -183,15 +204,18 @@ export class ZoteroClient {
 
   // ---------- 读 ----------
 
-  /** 通用列表查询：limit 是总返回上限；内部按 ≤100 自动分页，并受 maxItems 硬上限约束。 */
-  async list<T = ZoteroItem>(path: string, opts: ListOptions = {}): Promise<T[]> {
+  /** 带 Total-Results/truncated 的通用列表查询；内部按 ≤100 分页并受 maxItems 硬上限约束。 */
+  async listWithMeta<T = ZoteroItem>(path: string, opts: ListOptions = {}): Promise<ListResult<T>> {
     const hardLimit = Math.max(1, this.maxItems);
     const totalLimit = Math.min(Math.max(1, opts.limit ?? hardLimit), hardLimit);
+    const initialStart = Math.max(0, opts.start ?? 0);
     const out: T[] = [];
-    let start = Math.max(0, opts.start ?? 0);
+    let start = initialStart;
+    let totalFromHeader: number | null = null;
+    let exhausted = false;
     while (out.length < totalLimit) {
       const pageSize = Math.min(100, totalLimit - out.length);
-      const page = await this.rawFetch<T[]>(this.userPath(), path, {
+      const pageResult = await this.rawFetchResult<T[]>(this.userPath(), path, {
         params: {
           limit: String(pageSize),
           start: String(start),
@@ -202,20 +226,47 @@ export class ZoteroClient {
           ...(opts.format ? { format: opts.format } : {}),
         },
       });
+      if (totalFromHeader === null) {
+        const parsed = Number.parseInt(pageResult.headers.get("total-results") ?? "", 10);
+        if (Number.isFinite(parsed) && parsed >= 0) totalFromHeader = parsed;
+      }
+      const page = pageResult.data;
       out.push(...page.slice(0, totalLimit - out.length));
-      if (page.length < pageSize) break;
+      if (page.length < pageSize) {
+        exhausted = true;
+        break;
+      }
       start += pageSize;
     }
-    return out;
+    const knownEnd = initialStart + out.length;
+    const total = totalFromHeader ?? knownEnd;
+    return {
+      items: out,
+      total,
+      truncated: totalFromHeader !== null ? knownEnd < totalFromHeader : !exhausted && out.length >= totalLimit,
+    };
+  }
+
+  /** 兼容数组调用；需要判断完整性时使用 listWithMeta。 */
+  async list<T = ZoteroItem>(path: string, opts: ListOptions = {}): Promise<T[]> {
+    return (await this.listWithMeta<T>(path, opts)).items;
+  }
+
+  async getItemsWithMeta(opts: ListOptions = {}): Promise<ListResult<ZoteroItem>> {
+    return this.listWithMeta<ZoteroItem>("/items", opts);
   }
 
   async getItems(opts: ListOptions = {}): Promise<ZoteroItem[]> {
-    return this.list<ZoteroItem>("/items", opts);
+    return (await this.getItemsWithMeta(opts)).items;
   }
 
   /** 回收站条目；Local API 默认 /items 列表不会返回这些条目。 */
+  async getTrashItemsWithMeta(opts: ListOptions = {}): Promise<ListResult<ZoteroItem>> {
+    return this.listWithMeta<ZoteroItem>("/items/trash", opts);
+  }
+
   async getTrashItems(opts: ListOptions = {}): Promise<ZoteroItem[]> {
-    return this.list<ZoteroItem>("/items/trash", opts);
+    return (await this.getTrashItemsWithMeta(opts)).items;
   }
 
   async getItem(key: string): Promise<ZoteroItem> {
@@ -238,21 +289,35 @@ export class ZoteroClient {
    * topLevelOnly=true（默认）时用 data.collections 过滤出顶层条目；
    * false 时返回全部（含附件/笔记）。
    */
-  async getCollectionItems(collectionKey: string, opts: { topLevelOnly?: boolean } = {}): Promise<ZoteroItem[]> {
+  async getCollectionItemsWithMeta(
+    collectionKey: string,
+    opts: { topLevelOnly?: boolean } = {},
+  ): Promise<ListResult<ZoteroItem>> {
     validateKey(collectionKey, "collectionKey");
     const topLevelOnly = opts.topLevelOnly ?? true;
-    const all = await this.list<ZoteroItem>(`/collections/${collectionKey}/items`);
+    const result = await this.listWithMeta<ZoteroItem>(`/collections/${collectionKey}/items`);
     // 当前 Zotero 10 端点默认排除回收站；仍显式过滤，避免未来版本行为变化。
-    const active = all.filter((item) => !item.data.deleted);
-    if (!topLevelOnly) return active;
-    return active.filter((item) => (item.data.collections ?? []).includes(collectionKey));
+    const active = result.items.filter((item) => !item.data.deleted);
+    const items = topLevelOnly
+      ? active.filter((item) => (item.data.collections ?? []).includes(collectionKey))
+      : active;
+    return { items, total: items.length, sourceTotal: result.total, truncated: result.truncated };
+  }
+
+  async getCollectionItems(collectionKey: string, opts: { topLevelOnly?: boolean } = {}): Promise<ZoteroItem[]> {
+    return (await this.getCollectionItemsWithMeta(collectionKey, opts)).items;
   }
 
   /** 回收站中仍保留该集合直接归属关系的顶层条目。 */
-  async getCollectionTrashItems(collectionKey: string): Promise<ZoteroItem[]> {
+  async getCollectionTrashItemsWithMeta(collectionKey: string): Promise<ListResult<ZoteroItem>> {
     validateKey(collectionKey, "collectionKey");
-    const trash = await this.getTrashItems();
-    return trash.filter((item) => (item.data.collections ?? []).includes(collectionKey));
+    const result = await this.getTrashItemsWithMeta();
+    const items = result.items.filter((item) => (item.data.collections ?? []).includes(collectionKey));
+    return { items, total: items.length, sourceTotal: result.total, truncated: result.truncated };
+  }
+
+  async getCollectionTrashItems(collectionKey: string): Promise<ZoteroItem[]> {
+    return (await this.getCollectionTrashItemsWithMeta(collectionKey)).items;
   }
 
   /** 集合内顶层条目 keys（export/batch 复用） */
@@ -262,26 +327,31 @@ export class ZoteroClient {
   }
 
   /** 全文搜索（Zotero 10 FTS5） */
-  async search(q: string, opts: Omit<ListOptions, "q"> = {}): Promise<ZoteroItem[]> {
-    return this.getItems({ ...opts, q, qmode: opts.qmode ?? "everything" });
+  async searchWithMeta(q: string, opts: Omit<ListOptions, "q"> = {}): Promise<ListResult<ZoteroItem>> {
+    return this.getItemsWithMeta({ ...opts, q, qmode: opts.qmode ?? "everything" });
   }
 
-  /**
-   * 集合内搜索。limit 作用于过滤后的顶层结果；集合端点混入 children 时继续翻页，避免漏检。
-   */
-  async searchCollection(
+  async search(q: string, opts: Omit<ListOptions, "q"> = {}): Promise<ZoteroItem[]> {
+    return (await this.searchWithMeta(q, opts)).items;
+  }
+
+  /** 集合内搜索；limit 作用于过滤后的顶层结果，children 占页时继续翻页。 */
+  async searchCollectionWithMeta(
     collectionKey: string,
     q: string,
     opts: Omit<ListOptions, "q"> = {},
-  ): Promise<ZoteroItem[]> {
+  ): Promise<ListResult<ZoteroItem>> {
     validateKey(collectionKey, "collectionKey");
     const desired = Math.min(Math.max(1, opts.limit ?? 20), Math.max(1, this.maxItems));
     const out: ZoteroItem[] = [];
     let start = Math.max(0, opts.start ?? 0);
     let scanned = 0;
+    let sourceTotal: number | null = null;
+    let sourceExhausted = false;
+    let stoppedInsidePage = false;
     while (out.length < desired && scanned < this.maxItems) {
       const pageSize = Math.min(100, this.maxItems - scanned);
-      const page = await this.rawFetch<ZoteroItem[]>(this.userPath(), `/collections/${collectionKey}/items`, {
+      const pageResult = await this.rawFetchResult<ZoteroItem[]>(this.userPath(), `/collections/${collectionKey}/items`, {
         params: {
           limit: String(pageSize),
           start: String(start),
@@ -291,16 +361,39 @@ export class ZoteroClient {
           ...(opts.tag ? { tag: opts.tag } : {}),
         },
       });
+      if (sourceTotal === null) {
+        const parsed = Number.parseInt(pageResult.headers.get("total-results") ?? "", 10);
+        if (Number.isFinite(parsed) && parsed >= 0) sourceTotal = parsed;
+      }
+      const page = pageResult.data;
       scanned += page.length;
-      for (const item of page) {
+      sourceExhausted = page.length < pageSize || (sourceTotal !== null && start + page.length >= sourceTotal);
+      for (let index = 0; index < page.length; index += 1) {
+        const item = page[index];
         if (item.data.deleted || !(item.data.collections ?? []).includes(collectionKey)) continue;
         out.push(item);
-        if (out.length >= desired) break;
+        if (out.length >= desired) {
+          stoppedInsidePage = index < page.length - 1;
+          break;
+        }
       }
-      if (page.length < pageSize) break;
+      if (sourceExhausted) break;
       start += pageSize;
     }
-    return out;
+    return {
+      items: out,
+      total: out.length,
+      sourceTotal: sourceTotal ?? scanned,
+      truncated: stoppedInsidePage || !sourceExhausted,
+    };
+  }
+
+  async searchCollection(
+    collectionKey: string,
+    q: string,
+    opts: Omit<ListOptions, "q"> = {},
+  ): Promise<ZoteroItem[]> {
+    return (await this.searchCollectionWithMeta(collectionKey, q, opts)).items;
   }
 
   /**
@@ -513,12 +606,12 @@ export class ZoteroClient {
 
   /** 创建集合 */
   async createCollection(name: string, parentCollection?: string | false): Promise<{ key: string; version: number }> {
-    const res = await this.writeRequest<{ successful?: { key: string; version: number }[]; failed?: unknown[] }>("/collections", {
+    const res = await this.writeRequest<RawWriteResult<{ key: string; version: number }>>("/collections", {
       method: "POST",
       body: JSON.stringify([{ name, ...(parentCollection !== undefined ? { parentCollection } : {}) }]),
     });
-    const created = res.successful?.[0];
-    if (!created) throw new ZoteroApiError(`集合创建失败: ${JSON.stringify(res.failed ?? res).slice(0, 300)}`);
+    const created = indexedWriteValues(res.successful)[0];
+    if (!created) throw new ZoteroApiError(`集合创建失败: ${JSON.stringify(indexedWriteValues(res.failed)).slice(0, 300)}`);
     return created;
   }
 
@@ -567,12 +660,12 @@ export class ZoteroClient {
 
   /** 创建保存搜索（conditions 为 Zotero 10 条件 JSON 数组） */
   async createSearch(name: string, conditions: unknown[]): Promise<{ key: string; version: number }> {
-    const res = await this.writeRequest<{ successful?: { key: string; version: number }[]; failed?: unknown[] }>("/searches", {
+    const res = await this.writeRequest<RawWriteResult<{ key: string; version: number }>>("/searches", {
       method: "POST",
       body: JSON.stringify([{ name, conditions }]),
     });
-    const created = res.successful?.[0];
-    if (!created) throw new ZoteroApiError(`保存搜索创建失败: ${JSON.stringify(res.failed ?? res).slice(0, 300)}`);
+    const created = indexedWriteValues(res.successful)[0];
+    if (!created) throw new ZoteroApiError(`保存搜索创建失败: ${JSON.stringify(indexedWriteValues(res.failed)).slice(0, 300)}`);
     return created;
   }
 
@@ -616,9 +709,13 @@ export class ZoteroClient {
    */
   async uploadFile(attachmentKey: string, filePath: string): Promise<{ exists: boolean }> {
     validateKey(attachmentKey, "attachmentKey");
+    const initialStat = fs.statSync(filePath);
+    if (!initialStat.isFile()) throw new ZoteroApiError(`附件路径不是普通文件: ${filePath}`);
+    const md5 = await fileMd5(filePath);
     const stat = fs.statSync(filePath);
-    const content = fs.readFileSync(filePath);
-    const md5 = createHash("md5").update(content).digest("hex");
+    if (stat.size !== initialStat.size || stat.mtimeMs !== initialStat.mtimeMs) {
+      throw new ZoteroApiError("附件在计算 MD5 期间发生变化，请停止写入后重试");
+    }
     const filename = path.basename(filePath);
     const metadata = { md5, filename, filesize: stat.size, mtime: Math.floor(stat.mtimeMs) };
 
@@ -640,20 +737,26 @@ export class ZoteroClient {
       throw new ZoteroApiError("上传初始化响应缺少 url 或 uploadKey");
     }
 
+    const uploadTimeoutMs = Math.max(this.timeoutMs, 300_000);
+    const uploadStream = fs.createReadStream(filePath);
     let uploadResponse: Response;
     try {
-      uploadResponse = await fetch(data.url, {
+      const uploadInit: RequestInit & { duplex: "half" } = {
         method: "POST",
         headers: {
           "User-Agent": this.userAgent,
           "Content-Type": "application/octet-stream",
-          "Content-Length": String(content.length),
+          "Content-Length": String(stat.size),
         },
-        body: new Uint8Array(content),
-        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 60_000)),
-      });
+        body: uploadStream as unknown as BodyInit,
+        duplex: "half",
+        signal: AbortSignal.timeout(uploadTimeoutMs),
+      };
+      uploadResponse = await fetch(data.url, uploadInit);
+      uploadStream.destroy();
     } catch (err) {
-      throw classifyFetchError(err, Math.max(this.timeoutMs, 60_000));
+      uploadStream.destroy();
+      throw classifyFetchError(err, uploadTimeoutMs);
     }
     if (!uploadResponse.ok) {
       const body = await uploadResponse.text().catch(() => "");
@@ -679,19 +782,20 @@ export class ZoteroClient {
    * 创建条目（v0.2 工具层调用）。
    * @returns 创建的 { key, version }
    */
-  async createItems(items: Record<string, unknown>[]): Promise<{ key: string; version: number }[]> {
+  async createItems(items: Record<string, unknown>[]): Promise<CreateItemsResult> {
     // Local API 的 401 表示 key 未通过验证、请求未执行，因此可在重新授权后安全重试一次。
-    const res = await this.writeRequest<{ successful: { key: string; version: number }[]; failed: unknown[] }>(
+    const res = await this.writeRequest<RawWriteResult<{ key: string; version: number }>>(
       "/items",
       { method: "POST", body: JSON.stringify(items) },
     );
-    if (res.failed?.length) {
-      throw new ZoteroApiError(`部分条目创建失败: ${JSON.stringify(res.failed).slice(0, 300)}`);
+    const result: CreateItemsResult = {
+      successful: indexedWriteValues(res.successful).map((entry) => ({ key: entry.key, version: entry.version })),
+      failed: indexedWriteValues(res.failed),
+    };
+    if (items.length > 0 && result.successful.length === 0 && result.failed.length === 0) {
+      throw new ZoteroApiError("条目创建失败：响应中既没有 successful 也没有 failed 结果");
     }
-    if (items.length > 0 && !res.successful?.length) {
-      throw new ZoteroApiError("条目创建失败：响应中没有 successful 结果");
-    }
-    return res.successful ?? [];
+    return result;
   }
 
   /**
@@ -716,6 +820,15 @@ export class ZoteroClient {
     path: string,
     init: { params?: URLSearchParams | Record<string, string>; method?: string; body?: string } = {},
   ): Promise<T> {
+    return (await this.rawFetchResult<T>(base, path, init)).data;
+  }
+
+  /** 与 rawFetch 相同，但保留响应头供列表读取 Total-Results。 */
+  private async rawFetchResult<T>(
+    base: string,
+    path: string,
+    init: { params?: URLSearchParams | Record<string, string>; method?: string; body?: string } = {},
+  ): Promise<{ data: T; headers: Headers }> {
     const sp = init.params instanceof URLSearchParams ? init.params : new URLSearchParams(init.params ?? {});
     const qs = sp.toString() ? `?${sp}` : "";
     let res: Response;
@@ -745,7 +858,7 @@ export class ZoteroClient {
       throw new ZoteroApiError(`Zotero API 错误 ${res.status}: ${body.slice(0, 300)}`, res.status, body);
     }
     try {
-      return (await res.json()) as T;
+      return { data: (await res.json()) as T, headers: res.headers };
     } catch {
       throw new ZoteroApiError(`Zotero 响应非 JSON（status ${res.status}）`);
     }
@@ -843,6 +956,23 @@ export class ZoteroClient {
   }
 }
 
+/** Local API 实测返回 {"0": value}；兼容 Web API/测试中的数组形态。 */
+function indexedWriteValues<T>(value: IndexedWriteValues<T> | undefined): T[] {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  return Object.keys(value)
+    .sort((left, right) => Number(left) - Number(right))
+    .map((key) => value[key]);
+}
+
+/** 两遍上传的第一遍：流式计算 MD5，不把整个附件读入 Pi 进程内存。 */
+async function fileMd5(filePath: string): Promise<string> {
+  const hash = createHash("md5");
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) hash.update(chunk as Buffer);
+  return hash.digest("hex");
+}
+
 /** fetch 错误分类：连接拒绝 → 未运行；超时 → 超时；其余原样 */
 function classifyFetchError(err: unknown, timeoutMs: number): Error {
   if (err instanceof Error) {
@@ -877,11 +1007,5 @@ export function winFileUrlToWslPath(url: string): string {
 
 /** 一次性写 token（单次有效，防 CSRF；Zotero 要求 5-32 字符） */
 function randomToken(): string {
-  const c = typeof globalThis !== "undefined" && "crypto" in globalThis ? globalThis.crypto : undefined;
-  if (c && "getRandomValues" in c) {
-    const buf = new Uint8Array(16);
-    c.getRandomValues(buf);
-    return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  return `t${Date.now()}${Math.random().toString(36).slice(2, 14)}`;
+  return randomBytes(16).toString("hex");
 }
