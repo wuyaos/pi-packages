@@ -13,6 +13,7 @@
 | [@wuyaos/pi-model-roles](https://www.npmjs.com/package/@wuyaos/pi-model-roles) | `npm:@wuyaos/pi-model-roles` | 模型角色路由 — 不同任务分配不同模型+thinking level |
 | [@wuyaos/pi-advisor](https://www.npmjs.com/package/@wuyaos/pi-advisor) | `npm:@wuyaos/pi-advisor` | 顾问模型 — 第二个模型审查每轮输出，注入建议/警告 |
 | [@wuyaos/pi-i18n](https://www.npmjs.com/package/@wuyaos/pi-i18n) | `npm:@wuyaos/pi-i18n` | pi `/` 菜单汉化 — autocomplete 中文显示 + 命令翻译模板 |
+| [@wuyaos/pi-zotero](https://www.npmjs.com/package/@wuyaos/pi-zotero) | `npm:@wuyaos/pi-zotero` | Zotero 10 Local API：检索、集合、CSL、引用审计、动态 Word 域与门控写操作 |
 
 > SSH 工具见独立仓库 [@wuyaos/pi-octssh](https://github.com/wuyaos/pi-octssh)：`pi install git:github.com/wuyaos/pi-octssh`
 
@@ -36,6 +37,7 @@ pi install npm:@wuyaos/pi-tool-gate
 pi install npm:@wuyaos/pi-model-roles
 pi install npm:@wuyaos/pi-advisor
 pi install npm:@wuyaos/pi-i18n
+pi install npm:@wuyaos/pi-zotero
 ```
 
 npm 方式可带版本锁定：`pi install npm:@wuyaos/pi-cc-tui@1.0.0`
@@ -70,6 +72,16 @@ cd pi-<name>
 ```
 
 每个子包独立 `package.json`，依赖各自声明，npm workspaces 会 hoist 到根 `node_modules/`。
+
+## pi-zotero
+
+Zotero 10 Local API 原生工具，无需 MCP；支持文献检索、集合导出、CSL 缓存、引用映射/审计、DOCX 动态域以及受配置门控的整理操作。
+
+```bash
+pi install npm:@wuyaos/pi-zotero
+```
+
+配置命令：`/zotero-config`；详见 [`pi-zotero/README.md`](pi-zotero/README.md)。
 
 ## pi-model-roles
 

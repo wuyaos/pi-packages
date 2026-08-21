@@ -37,7 +37,12 @@ export interface ZoteroClientOptions {
 export interface ZoteroItem {
   key: string;
   version: number;
-  data: Record<string, unknown> & { collections?: string[] };
+  data: Record<string, unknown> & {
+    collections?: string[];
+    deleted?: boolean | number;
+    itemType?: string;
+    parentItem?: string | false;
+  };
   meta?: Record<string, unknown>;
 }
 
@@ -208,6 +213,11 @@ export class ZoteroClient {
     return this.list<ZoteroItem>("/items", opts);
   }
 
+  /** 回收站条目；Local API 默认 /items 列表不会返回这些条目。 */
+  async getTrashItems(opts: ListOptions = {}): Promise<ZoteroItem[]> {
+    return this.list<ZoteroItem>("/items/trash", opts);
+  }
+
   async getItem(key: string): Promise<ZoteroItem> {
     validateKey(key);
     return this.rawFetch<ZoteroItem>(this.userPath(), `/items/${key}`);
@@ -232,8 +242,17 @@ export class ZoteroClient {
     validateKey(collectionKey, "collectionKey");
     const topLevelOnly = opts.topLevelOnly ?? true;
     const all = await this.list<ZoteroItem>(`/collections/${collectionKey}/items`);
-    if (!topLevelOnly) return all;
-    return all.filter((it) => (it.data.collections ?? []).includes(collectionKey));
+    // 当前 Zotero 10 端点默认排除回收站；仍显式过滤，避免未来版本行为变化。
+    const active = all.filter((item) => !item.data.deleted);
+    if (!topLevelOnly) return active;
+    return active.filter((item) => (item.data.collections ?? []).includes(collectionKey));
+  }
+
+  /** 回收站中仍保留该集合直接归属关系的顶层条目。 */
+  async getCollectionTrashItems(collectionKey: string): Promise<ZoteroItem[]> {
+    validateKey(collectionKey, "collectionKey");
+    const trash = await this.getTrashItems();
+    return trash.filter((item) => (item.data.collections ?? []).includes(collectionKey));
   }
 
   /** 集合内顶层条目 keys（export/batch 复用） */
@@ -245,6 +264,43 @@ export class ZoteroClient {
   /** 全文搜索（Zotero 10 FTS5） */
   async search(q: string, opts: Omit<ListOptions, "q"> = {}): Promise<ZoteroItem[]> {
     return this.getItems({ ...opts, q, qmode: opts.qmode ?? "everything" });
+  }
+
+  /**
+   * 集合内搜索。limit 作用于过滤后的顶层结果；集合端点混入 children 时继续翻页，避免漏检。
+   */
+  async searchCollection(
+    collectionKey: string,
+    q: string,
+    opts: Omit<ListOptions, "q"> = {},
+  ): Promise<ZoteroItem[]> {
+    validateKey(collectionKey, "collectionKey");
+    const desired = Math.min(Math.max(1, opts.limit ?? 20), Math.max(1, this.maxItems));
+    const out: ZoteroItem[] = [];
+    let start = Math.max(0, opts.start ?? 0);
+    let scanned = 0;
+    while (out.length < desired && scanned < this.maxItems) {
+      const pageSize = Math.min(100, this.maxItems - scanned);
+      const page = await this.rawFetch<ZoteroItem[]>(this.userPath(), `/collections/${collectionKey}/items`, {
+        params: {
+          limit: String(pageSize),
+          start: String(start),
+          q,
+          qmode: opts.qmode ?? "everything",
+          ...(opts.itemType ? { itemType: opts.itemType } : {}),
+          ...(opts.tag ? { tag: opts.tag } : {}),
+        },
+      });
+      scanned += page.length;
+      for (const item of page) {
+        if (item.data.deleted || !(item.data.collections ?? []).includes(collectionKey)) continue;
+        out.push(item);
+        if (out.length >= desired) break;
+      }
+      if (page.length < pageSize) break;
+      start += pageSize;
+    }
+    return out;
   }
 
   /**
@@ -482,8 +538,24 @@ export class ZoteroClient {
   /** 条目移入回收站（可恢复） */
   async trashItem(key: string): Promise<void> {
     validateKey(key);
-    const it = await this.getItem(key);
-    await this.updateItem(key, { deleted: 1 }, it.version);
+    const item = await this.getItem(key);
+    await this.updateItem(key, { deleted: true }, item.version);
+  }
+
+  /** 从回收站恢复；若条目已是活动状态则不写入并返回 false。 */
+  async restoreItem(key: string): Promise<boolean> {
+    validateKey(key);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const item = await this.getItem(key);
+      if (!item.data.deleted) return false;
+      try {
+        await this.updateItem(key, { deleted: false }, item.version);
+        return true;
+      } catch (error) {
+        if (!(error instanceof ZoteroApiError && error.status === 412 && attempt === 0)) throw error;
+      }
+    }
+    return false;
   }
 
   /** 彻底删除条目（DELETE 需版本头） */

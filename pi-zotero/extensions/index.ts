@@ -93,18 +93,18 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     async execute(_id, params, _signal, _onUpdate, ctx) {
       try {
         const c = getClient();
-        const items = await c.search(params.q, {
-          limit: params.limit ?? 20,
-          qmode: params.qmode ?? "everything",
-          itemType: params.itemType,
-        });
-        let list = items;
-        if (params.collectionKey) {
-          validateKey(params.collectionKey, "collectionKey");  // 已判空
-          const ck = params.collectionKey;
-          list = items.filter((it) => (it.data.collections ?? []).includes(ck));
-        }
-        const out = list.map((it) => ({
+        const items = params.collectionKey
+          ? await c.searchCollection(params.collectionKey, params.q, {
+              limit: params.limit ?? 20,
+              qmode: params.qmode ?? "everything",
+              itemType: params.itemType,
+            })
+          : await c.search(params.q, {
+              limit: params.limit ?? 20,
+              qmode: params.qmode ?? "everything",
+              itemType: params.itemType,
+            });
+        const out = items.map((it) => ({
           key: it.key,
           title: String(it.data.title ?? "(无标题)").slice(0, 120),
           year: (it.meta?.parsedDate ?? "") as string,
@@ -115,7 +115,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           content: [
             {
               type: "text",
-              text: `命中 ${out.length} 条（Total ${items.length}）\n` +
+              text: `命中 ${out.length} 条${params.collectionKey ? `（集合 ${params.collectionKey}）` : ""}\n` +
                 out.slice(0, 20).map((x) => `[${x.key}] ${x.title} (${x.itemType} ${x.year}) ${x.creators}`).join("\n"),
             },
           ],
@@ -132,8 +132,8 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     name: "zotero_export_collection",
     label: "Zotero 集合导出",
     description:
-      "导出集合内全部顶层条目为索引 JSON 写盘（key/title/creators/date/doi/itemType/year），返回摘要。" +
-      "触发词：导出集合、集合索引、这个集合有哪些文献。",
+      "导出集合内全部活动顶层条目为索引 JSON 写盘（默认排除回收站），并报告回收站中仍保留该集合关系的条目。" +
+      "字段含 key/title/creators/date/doi/itemType/year。触发词：导出集合、集合索引、这个集合有哪些文献。",
     promptSnippet: "Export a Zotero collection index to a JSON file",
     parameters: Type.Object({
       collectionKey: Type.String({ description: "集合 key（zotero_collections list 可查）" }),
@@ -143,7 +143,11 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       try {
         validateKey(params.collectionKey, "collectionKey");
         const c = getClient();
-        const items = await c.getCollectionItems(params.collectionKey);
+        const [items, trashed, meta] = await Promise.all([
+          c.getCollectionItems(params.collectionKey),
+          c.getCollectionTrashItems(params.collectionKey),
+          c.ensureServerMeta(),
+        ]);
         const indexed = items.map((it) => ({
           key: it.key,
           title: String(it.data.title ?? ""),
@@ -157,19 +161,28 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         fs.writeFileSync(
           outPath,
-          JSON.stringify({ generatedAt: new Date().toISOString(), collectionKey: params.collectionKey, count: indexed.length, items: indexed }, null, 2),
+          JSON.stringify({
+            generatedAt: new Date().toISOString(),
+            serverId: meta.serverId,
+            collectionKey: params.collectionKey,
+            count: indexed.length,
+            excludedTrashCount: trashed.length,
+            excludedTrash: trashed.map((item) => ({ key: item.key, title: String(item.data.title ?? "") })),
+            items: indexed,
+          }, null, 2),
           "utf-8",
         );
         return {
           content: [
             {
               type: "text",
-              text: `已导出 ${indexed.length} 条 → ${outPath}\n` +
-                indexed.slice(0, 10).map((x) => `[${x.key}] ${x.title.slice(0, 60)} (${x.year})`).join("\n") +
+              text: `已导出 ${indexed.length} 条活动文献 → ${outPath}` +
+                (trashed.length ? `\n另有 ${trashed.length} 条在回收站（未导出）: ${trashed.map((item) => item.key).join(", ")}` : "\n回收站排除项: 0") +
+                `\n` + indexed.slice(0, 10).map((x) => `[${x.key}] ${x.title.slice(0, 60)} (${x.year})`).join("\n") +
                 (indexed.length > 10 ? `\n… 共 ${indexed.length} 条` : ""),
             },
           ],
-          details: { path: outPath, count: indexed.length, preview: indexed.slice(0, 10) },
+          details: { path: outPath, count: indexed.length, excludedTrashCount: trashed.length, excludedTrash: trashed.map((item) => item.key), preview: indexed.slice(0, 10) },
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_export_collection 失败: ${zoteroErr(err)}` }], details: {} };
@@ -486,20 +499,22 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
   const actionsOf = (base: string[], extra: string[], enabled: boolean, del: boolean): string[] =>
     enabled ? [...base, ...extra, ...(del ? ["delete"] : [])] : base;
 
-  // ---------- zotero_items（children 常驻 + 写动作门控） ----------
-  const itemActions = actionsOf(["children"], ["add", "update", "tag", "note", "move", "trash", "upload"], canWriteItems, canDeleteItems);
+  // ---------- zotero_items（children/trash-list 常驻 + 写动作门控） ----------
+  const itemActions = actionsOf(["children", "trash-list"], ["add", "update", "tag", "note", "move", "trash", "restore", "upload"], canWriteItems, canDeleteItems);
   pi.registerTool({
     name: "zotero_items",
     label: "Zotero 条目",
     description:
-      `Zotero 条目操作。children=查条目子项（笔记/附件/批注，常驻）；` +
-      (canWriteItems ? `add=创建条目/笔记、update=改元数据（title/DOI/date/extra/url）、tag=增删标签、note=更新笔记、move=集合归属、trash=移入回收站、upload=附件文件上传（需先有 attachment 条目）；${writeHint}` : `写动作未启用（配置 write.enabled+write.tools 含 items 后 /reload）`) +
+      `Zotero 条目操作。children=查条目子项；trash-list=列出回收站条目（可按 collectionKey 过滤），均常驻；` +
+      (canWriteItems ? `add=创建条目/笔记、update=改元数据（title/DOI/date/extra/url）、tag=增删标签、note=更新笔记、move=集合归属、trash=移入回收站、restore=从回收站恢复、upload=附件文件上传（需先有 attachment 条目）；${writeHint}` : `写动作未启用（配置 write.enabled+write.tools 含 items 后 /reload）`) +
       (canDeleteItems ? `；delete=彻底删除（受 write.delete）` : ""),
     promptSnippet: "Query or modify Zotero items (gated writes)",
     parameters: Type.Object({
       action: Type.Union(itemActions.map((a) => Type.Literal(a)) as [never], { description: "操作类型" }),
-      key: Type.Optional(Type.String({ description: "children 必填：父条目 key" })),
-      keys: Type.Optional(Type.Array(Type.String(), { description: "tag/move/trash/delete 必填" })),
+      key: Type.Optional(Type.String({ description: "children/upload 必填：条目 key" })),
+      keys: Type.Optional(Type.Array(Type.String(), { description: "tag/move/trash/restore/delete 必填" })),
+      collectionKey: Type.Optional(Type.String({ description: "trash-list 可选：仅列出仍保留此集合关系的回收站条目" })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "trash-list 返回上限，默认 100" })),
       items: Type.Optional(Type.Array(Type.Object({
         itemType: Type.String(),
         title: Type.String(),
@@ -524,13 +539,31 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     async execute(_id, params, _signal, _onUpdate, _ctx) {
       try {
         const c = getClient();
-        // ---------- 常驻：children ----------
+        // ---------- 常驻：children / trash-list ----------
         if (params.action === "children") {
           validateKey(params.key ?? "", "key");
           const ch = await c.getChildren(params.key ?? "");
           return {
             content: [{ type: "text", text: `子项 ${ch.length} 个\n` + ch.map((x) => `[${x.key}] ${x.data.itemType} ${String(x.data.title ?? "").slice(0, 60)}`).join("\n") }],
             details: { count: ch.length, children: ch },
+          };
+        }
+        if (params.action === "trash-list") {
+          const limit = params.limit ?? 100;
+          let trash;
+          if (params.collectionKey) {
+            validateKey(params.collectionKey, "collectionKey");
+            trash = (await c.getCollectionTrashItems(params.collectionKey)).slice(0, limit);
+          } else {
+            trash = await c.getTrashItems({ limit });
+          }
+          return {
+            content: [{
+              type: "text",
+              text: `回收站 ${trash.length} 条${params.collectionKey ? `（仍关联集合 ${params.collectionKey}）` : ""}\n` +
+                trash.map((item) => `[${item.key}] ${String(item.data.title ?? "").slice(0, 80)}`).join("\n"),
+            }],
+            details: { count: trash.length, items: trash },
           };
         }
         // ---------- 门控检查（双保险） ----------
@@ -545,8 +578,24 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           return { content: [{ type: "text", text: `已彻底删除 ${(params.keys ?? []).length} 条` }], details: { deleted: params.keys } };
         }
         if (params.action === "trash") {
-          for (const k of params.keys ?? []) await c.trashItem(k);
-          return { content: [{ type: "text", text: `已移入回收站 ${(params.keys ?? []).length} 条` }], details: { trashed: params.keys } };
+          const keys = params.keys ?? [];
+          if (!keys.length) return { content: [{ type: "text", text: "trash 需提供非空 keys" }], details: {} };
+          for (const key of keys) await c.trashItem(key);
+          return { content: [{ type: "text", text: `已移入回收站 ${keys.length} 条` }], details: { trashed: keys } };
+        }
+        if (params.action === "restore") {
+          const keys = params.keys ?? [];
+          if (!keys.length) return { content: [{ type: "text", text: "restore 需提供非空 keys" }], details: {} };
+          const restored: string[] = [];
+          const alreadyActive: string[] = [];
+          for (const key of keys) {
+            if (await c.restoreItem(key)) restored.push(key);
+            else alreadyActive.push(key);
+          }
+          return {
+            content: [{ type: "text", text: `已从回收站恢复 ${restored.length} 条` + (alreadyActive.length ? `；原本已活动 ${alreadyActive.length} 条` : "") }],
+            details: { restored, alreadyActive },
+          };
         }
         if (params.action === "add") {
           const created = await c.createItems(params.items ?? []);

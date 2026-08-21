@@ -16,6 +16,7 @@
 | 执行保存搜索 | `zotero_saved_searches` action=execute |
 | 查重 | `zotero_duplicates_scan`（只标记不删） |
 | 查条目子项 | `zotero_items` action=children |
+| 查/恢复回收站 | `zotero_items` action=trash-list / restore（restore 需 items 写门控，不需 delete 总闸） |
 | 构建引用映射 | `zotero_build_map`（同标题多版本返回 ambiguous，禁止自动猜测） |
 | DOCX 标记转动态域 | `zotero_docx_fields`（生成新文件，不覆盖输入；随后在 Word 中 ZoteroRefresh） |
 | 整理（打标签/改元数据/移动/增删） | `zotero_items`/`zotero_collections` 写 action（**需配置 write 开启**） |
@@ -34,7 +35,7 @@
 
 - 写 action 受配置门控（`~/.pi/agent/config/zotero.json` 的 `write` 段），默认全关
 - **调用写 action 前必须向用户展示变更摘要并获确认**
-- delete 类需 `write.delete: true`（默认关）
+- delete 类需 `write.delete: true`（默认关）；`restore` 是可逆恢复，只需 items 写门控
 - **弹窗机制（Zotero 10 设计，已查证官方文档）**：每次 `POST /authorize` 都弹窗；点"允许"=key 单次（每个 Local API 写请求重新授权；附件 init/register 会各授权一次）；点"**始终允许**"=key 无限复用
 - **0 弹窗姿势**：弹窗点"始终允许" + 配置 `write.rememberKey=true`（默认开）→ key 持久化到 `~/.local/state/pi-zotero/auth.json`（600 权限）→ 跨会话自动恢复，不再调 authorize、不弹窗
 - key 失效（401）时扩展自动重新授权（弹窗一次）；`appName` 固定为 pi-zotero，勿改
