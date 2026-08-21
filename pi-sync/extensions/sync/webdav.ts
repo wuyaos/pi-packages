@@ -12,7 +12,15 @@ export const WEBDAV_AGENT_SKILLS_DIR = "backup/skills/";
 export const WEBDAV_SESSIONS_ARCHIVE_DIR = "backup/sessions/";
 
 export const ensureTrailingSlash = (url: string): string => url.endsWith("/") ? url : `${url}/`;
-export const webdavDirBase = (config: SyncConfig, remoteDir: string): string => ensureTrailingSlash(config.webdavUrl) + remoteDir.replace(/^\/+/, "");
+/**
+ * 拼接 WebDAV 目录 URL。remoteDir 逐段 encodeURIComponent，与 ensureWebdavDirectory
+ * 的编码一致；否则含中文/空格的 cwd 转义目录在严格 WebDAV 实现上会 400。
+ */
+export const webdavDirBase = (config: SyncConfig, remoteDir: string): string =>
+  remoteDir.split("/").filter(Boolean).reduce(
+    (url, segment) => `${url}${encodeURIComponent(segment)}/`,
+    ensureTrailingSlash(config.webdavUrl),
+  );
 export const webdavAuth = (config: SyncConfig): string => "Basic " + Buffer.from(`${config.webdavUser}:${resolvePassword(config.webdavPass)}`).toString("base64");
 
 export async function webdavList(url: string, auth: string, ctx: ExtensionContext, filter?: (name: string) => boolean): Promise<string[]> {

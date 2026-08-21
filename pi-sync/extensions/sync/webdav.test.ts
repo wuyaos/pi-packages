@@ -4,7 +4,7 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { webdavGetFile, webdavPutFile } from "./webdav.ts";
+import { webdavDirBase, webdavGetFile, webdavPutFile } from "./webdav.ts";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-webdav-"));
@@ -54,4 +54,20 @@ test("WebDAV PUT and GET stream data and GET replaces the destination atomically
   } finally {
     await server.close();
   }
+});
+
+test("webdavDirBase encodes non-ASCII path segments", () => {
+  const config = { webdavUrl: "https://dav.example.com/sync/pi" } as never;
+  assert.equal(
+    webdavDirBase(config, "backup/sessions/--mnt-d-work-论文-综述-agent_sci--/"),
+    "https://dav.example.com/sync/pi/backup/sessions/--mnt-d-work-%E8%AE%BA%E6%96%87-%E7%BB%BC%E8%BF%B0-agent_sci--/",
+  );
+  assert.equal(
+    webdavDirBase(config, "/backup/sessions/"),
+    "https://dav.example.com/sync/pi/backup/sessions/",
+  );
+  assert.equal(
+    webdavDirBase(config, "h ttp-path with spaces"),
+    "https://dav.example.com/sync/pi/h%20ttp-path%20with%20spaces/",
+  );
 });
