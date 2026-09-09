@@ -100,11 +100,12 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     name: "zotero_search",
     label: "Zotero 搜索",
     description:
-      "搜索 Zotero 文献库（Zotero 10 FTS5，qmode=everything 含 PDF 全文索引）。" +
-      "触发词：查文献、找文献、搜索 Zotero、这篇文献在库里吗。返回精简条目列表（key/title/年份/类型/作者）。",
+      "搜索 Zotero 文献库（Zotero 10 FTS5，qmode=everything 含 PDF 全文索引）。支持单查询 q 或批量 queries（≤20 个，并发执行，逐查询返回命中与截断状态）。" +
+      "触发词：查文献、找文献、搜索 Zotero、这篇文献在库里吗、批量查文献。返回精简条目列表（key/title/年份/类型/作者）。",
     promptSnippet: "Search the Zotero library (metadata or full text)",
     parameters: Type.Object({
-      q: Type.String({ description: "搜索词（支持引号短语，如 \"self-driving lab\"）" }),
+      q: Type.Optional(Type.String({ description: "搜索词（与 queries 二选一；支持引号短语）" })),
+      queries: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 20, description: "批量搜索词（与 q 二选一，最多 20 个，并发执行）" })),
       qmode: Type.Optional(
         Type.Union([Type.Literal("everything"), Type.Literal("titleCreatorYear")], {
           description: "everything=含附件全文（默认）；titleCreatorYear=仅标题/作者/年份",
@@ -112,11 +113,52 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       ),
       collectionKey: Type.Optional(Type.String({ description: "限定集合（本地过滤）" })),
       itemType: Type.Optional(Type.String({ description: "条目类型，如 journalArticle" })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "默认 20" })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "每个查询的返回上限，默认 20；批量模式默认 10" })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       try {
         const c = getClient();
+        if (params.queries?.length) {
+          if (params.q) return { content: [{ type: "text", text: "q 与 queries 只能二选一" }], details: {} };
+          const perQueryLimit = params.limit ?? 10;
+          const batch = await c.searchMany(params.queries, {
+            limit: perQueryLimit,
+            qmode: params.qmode ?? "everything",
+            itemType: params.itemType,
+          }, { collectionKey: params.collectionKey });
+          const summaries = batch.map((entry) => {
+            if (entry.error) return `「${entry.query}」查询失败: ${entry.error}`;
+            const items = entry.result!.items.map((it) => ({
+              key: it.key,
+              title: String(it.data.title ?? "(无标题)").slice(0, 120),
+              year: String(it.meta?.parsedDate ?? ""),
+              itemType: it.data.itemType,
+              creators: String(it.meta?.creatorSummary ?? ""),
+            }));
+            return {
+              query: entry.query,
+              count: items.length,
+              total: entry.result!.total,
+              sourceTotal: entry.result!.sourceTotal ?? entry.result!.total,
+              truncated: entry.result!.truncated,
+              items: items.slice(0, perQueryLimit),
+            };
+          });
+          const failed = batch.filter((entry) => entry.error).length;
+          const text = batch.map((entry, index) => {
+            if (entry.error) return summaries[index];
+            const summary = summaries[index] as Exclude<(typeof summaries)[number], string>;
+            return `「${summary.query}」命中 ${summary.count}/${summary.sourceTotal} 条${summary.truncated ? "（截断）" : ""}\n` +
+              (summary.items.length
+                ? summary.items.map((x) => `  [${x.key}] ${x.title} (${x.itemType} ${x.year}) ${x.creators}`).join("\n")
+                : "  （无命中）");
+          }).join("\n");
+          return {
+            content: [{ type: "text", text: `批量搜索 ${batch.length} 个查询（失败 ${failed}）\n${text}` }],
+            details: { count: batch.length, failed, results: summaries },
+          };
+        }
+        if (!params.q) return { content: [{ type: "text", text: "需提供 q 或 queries" }], details: {} };
         const result = params.collectionKey
           ? await c.searchCollectionWithMeta(params.collectionKey, params.q, {
               limit: params.limit ?? 20,
@@ -744,7 +786,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       try {
         const c = getClient();
         if (params.action === "list") {
-          const cols = await c.getCollections({ limit: 100 });
+          const cols = await c.getCollections();
           const byParent = new Map<string | false, typeof cols>();
           for (const col of cols) byParent.set(col.data.parentCollection ?? false, [...(byParent.get(col.data.parentCollection ?? false) ?? []), col]);
           const lines: string[] = [];
@@ -1043,8 +1085,11 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       try {
         const c = getClient();
         if (params.action === "list") {
-          const t = await c.getTags({ limit: 100 });
-          return { content: [{ type: "text", text: `共 ${t.length} 个标签\n` + t.map((x) => x.tag).slice(0, 50).join(", ") }], details: { count: t.length, tags: t } };
+          const tags = await c.getTagsWithMeta();
+          return {
+            content: [{ type: "text", text: `共 ${tags.items.length} 个标签${tags.truncated ? "（已截断，源总数未知部分未返回）" : ""}\n` + tags.items.map((x) => x.tag).slice(0, 50).join(", ") }],
+            details: { count: tags.items.length, total: tags.total, truncated: tags.truncated, tags: tags.items.slice(0, 500) },
+          };
         }
         if (!canDeleteTags) {
           return { content: [{ type: "text", text: "delete 未启用：需 write.enabled=true、write.tools 含 items 且 write.delete=true" }], details: {} };

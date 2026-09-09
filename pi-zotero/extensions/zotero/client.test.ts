@@ -110,6 +110,70 @@ test("restoreItem avoids a write when the item is already active", async () => {
   assert.equal(writes, 0);
 });
 
+test("getCSLBatch falls back to per-key fetch when CSL ids are citation keys", async () => {
+  const fetched: string[] = [];
+  const client = clientWithoutConstructor({
+    rawFetch: async (_base: string, path: string, init: { params: Record<string, string> }) => {
+      if (path === "/items" && init.params.format === "csljson") {
+        // 引用管理插件会把 id 改写为 citation key，且混入子附件
+        return [{ id: "tao2021Adv.Funct.Mater." }, { id: "http://zotero.org/users/0/items/CHILD001" }];
+      }
+      const match = path.match(/^\/items\/([A-Z0-9]{8})$/);
+      if (match && init.params.format === "csljson") {
+        fetched.push(match[1]);
+        return [{ id: "citation-key-style", title: "for " + match[1] }];
+      }
+      throw new Error("unexpected path " + path);
+    },
+  });
+
+  const result = await client.getCSLBatch(["TARGET01", "TARGET02"]);
+  assert.deepEqual(fetched.sort(), ["TARGET01", "TARGET02"]);
+  assert.equal(result["TARGET01"]?.title, "for TARGET01");
+  assert.equal(result["TARGET02"]?.title, "for TARGET02");
+});
+
+test("getCSLSingle accepts object-shaped CSL responses and rejects empty ones", async () => {
+  const objectClient = clientWithoutConstructor({
+    rawFetch: async () => ({ id: "http://zotero.org/users/0/items/TARGET01", title: "object form" }),
+  });
+  assert.equal((await objectClient.getCSLSingle("TARGET01"))["title"], "object form");
+
+  const emptyClient = clientWithoutConstructor({ rawFetch: async () => [] });
+  await assert.rejects(() => emptyClient.getCSLSingle("TARGET01"), /响应为空/);
+});
+
+test("getItemVersions falls back to per-key lookup when the batch page is truncated", async () => {
+  const client = clientWithoutConstructor({
+    rawFetch: async (_base: string, path: string, init: { params: Record<string, string> }) => {
+      if (path === "/items" && init.params.format === "versions") {
+        return { FOUND001: 7 }; // FOUND002 被子附件挤断
+      }
+      throw new Error("unexpected " + path);
+    },
+    getItem: async (key: string) => item(key, { title: "x" }, key === "FOUND002" ? 9 : 0),
+  });
+
+  const result = await client.getItemVersions(["FOUND001", "FOUND002"]);
+  assert.deepEqual(result, { FOUND001: 7, FOUND002: 9 });
+});
+
+test("searchMany isolates per-query failures and preserves every query result", async () => {
+  const client = clientWithoutConstructor({
+    searchWithMeta: async (query: string) => {
+      if (query === "bad query") throw new ZoteroApiError("boom", 500);
+      return { items: [item("HIT00001", { title: query })], total: 1, truncated: false };
+    },
+  });
+
+  const results = await client.searchMany(["alpha", "bad query", "alpha"], { limit: 5 });
+  assert.equal(results.length, 2); // 重复查询去重
+  const alpha = results.find((entry) => entry.query === "alpha");
+  assert.equal(alpha?.result?.items[0]?.key, "HIT00001");
+  const bad = results.find((entry) => entry.query === "bad query");
+  assert.match(bad?.error ?? "", /boom/);
+});
+
 test("createItems preserves successful keys when Zotero reports a partial failure", async () => {
   const client = clientWithoutConstructor({
     writeRequest: async () => ({

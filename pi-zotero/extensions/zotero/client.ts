@@ -397,8 +397,10 @@ export class ZoteroClient {
   }
 
   /**
-   * 批量取 CSL JSON（列表端点 ?format=csljson + itemKey=）。
-   * 注意：itemKey= 匹配会混入子附件 → 结果必须过滤请求 keys。
+   * 批量取 CSL JSON。
+   * 关联策略（实测）：列表端点 ?format=csljson&itemKey= 有效但会混入子附件；且引用管理插件/citation key 会把响应内 `id`
+   * 改写成非 URI 形式（如 "tao2021Adv.Funct.Mater."）→ 批量响应只能按可解析 id 部分配对。
+   * 未配对 key 回退为 GET /items/{key}?format=csljson 单条请求（关联由请求本身保证，不依赖响应 id）。
    */
   async getCSLBatch(keys: string[]): Promise<Record<string, Record<string, unknown>>> {
     const requested = new Set(keys);
@@ -415,7 +417,27 @@ export class ZoteroClient {
         if (key && requested.has(key)) out[key] = csl;
       }
     }
+    const unresolved = keys.filter((key) => requested.has(key) && !out[key]);
+    if (unresolved.length > 0) {
+      const fallback = await mapWithConcurrency(unresolved, 8, async (key) => [key, await this.getCSLSingle(key)] as const);
+      for (const [key, csl] of fallback) out[key] = csl;
+    }
     return out;
+  }
+
+  /** 单条 CSL：关联由请求保证。Local API 对单条 csljson 返回数组（取首个），兼容对象形态。 */
+  async getCSLSingle(key: string): Promise<Record<string, unknown>> {
+    validateKey(key, "key");
+    const result = await this.rawFetch<Record<string, unknown> | Record<string, unknown>[]>(
+      this.userPath(),
+      `/items/${key}`,
+      { params: { format: "csljson" } },
+    );
+    const entry = Array.isArray(result) ? result[0] : result;
+    if (!entry || typeof entry !== "object" || Object.keys(entry).length === 0) {
+      throw new ZoteroApiError(`条目 ${key} 的 CSL 获取失败：响应为空`);
+    }
+    return entry;
   }
 
   /** 集合内全部顶层条目的 CSL */
@@ -424,7 +446,7 @@ export class ZoteroClient {
     return this.getCSLBatch(keys);
   }
 
-  /** 批量读取条目本地 version，用于 CSL 缓存失效。 */
+  /** 批量读取条目本地 version，用于 CSL 缓存失效。批量页可能被子附件挤断，未命中 key 回退单条请求。 */
   async getItemVersions(keys: string[]): Promise<Record<string, number>> {
     const requested = new Set(keys);
     for (const key of requested) validateKey(key);
@@ -439,7 +461,36 @@ export class ZoteroClient {
         if (requested.has(key) && Number.isInteger(version)) out[key] = version;
       }
     }
+    const unresolved = list.filter((key) => out[key] === undefined);
+    if (unresolved.length > 0) {
+      const fallback = await mapWithConcurrency(unresolved, 8, async (key) => {
+        const item = await this.getItem(key);
+        return [key, item.version] as const;
+      });
+      for (const [key, version] of fallback) out[key] = version;
+    }
     return out;
+  }
+
+  /** 多查询批量搜索：逐查询隔离错误，单条失败不影响其余查询。 */
+  async searchMany(
+    queries: string[],
+    opts: Omit<ListOptions, "q"> = {},
+    options: { collectionKey?: string; concurrency?: number } = {},
+  ): Promise<{ query: string; result?: ListResult<ZoteroItem>; error?: string }[]> {
+    const unique = [...new Set(queries.map((query) => query.trim()).filter(Boolean))];
+    if (unique.length === 0) throw new ZoteroApiError("批量搜索需至少一个非空查询词");
+    if (options.collectionKey) validateKey(options.collectionKey, "collectionKey");
+    return mapWithConcurrency(unique, options.concurrency ?? 4, async (query) => {
+      try {
+        const result = options.collectionKey
+          ? await this.searchCollectionWithMeta(options.collectionKey, query, opts)
+          : await this.searchWithMeta(query, opts);
+        return { query, result };
+      } catch (error) {
+        return { query, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
   }
 
   /** 全文内容（无索引 → ZoteroApiError 404） */
@@ -690,7 +741,11 @@ export class ZoteroClient {
 
   /** 全局标签列表 */
   async getTags(opts: ListOptions = {}): Promise<ZoteroTag[]> {
-    return this.list<ZoteroTag>("/tags", opts);
+    return (await this.getTagsWithMeta(opts)).items;
+  }
+
+  async getTagsWithMeta(opts: ListOptions = {}): Promise<ListResult<ZoteroTag>> {
+    return this.listWithMeta<ZoteroTag>("/tags", opts);
   }
 
   /** 删除标签（从全部条目移除） */
@@ -963,6 +1018,25 @@ function indexedWriteValues<T>(value: IndexedWriteValues<T> | undefined): T[] {
   return Object.keys(value)
     .sort((left, right) => Number(left) - Number(right))
     .map((key) => value[key]);
+}
+
+/** 有界并发映射：结果按输入顺序返回，单条失败直接上抛。 */
+async function mapWithConcurrency<TIn, TOut>(
+  inputs: TIn[],
+  limit: number,
+  worker: (input: TIn) => Promise<TOut>,
+): Promise<TOut[]> {
+  const results = new Array<TOut>(inputs.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), inputs.length) }, async () => {
+    while (cursor < inputs.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(inputs[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 /** 两遍上传的第一遍：流式计算 MD5，不把整个附件读入 Pi 进程内存。 */

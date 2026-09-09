@@ -6,7 +6,7 @@
 
 | 场景 | 工具 |
 |---|---|
-| 找文献/验证在库 | `zotero_search`（全文搜索：qmode=everything） |
+| 找文献/验证在库 | `zotero_search`（单查询 q 或批量 queries；全文搜索 qmode=everything） |
 | 看有哪些集合 | `zotero_collections` action=list |
 | 导出集合索引 | `zotero_export_collection`（写盘 JSON） |
 | 为审计备数据 | `zotero_batch_csl`（按 Server-ID 隔离、按 item version 自动失效） |

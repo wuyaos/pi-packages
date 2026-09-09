@@ -6,7 +6,7 @@ pi 扩展：通过 **Zotero 10 Local API 原生 HTTP**（无 MCP、无插件、�
 
 | 工具 | 能力 |
 |---|---|
-| `zotero_search` | 文献搜索（含 FTS5 全文） |
+| `zotero_search` | 文献搜索（含 FTS5 全文）；支持 `queries` 批量并发搜索（≤20 查询，逐条返回命中/截断/失败） |
 | `zotero_collections` | 集合查/增/改/删（层级） |
 | `zotero_export_collection` | 集合索引导出（JSON 写盘） |
 | `zotero_batch_csl` | CSL 批量版本感知缓存（按 Server-ID 隔离） |
@@ -51,6 +51,7 @@ env：`ZOTERO_BASE_URL` / `ZOTERO_TIMEOUT_MS` / `ZOTERO_CACHE_DIR`（优先级�
 - cite_map 为每条成功匹配记录 `matchMethod`、`confidence` 和 DOI/年份/作者证据；优先级为 DOI → 标题精确+年份/作者消歧；低置信标题包含及 DOI 冲突只进入 `ambiguous`，不自动写入 Word 引用
 - 批量 tag/move/trash/restore/delete 顺序执行并返回逐 key 的 `succeeded/failed/skipped`；401/403/429 后停止，避免连续弹授权或继续撞限流
 - 附件上传采用“两遍流式”：第一遍计算 MD5，第二遍通过 HTTP `application/octet-stream` 发送原始二进制流（非 Base64、不直写 Zotero/storage），不把整个 PDF 载入 Pi 进程内存
+- 引用管理插件（如 Better BibTeX）会把 CSL 响应的 `id` 改写为 citation key；CSL 批量获取对可解析 id 走批量配对，其余 key 自动回退单条请求（关联由请求路径保证），versions 同理
 - 配置、CSL 缓存、集合索引、审计报告和 cite_map 均使用同目录临时文件 + fsync + rename 原子写入
 
 ## Word 动态域
