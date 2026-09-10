@@ -1,6 +1,6 @@
 {
   "name": "@wuyaos/pi-sync",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "WebDAV archive backup and restore for Pi agent data, shared skills, and per-project sessions",
   "keywords": [
     "pi-package",

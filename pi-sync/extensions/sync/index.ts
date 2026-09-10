@@ -1,8 +1,8 @@
-import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { AGENT_DIR, isProjectAllowed, loadConfig, refreshFooterStatusFromConfig } from "./config";
+import { AGENT_DIR, isProjectAllowed, loadConfig, refreshFooterStatusFromConfig, type SyncConfig } from "./config";
 import { ensureDir } from "../_shared/json-io";
 import { registerSyncCommand, uploadSessionProjectArchive } from "./menus";
 
@@ -37,28 +37,85 @@ export function projectDirFromSessionDir(sessionDir: string | undefined): string
 }
 
 /**
- * Archive-only pi-sync entrypoint.
+ * Archive-only pi-sync entrypoint。
  *
- * Runtime work is intentionally limited to one cached config read at startup
- * and one current-project archive on shutdown. There are no per-turn hooks,
- * timers, live uploads, or interval counters.
+ * 运行时工作仅限：启动时读一次缓存配置 + 关停时的会话归档（quit 同步等待，
+ * reload/new/resume/fork 转后台，不阻塞 reload）。无 per-turn 钩子、无定时器、无常驻上传。
  */
+let exitUploadInFlight = false;
+
+/** 测试用：重置后台任务标志。 */
+export function resetExitUploadInFlight(): void {
+  exitUploadInFlight = false;
+}
+
+export interface ExitUploadDeps {
+  upload?: typeof uploadSessionProjectArchive;
+  config?: SyncConfig;
+  now?: number;
+  markerPath?: string;
+}
+
+/**
+ * 退出自动上传会话归档。
+ * quit：进程即将终止，同步等待上传完成（fire-and-forget 会被终止）。
+ * reload/new/resume/fork：进程存活，上传转入后台，不阻塞 reload；
+ * 旧 runner 的 ctx.signal 在 teardown 后会失效，后台任务必须用独立 AbortController。
+ */
+export async function handleSessionShutdown(
+  event: Pick<SessionShutdownEvent, "reason">,
+  ctx: ExtensionContext,
+  deps: ExitUploadDeps = {},
+): Promise<void> {
+  const config = deps.config ?? loadConfig();
+  if (!config.backupOnExit || !config.backupSessions) return;
+  if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) return;
+  const projectDir = projectDirFromSessionDir(ctx.sessionManager.getSessionDir());
+  if (!projectDir || !isProjectAllowed(projectDir, config)) return;
+  const now = deps.now ?? Date.now();
+  const markerPath = deps.markerPath ?? exitUploadMarkerPath;
+  if (!exitUploadDue(markerPath, now)) return;
+
+  const upload = deps.upload ?? uploadSessionProjectArchive;
+  const finish = (uploaded: boolean): void => {
+    if (uploaded) recordExitUpload(markerPath, now);
+  };
+
+  if (event.reason === "quit") {
+    finish(await upload(ctx, config, projectDir, true));
+    return;
+  }
+
+  if (exitUploadInFlight) return;
+  exitUploadInFlight = true;
+  const controller = new AbortController();
+  const detachedCtx = {
+    signal: controller.signal,
+    ui: {
+      notify: (message: string, type?: "info" | "warning" | "error"): void => {
+        try { ctx.ui.notify(message, type); } catch { /* UI 可能已随 reload 重建 */ }
+      },
+    },
+  } as unknown as ExtensionContext;
+  void (async (): Promise<void> => {
+    try {
+      finish(await upload(detachedCtx, config, projectDir, false));
+    } catch {
+      // 后台归档失败只影响本次节流窗口，不影响会话；marker 不写入，下个窗口重试。
+    } finally {
+      exitUploadInFlight = false;
+    }
+  })();
+}
+
 export default function registerSyncExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     const config = loadConfig();
     refreshFooterStatusFromConfig(ctx, config);
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
-    const config = loadConfig();
-    if (!config.backupOnExit || !config.backupSessions) return;
-    if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) return;
-    const projectDir = projectDirFromSessionDir(ctx.sessionManager.getSessionDir());
-    if (!projectDir || !isProjectAllowed(projectDir, config)) return;
-    const now = Date.now();
-    if (!exitUploadDue(exitUploadMarkerPath, now)) return;
-    const uploaded = await uploadSessionProjectArchive(ctx, config, projectDir, true);
-    if (uploaded) recordExitUpload(exitUploadMarkerPath, now);
+  pi.on("session_shutdown", async (event, ctx) => {
+    await handleSessionShutdown(event, ctx);
   });
 
   registerSyncCommand(pi);
