@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { normalizeDoiInput } from "./doi.ts";
 
 /**
  * ZoteroClient — Zotero 10 Local API (Web API v3) 原生客户端（审查修正版）。
@@ -702,11 +703,20 @@ export class ZoteroClient {
     return false;
   }
 
-  /** 彻底删除条目（DELETE 需版本头） */
+  /** 彻底删除条目（DELETE 需版本头）；412 重读重试，读超时短暂等待后重试（Zotero 忙碌场景）。 */
   async deleteItem(key: string): Promise<void> {
     validateKey(key);
-    const it = await this.getItem(key);
-    await this.writeRequest(`/items/${key}`, { method: "DELETE", body: "{}", version: it.version });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const it = await this.getItem(key);
+        await this.writeRequest(`/items/${key}`, { method: "DELETE", body: "{}", version: it.version });
+        return;
+      } catch (error) {
+        const retryable = (error instanceof ZoteroApiError && error.status === 412) || error instanceof ZoteroTimeoutError;
+        if (!retryable || attempt >= 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+    }
   }
 
   /** 创建保存搜索（conditions 为 Zotero 10 条件 JSON 数组） */
@@ -861,6 +871,107 @@ export class ZoteroClient {
   async updateItem(key: string, data: Record<string, unknown>, version: number): Promise<void> {
     validateKey(key);
     await this.writeRequest(`/items/${key}`, { method: "PATCH", body: JSON.stringify(data), version });
+  }
+
+  /**
+   * 更新并验证：412 自动重试（重读最新 version）→ 轮询等写入队列落库 → 逐字段报告是否真正持久化。
+   * 若检测到字段被自动处理插件（如 Z Linter）覆盖，默认自动等待 2s 后重写缺失字段一次。
+   * Zotero 忙碌（如插件在线校验阻塞）导致的读/写超时会被容忍：写超时交由读回核验裁决，读超时在窗口内继续轮询。
+   */
+  async updateItemVerified(
+    key: string,
+    fields: Record<string, unknown>,
+    opts: { settleMs?: number; retries?: number } = {},
+  ): Promise<{ persisted: string[]; missing: string[]; version: number; retried: boolean }> {
+    validateKey(key);
+    const fieldNames = Object.keys(fields);
+    if (fieldNames.length === 0) throw new ZoteroApiError("updateItemVerified 需要至少一个字段");
+    // Zotero 会重排对象键序（如 creators 的 firstName/lastName/creatorType），递归归一化后再比较
+    const canonical = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((k) => [k, canonical((value as Record<string, unknown>)[k])]));
+      }
+      return value;
+    };
+    const matches = (data: Record<string, unknown>, field: string): boolean =>
+      JSON.stringify(canonical(data[field] ?? null)) === JSON.stringify(canonical(fields[field] ?? null));
+    const missingOf = (data: Record<string, unknown>): string[] => fieldNames.filter((field) => !matches(data, field));
+    const settleMs = Math.max(0, opts.settleMs ?? 2500);
+    const maxAttempts = 1 + Math.max(0, opts.retries ?? 1);
+    const isTimeout = (error: unknown): boolean => error instanceof ZoteroTimeoutError;
+
+    let last = await this.getItem(key);
+    let retried = false;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const pending = missingOf(last.data);
+      if (pending.length === 0) break;
+      if (attempt > 0) {
+        retried = true;
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // 给自动处理插件留出处理窗口
+      }
+      const payload = Object.fromEntries(pending.map((field) => [field, fields[field]]));
+      for (let writeAttempt = 0; writeAttempt < 3; writeAttempt += 1) {
+        const item = await this.getItem(key);
+        try {
+          await this.updateItem(key, payload, item.version);
+          last = item;
+          break;
+        } catch (error) {
+          if (error instanceof ZoteroApiError && error.status === 412 && writeAttempt < 2) continue;
+          if (isTimeout(error)) break; // 写结果未知 → 由读回核验裁决
+          throw error;
+        }
+      }
+      const deadline = Date.now() + settleMs;
+      for (;;) {
+        let readFailed = false;
+        try {
+          last = await this.getItem(key);
+        } catch (error) {
+          if (!isTimeout(error)) throw error;
+          readFailed = true; // Zotero 忙碌，窗口内继续轮询
+        }
+        if (!readFailed && (missingOf(last.data).length === 0 || Date.now() >= deadline)) break;
+        if (Date.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    const missing = missingOf(last.data);
+    return { persisted: fieldNames.filter((field) => !missing.includes(field)), missing, version: last.version, retried };
+  }
+
+  /**
+   * 从 doi.org 内容协商获取权威 CSL 元数据（出网请求；仅 GET 公开元数据）。
+   */
+  async fetchDoiCsl(doi: string): Promise<Record<string, unknown>> {
+    const normalized = normalizeDoiInput(doi);
+    const timeoutMs = Math.max(this.timeoutMs, 20_000);
+    let res: Response;
+    try {
+      res = await fetch(`https://doi.org/${normalized}`, {
+        headers: { "User-Agent": this.userAgent, Accept: "application/vnd.citationstyles.csl+json" },
+        signal: AbortSignal.timeout(timeoutMs),
+        redirect: "follow",
+      });
+    } catch (err) {
+      throw classifyFetchError(err, timeoutMs);
+    }
+    if (res.status === 404) {
+      throw new ZoteroApiError(`DOI 未注册或无法解析：${normalized}`, 404);
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new ZoteroApiError(`DOI 元数据获取失败 ${res.status}: ${body.slice(0, 200)}`, res.status);
+    }
+    try {
+      const data = (await res.json()) as Record<string, unknown> | Record<string, unknown>[];
+      const entry = Array.isArray(data) ? data[0] : data;
+      if (!entry || typeof entry !== "object") throw new Error("empty");
+      return entry;
+    } catch {
+      throw new ZoteroApiError(`DOI 元数据响应非 CSL JSON：${normalized}`);
+    }
   }
 
   // ---------- 内部 ----------

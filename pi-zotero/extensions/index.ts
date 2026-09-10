@@ -29,6 +29,7 @@ import {
 import { writeZoteroDocxFields } from "./zotero/docx_fields.ts";
 import { batchWriteText, runKeyBatch } from "./zotero/batch.ts";
 import { writeFileAtomic, writeJsonAtomic } from "./zotero/atomic.ts";
+import { cslToZoteroFields, mergeDoiFields } from "./zotero/doi.ts";
 
 /** 工具执行上下文中的 cwd（pi 工具 ctx 未暴露 cwd 时回退 process.cwd） */
 function toolCwd(_ctx: unknown): string {
@@ -581,7 +582,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
     label: "Zotero 条目",
     description:
       `Zotero 条目操作。children=查条目子项；trash-list=列出回收站条目（可按 collectionKey 过滤），均常驻；` +
-      (canWriteItems ? `add=创建条目/笔记、update=改元数据（title/DOI/date/extra/url）、tag=增删标签、note=更新笔记、move=集合归属、trash=移入回收站、restore=从回收站恢复、upload=附件文件上传（需先有 attachment 条目）；${writeHint}` : `写动作未启用（配置 write.enabled+write.tools 含 items 后 /reload）`) +
+      (canWriteItems ? `add=创建条目/笔记、update=改元数据（title/DOI/date/extra/url、pages/volume/issue/publicationTitle、publisher/ISBN、itemType/creators）、tag=增删标签、note=更新笔记、move=集合归属、trash=移入回收站、restore=从回收站恢复、upload=附件文件上传（需先有 attachment 条目）；${writeHint}` : `写动作未启用（配置 write.enabled+write.tools 含 items 后 /reload）`) +
       (canDeleteItems ? `；delete=彻底删除（受 write.delete）` : ""),
     promptSnippet: "Query or modify Zotero items (gated writes)",
     parameters: Type.Object({
@@ -606,7 +607,21 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         date: Type.Optional(Type.String()),
         extra: Type.Optional(Type.String()),
         url: Type.Optional(Type.String()),
-      }, { additionalProperties: false, description: "update 必填：仅允许 title/DOI/date/extra/url" })),
+        pages: Type.Optional(Type.String({ description: "页码或文章号" })),
+        volume: Type.Optional(Type.String({ description: "卷号" })),
+        issue: Type.Optional(Type.String({ description: "期号" })),
+        publicationTitle: Type.Optional(Type.String({ description: "期刊名称" })),
+        publisher: Type.Optional(Type.String({ description: "出版社（需条目类型支持）" })),
+        ISBN: Type.Optional(Type.String({ description: "ISBN（需条目类型支持）" })),
+        ISSN: Type.Optional(Type.String()),
+        itemType: Type.Optional(Type.String({ description: "条目类型，如 journalArticle/book；切换后不兼容字段会被 Zotero 丢弃" })),
+        creators: Type.Optional(Type.Array(Type.Object({
+          creatorType: Type.String({ description: "author/editor/..." }),
+          firstName: Type.Optional(Type.String()),
+          lastName: Type.Optional(Type.String()),
+          name: Type.Optional(Type.String({ description: "单字段姓名（机构作者）" })),
+        }), { minItems: 1, maxItems: 100, description: "作者列表（整体替换）" })),
+      }, { additionalProperties: false, description: "update 必填：title/DOI/date/extra/url/pages/volume/issue/publicationTitle/publisher/ISBN/ISSN/itemType/creators" })),
       tags: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "tag 必填，至少 1 个" })),
       mode: Type.Optional(Type.Union([Type.Literal("append"), Type.Literal("replace"), Type.Literal("remove")], { description: "tag 模式，默认 append" })),
       parentKey: Type.Optional(Type.String({ description: "note 必填：父条目 key" })),
@@ -614,7 +629,7 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
       content: Type.Optional(Type.String({ description: "note 必填：新笔记内容" })),
       addCollections: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "move：加入的集合" })),
       removeCollections: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "move：移出的集合" })),
-      version: Type.Optional(Type.Integer({ description: "update 可选：条目当前 version（缺省自动读取）" })),
+      version: Type.Optional(Type.Integer({ description: "已废弃：更新会自动重读最新 version 并重试，无需传" })),
       filePath: Type.Optional(Type.String({ description: "upload 必填：本地文件路径（WSL 路径）" })),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
@@ -693,16 +708,39 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
           validateKey(params.key ?? "", "key");
           const fields = params.fields as Record<string, unknown> | undefined;
           if (!fields || Object.keys(fields).length === 0) return { content: [{ type: "text", text: "update 需提供至少一个 fields 字段" }], details: {} };
-          const whitelist = ["title", "DOI", "date", "extra", "url"];
+          const whitelist = ["title", "DOI", "date", "extra", "url", "pages", "volume", "issue", "publicationTitle", "publisher", "ISBN", "ISSN", "itemType", "creators"];
           const bad = Object.keys(fields).filter((k) => !whitelist.includes(k));
           if (bad.length) return { content: [{ type: "text", text: `字段不在白名单: ${bad.join(", ")}（允许: ${whitelist.join("/")}）` }], details: {} };
-          let v = params.version;
-          if (v === undefined) {
-            const it = await c.getItem(params.key ?? "");
-            v = it.version;
+          const creators = fields.creators as unknown;
+          if (creators !== undefined) {
+            const list = Array.isArray(creators) ? creators : null;
+            const invalid = !list || list.some((entry) => {
+              if (!entry || typeof entry !== "object") return true;
+              const creator = entry as { creatorType?: unknown; name?: unknown; firstName?: unknown; lastName?: unknown };
+              if (typeof creator.creatorType !== "string" || !creator.creatorType.trim()) return true;
+              if (typeof creator.name === "string" && creator.name.trim()) return false;
+              return !(typeof creator.lastName === "string" && creator.lastName.trim())
+                && !(typeof creator.firstName === "string" && creator.firstName.trim());
+            });
+            if (invalid) {
+              return { content: [{ type: "text", text: "creators 无效：每项需含 creatorType，且提供 name 或 firstName/lastName" }], details: {} };
+            }
           }
-          await c.updateItem(params.key ?? "", fields, v ?? 0);
-          return { content: [{ type: "text", text: `已更新 [${params.key}]` }], details: { key: params.key } };
+          if (fields.itemType !== undefined && (typeof fields.itemType !== "string" || !fields.itemType.trim())) {
+            return { content: [{ type: "text", text: "itemType 无效：需为非空字符串" }], details: {} };
+          }
+          const key = params.key ?? "";
+          // 统一走 412 重试 + 写后核验：自动处理插件（如 Linter）会异步改写条目，单纯 204 不可信。
+          const result = await c.updateItemVerified(key, fields, { settleMs: 2500 });
+          return {
+            content: [{
+              type: "text",
+              text: `已更新 [${key}]（version ${result.version}）\n持久化字段: ${result.persisted.join(", ") || "无"}` +
+                (result.retried ? "\n（检测到字段被自动处理插件覆盖，已自动重写一次）" : "") +
+                (result.missing.length ? `\n⚠ 未持久化: ${result.missing.join(", ")}（可能被自动处理插件覆盖，如 Z Linter；检查插件设置后重试）` : ""),
+            }],
+            details: { key, fields: Object.keys(fields), ...result },
+          };
         }
         if (params.action === "tag") {
           const keys = params.keys ?? [];
@@ -1030,6 +1068,72 @@ export default function registerZoteroExtension(pi: ExtensionAPI): void {
         };
       } catch (err) {
         return { content: [{ type: "text", text: `zotero_build_map 失败: ${zoteroErr(err)}` }], details: {} };
+      }
+    },
+  });
+
+  // ---------- zotero_doi_lookup ----------
+  pi.registerTool({
+    name: "zotero_doi_lookup",
+    label: "Zotero DOI 元数据",
+    description:
+      "基于 DOI 从 doi.org 获取权威 CSL 元数据（⚠ 出网请求）：题名/作者/期刊/卷/期/页/出版社/ISBN/日期等，映射为 Zotero 字段。" +
+      "可选回填现有条目（默认仅补空字段，overwrite=true 覆盖已有值）或创建新条目（需写门控）。" +
+      "触发词：DOI 获取、按 DOI 补全、DOI 元数据、拉取 DOI 信息。",
+    promptSnippet: "Fetch authoritative CSL metadata for a DOI from doi.org",
+    parameters: Type.Object({
+      doi: Type.String({ description: "DOI（支持 10.xxxx/suffix、doi: 前缀、https://doi.org/ 链接）" }),
+      itemKey: Type.Optional(Type.String({ description: "回填目标条目 key（可选；与 create 二选一）" })),
+      create: Type.Optional(Type.Boolean({ description: "true=用元数据创建新条目（需 items 写门控）" })),
+      overwrite: Type.Optional(Type.Boolean({ description: "回填时覆盖已有非空字段（默认 false 只补空）" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, _ctx) {
+      try {
+        const c = getClient();
+        const lookup = cslToZoteroFields(await c.fetchDoiCsl(params.doi));
+        const formatCreator = (creator: { name?: string; lastName?: string; firstName?: string; creatorType: string }): string =>
+          creator.name ?? `${creator.lastName ?? ""}${creator.firstName ? `，${creator.firstName}` : ""}（${creator.creatorType}）`;
+        const preview = Object.entries(lookup.fields).map(([field, value]) =>
+          `${field} = ${field === "creators" ? (value as Parameters<typeof formatCreator>[0][]).map(formatCreator).join("; ") : String(value).slice(0, 100)}`);
+        const baseText = `DOI ${params.doi} → ${lookup.itemType}${lookup.source.type ? `（CSL: ${lookup.source.type}）` : ""}\n${preview.join("\n") || "（无可映射字段）"}`;
+
+        if (!params.itemKey && !params.create) {
+          return { content: [{ type: "text", text: baseText }], details: { lookup } };
+        }
+        if (!canWriteItems) {
+          return { content: [{ type: "text", text: `${baseText}\n\n回填/创建需要写门控：write.enabled=true 且 write.tools 含 "items" 后 /reload${RELOAD_HINT}` }], details: { lookup } };
+        }
+        if (params.itemKey) {
+          validateKey(params.itemKey, "itemKey");
+          const item = await c.getItem(params.itemKey);
+          const merged = mergeDoiFields(item.data as Record<string, unknown>, lookup.fields, params.overwrite ?? false);
+          const mergedKeys = Object.keys(merged);
+          if (!mergedKeys.length) {
+            return { content: [{ type: "text", text: `${baseText}\n\n无可回填字段：目标条目相应字段均已存在（overwrite=true 可覆盖）` }], details: { lookup, merged } };
+          }
+          const result = await c.updateItemVerified(params.itemKey, merged, { settleMs: 4000, retries: 2 });
+          return {
+            content: [{
+              type: "text",
+              text: `${baseText}\n\n已回填 [${params.itemKey}]（version ${result.version}）\n持久化字段: ${result.persisted.join(", ") || "无"}` +
+                (result.retried ? "\n（检测到字段被自动处理插件覆盖，已自动重写一次）" : "") +
+                (result.missing.length ? `\n⚠ 未持久化: ${result.missing.join(", ")}（可能被自动处理插件覆盖，如 Z Linter；检查插件设置后重试）` : ""),
+            }],
+            details: { lookup, itemKey: params.itemKey, ...result },
+          };
+        }
+        const creation = await c.createItems([{ itemType: lookup.itemType, ...lookup.fields }]);
+        return {
+          content: [{
+            type: "text",
+            text: `${baseText}\n\n已创建 ${creation.successful.length} 条，失败 ${creation.failed.length} 条` +
+              (creation.successful.length ? `\n成功 keys: ${creation.successful.map((entry) => entry.key).join(", ")}` : "") +
+              (creation.failed.length ? `\n失败: ${JSON.stringify(creation.failed).slice(0, 500)}` : ""),
+          }],
+          details: { lookup, ...creation },
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: `zotero_doi_lookup 失败: ${zoteroErr(err)}` }], details: {} };
       }
     },
   });

@@ -16,7 +16,8 @@ pi 扩展：通过 **Zotero 10 Local API 原生 HTTP**（无 MCP、无插件、�
 | `zotero_attachment_path` | 附件磁盘路径（WSL 可读） |
 | `zotero_saved_searches` | 保存搜索 list/execute |
 | `zotero_duplicates_scan` | 疑似重复检测 |
-| `zotero_items` | 条目 children、回收站列表查询；增删改、trash/restore（写门控） |
+| `zotero_items` | 条目 children、回收站列表；增删改、trash/restore（写门控）；update 支持题名/DOI/日期/页码/卷/期/期刊名/出版社/ISBN/ISSN/类型/作者，写后逐字段核验 |
+| `zotero_doi_lookup` | 按 DOI 从 doi.org 拉取权威 CSL 元数据（出网），可回填现有条目（默认只补空字段）或创建新条目 |
 | `zotero_searches` / `zotero_tags` | 保存搜索/标签管理（门控） |
 | `zotero_docx_fields` | docx 方括号标记 → Zotero 动态域（Node.js/XML 节点级处理，uris 方案） |
 
@@ -52,6 +53,8 @@ env：`ZOTERO_BASE_URL` / `ZOTERO_TIMEOUT_MS` / `ZOTERO_CACHE_DIR`（优先级�
 - 批量 tag/move/trash/restore/delete 顺序执行并返回逐 key 的 `succeeded/failed/skipped`；401/403/429 后停止，避免连续弹授权或继续撞限流
 - 附件上传采用“两遍流式”：第一遍计算 MD5，第二遍通过 HTTP `application/octet-stream` 发送原始二进制流（非 Base64、不直写 Zotero/storage），不把整个 PDF 载入 Pi 进程内存
 - 引用管理插件（如 Better BibTeX）会把 CSL 响应的 `id` 改写为 citation key；CSL 批量获取对可解析 id 走批量配对，其余 key 自动回退单条请求（关联由请求路径保证），versions 同理
+- `update` 与 DOI 回填使用 `updateItemVerified`：412 自动重试、写后轮询读回并逐字段报告持久化结果；检测到被自动处理插件（如 Z Linter）覆盖时自动重写一次并如实报告
+- DOI 元数据来自 doi.org 内容协商（`Accept: application/vnd.citationstyles.csl+json`），这是本扩展唯一的出网请求（仅 GET 公开元数据）；DOI 未注册时明确报错
 - 配置、CSL 缓存、集合索引、审计报告和 cite_map 均使用同目录临时文件 + fsync + rename 原子写入
 
 ## Word 动态域

@@ -19,6 +19,7 @@
 | 查/恢复回收站 | `zotero_items` action=trash-list / restore（restore 需 items 写门控，不需 delete 总闸） |
 | 构建引用映射 | `zotero_build_map`（DOI 优先；标题用年份/作者消歧；输出 matchMethod/confidence） |
 | DOCX 标记转动态域 | `zotero_docx_fields`（生成新文件；验证/刷新见 `instructions/zotero-word-fields.md`） |
+| 按 DOI 拉取正确元数据 | `zotero_doi_lookup`（doi.org 内容协商，出网；可选回填条目或新建） |
 | 整理（打标签/改元数据/移动/增删） | `zotero_items`/`zotero_collections` 写 action（**需配置 write 开启**） |
 
 ## 工作流（综述写作）
@@ -40,7 +41,8 @@
 - 批量 tag/move/trash/restore/delete 顺序执行并返回 `succeeded/failed/skipped`；401/403/429 后停止。一次性 Allow 无法跨请求复用，批量整理优先选“始终允许”
 - **0 弹窗姿势**：弹窗点"始终允许" + 配置 `write.rememberKey=true`（默认开）→ key 持久化到 `~/.local/state/pi-zotero/auth.json`（600 权限）→ 跨会话自动恢复，不再调 authorize、不弹窗
 - key 失效（401）时扩展自动重新授权（弹窗一次）；`appName` 固定为 pi-zotero，勿改
-- 创建条目**不要带假 DOI**（触发 Zotero 在线检索卡顿）；用真实 DOI 或省略
+- 创建条目**不要带假 DOI**（触发 Zotero 在线检索卡顿）；用真实 DOI 或省略；先用 `zotero_doi_lookup` 获取再填入
+- 若装了自动处理插件（如 Z Linter）：新建条目会被插件改写（加标签/在线校验，期间 API 可能短暂无响应）；update/回填已内置重试与写后核验，报告“未持久化”时检查插件设置后重试
 
 ## 边界
 

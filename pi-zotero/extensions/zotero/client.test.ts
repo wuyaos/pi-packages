@@ -174,6 +174,87 @@ test("searchMany isolates per-query failures and preserves every query result", 
   assert.match(bad?.error ?? "", /boom/);
 });
 
+test("updateItemVerified retries 412 and reports per-field persistence", async () => {
+  let readCount = 0;
+  let writeCount = 0;
+  const client = clientWithoutConstructor({
+    getItem: async (key: string) => {
+      readCount += 1;
+      // 第 1 次读：旧值；写后读：已持久化
+      return item(key, readCount === 1 ? { title: "old" } : { title: "new", pages: "7-9" }, readCount + 10);
+    },
+    updateItem: async (key: string, data: Record<string, unknown>, version: number) => {
+      writeCount += 1;
+      if (writeCount === 1) throw new ZoteroApiError("conflict", 412);
+      // 412 后重写前会重读最新 version（read3 → v13）
+      assert.equal(version, 13);
+    },
+  });
+
+  const result = await client.updateItemVerified("ITEM1234", { title: "new", pages: "7-9" }, { settleMs: 100 });
+  assert.equal(writeCount, 2);
+  assert.deepEqual(result.persisted, ["title", "pages"]);
+  assert.deepEqual(result.missing, []);
+});
+
+test("updateItemVerified treats reordered object keys as persisted", async () => {
+  let readCount = 0;
+  const client = clientWithoutConstructor({
+    getItem: async (key: string) => {
+      readCount += 1;
+      // Zotero 返回的 creators 键序与发送时不同
+      return readCount === 1
+        ? item(key, { creators: [] }, 30)
+        : item(key, { creators: [{ firstName: "Ada", lastName: "Lovelace", creatorType: "author" }] }, 31);
+    },
+    updateItem: async () => {},
+  });
+
+  const result = await client.updateItemVerified(
+    "ITEM1234",
+    { creators: [{ creatorType: "author", firstName: "Ada", lastName: "Lovelace" }] },
+    { settleMs: 100 },
+  );
+  assert.deepEqual(result.persisted, ["creators"]);
+  assert.deepEqual(result.missing, []);
+});
+
+test("updateItemVerified reports fields clobbered by background plugins", async () => {
+  const client = clientWithoutConstructor({
+    getItem: async (key: string) => item(key, { title: "old", pages: null }, 20), // 永远读到旧值
+    updateItem: async () => {}, // 204 成功
+  });
+
+  const result = await client.updateItemVerified("ITEM1234", { title: "new", pages: "7-9" }, { settleMs: 300 });
+  assert.deepEqual(result.persisted, []);
+  assert.deepEqual(result.missing, ["title", "pages"]);
+});
+
+test("fetchDoiCsl negotiates CSL via doi.org and rejects unregistered DOIs", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const headers: { url: string; accept: string | undefined }[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      headers.push({ url: String(input), accept: init?.headers ? (init.headers as Record<string, string>).Accept : undefined });
+      if (String(input).includes("10.1000/gone")) return new Response("not found", { status: 404 });
+      return new Response(JSON.stringify({ type: "journal-article", title: "Fetched" }), { status: 200 });
+    }) as typeof fetch;
+
+    const client = clientWithoutConstructor();
+    const csl = await client.fetchDoiCsl("https://doi.org/10.1000/valid");
+    assert.equal(csl.title, "Fetched");
+    assert.equal(headers[0].url, "https://doi.org/10.1000/valid");
+    assert.equal(headers[0].accept, "application/vnd.citationstyles.csl+json");
+
+    await assert.rejects(() => client.fetchDoiCsl("10.1000/gone"), /DOI 未注册/);
+    await assert.rejects(() => client.fetchDoiCsl("not-a-doi"), /无效 DOI/);
+    assert.equal(headers.length, 2); // 无效 DOI 未出网
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createItems preserves successful keys when Zotero reports a partial failure", async () => {
   const client = clientWithoutConstructor({
     writeRequest: async () => ({
