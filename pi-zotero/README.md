@@ -59,7 +59,7 @@ env：`ZOTERO_BASE_URL` / `ZOTERO_TIMEOUT_MS` / `ZOTERO_CACHE_DIR`（优先级�
 
 ## Word 动态域
 
-完整的 Word COM 打开验证、`ZoteroRefresh` 和故障排查见 [`instructions/zotero-word-fields.md`](instructions/zotero-word-fields.md)。旧 Python/MCP skill 不属于 npm 运行时依赖。
+完整的 Word COM 打开验证、`ZoteroRefresh` 和故障排查见 [`skills/zotero/word-fields.md`](skills/zotero/word-fields.md)；agent 面向的使用指引以包级 skill 形式随包分发（`skills/zotero/SKILL.md`），触发词覆盖查文献/审计/DOI/动态域等场景。旧 Python/MCP skill 不属于 npm 运行时依赖。
 
 ## 边界
 

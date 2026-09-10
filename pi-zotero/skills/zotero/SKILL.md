@@ -1,6 +1,15 @@
-# pi-zotero 使用指引（给 pi agent）
+---
+name: zotero
+description: >-
+  使用 @wuyaos/pi-zotero 工具操作 Zotero 10 文献库（Local API 23119）：检索/批量搜索、集合导出、CSL 批量、
+  引用审计与引用映射、按 DOI 拉取权威元数据并回填、DOCX 方括号转 Zotero 动态域、查重与受门控的整理写操作。
+  触发词：查文献、找文献、搜索 Zotero、这篇文献在库里吗、批量查文献、导出集合、集合索引、引用审计、构建引用映射、
+  DOI 获取、按 DOI 补全、重复文献、回收站恢复、转 Word 动态域。
+---
 
-本扩展通过 Zotero 10 Local API（http://127.0.0.1:23119）操作文献库。**Zotero 必须在 Windows 端运行**，WSL 直连 23119。
+# pi-zotero 使用指引
+
+本扩展通过 Zotero 10 Local API（http://127.0.0.1:23119）操作文献库。**Zotero 必须在 Windows 端运行**，WSL 直连 23119。配置命令：`/zotero-config`。
 
 ## 工具选择
 
@@ -18,7 +27,7 @@
 | 查条目子项 | `zotero_items` action=children |
 | 查/恢复回收站 | `zotero_items` action=trash-list / restore（restore 需 items 写门控，不需 delete 总闸） |
 | 构建引用映射 | `zotero_build_map`（DOI 优先；标题用年份/作者消歧；输出 matchMethod/confidence） |
-| DOCX 标记转动态域 | `zotero_docx_fields`（生成新文件；验证/刷新见 `instructions/zotero-word-fields.md`） |
+| DOCX 标记转动态域 | `zotero_docx_fields`（生成新文件；验证/刷新见本目录 `word-fields.md`） |
 | 按 DOI 拉取正确元数据 | `zotero_doi_lookup`（doi.org 内容协商，出网；可选回填条目或新建） |
 | 整理（打标签/改元数据/移动/增删） | `zotero_items`/`zotero_collections` 写 action（**需配置 write 开启**） |
 

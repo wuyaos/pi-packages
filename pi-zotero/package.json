@@ -1,6 +1,6 @@
 {
   "name": "@wuyaos/pi-zotero",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Zotero 10 Local API 原生工具：搜索、集合导出、CSL 批量、引用审计、文献整理，供 pi agent 直接调用（不依赖 MCP）",
   "keywords": [
     "pi-package",
@@ -20,7 +20,7 @@
   "files": [
     "extensions",
     "!extensions/**/*.test.ts",
-    "instructions",
+    "skills",
     "README.md"
   ],
   "bugs": {
@@ -30,6 +30,9 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "dependencies": {
