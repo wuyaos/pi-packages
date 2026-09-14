@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -42,6 +43,8 @@ import {
 
 export type SelectItem<T extends string> = { id: T; label: string };
 type BackupKind = "pi" | "skills";
+/** 重新绑定当前会话模型：pi.setModel（ExtensionAPI）。恢复 Pi 备份后用于刷新过期模型引用。 */
+export type SetModelFn = (model: Model<any>) => Promise<boolean>;
 export type MainAction =
   | "upload-all" | "restore-all"
   | "upload-pi" | "upload-skills" | "upload-sessions"
@@ -324,6 +327,7 @@ async function showRestorePackage(
   kind: BackupKind,
   autoLatest = false,
   reloadAfter = true,
+  setModel?: SetModelFn,
 ): Promise<boolean> {
   const config = loadConfig();
   const language = config.language;
@@ -377,6 +381,24 @@ async function showRestorePackage(
         } catch (error) {
           // 文件已恢复；模型刷新失败不应让整个恢复操作误报失败，重启 Pi 后仍会重新读取 models.json。
           console.warn(`[pi-sync] Failed to refresh restored model catalog: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // refresh() 会把 ModelRegistry 里的模型对象整体替换成恢复后的 models.json 版本，
+        // 但当前会话的模型引用（ctx.model）仍是旧对象。旧对象的能力字段（reasoning /
+        // thinkingLevelMap）与恢复后的目录可能不一致，导致思考级别选择器失效（表现为
+        // "没有思考模式"），除非手动重新选择一次模型。这里主动把当前模型重新绑定到新对象。
+        if (setModel) {
+          const current = ctx.model;
+          if (current) {
+            const fresh = ctx.modelRegistry.find(current.provider, current.id);
+            if (fresh && fresh !== current) {
+              const bound = await setModel(fresh);
+              if (!bound) {
+                console.warn(`[pi-sync] Failed to rebind current model ${current.provider}/${current.id}; auth may be unconfigured.`);
+              }
+            } else if (!fresh) {
+              console.warn(`[pi-sync] Current model ${current.provider}/${current.id} is absent from the restored catalog; select a model manually.`);
+            }
+          }
         }
       }
       ctx.ui.notify(t(language, "restoreCompleted", { kind: label, contents: restored.join("\n") }), "info");
@@ -525,12 +547,12 @@ async function showUploadAll(ctx: ExtensionCommandContext): Promise<void> {
   ctx.ui.notify(t(language, "allBackupCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
 }
 
-async function showRestoreAll(ctx: ExtensionCommandContext): Promise<void> {
+async function showRestoreAll(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
   const config = loadConfig();
   const language = config.language;
   if (!await ctx.ui.confirm(t(language, "confirmRestoreAllTitle"), t(language, "confirmRestoreAllBody"))) return;
   const results = await executeRestoreAll(config, {
-    restorePi: () => showRestorePackage(ctx, "pi", true, false),
+    restorePi: () => showRestorePackage(ctx, "pi", true, false, setModel),
     restoreSkills: () => showRestorePackage(ctx, "skills", true, false),
     listProjects: () => listRemoteSessionProjects(ctx, config),
     restoreSession: (project) => restoreSessionProjectArchive(ctx, config, project, true, false),
@@ -542,7 +564,7 @@ async function showRestoreAll(ctx: ExtensionCommandContext): Promise<void> {
   }
 }
 
-export async function handleSyncCommand(ctx: ExtensionCommandContext): Promise<void> {
+export async function handleSyncCommand(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
   let config = loadConfig();
   if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) {
     if (!await showSetupWizard(ctx)) return;
@@ -554,11 +576,11 @@ export async function handleSyncCommand(ctx: ExtensionCommandContext): Promise<v
     const action = await selectAction(ctx, t(language, "menuTitle"), items);
     if (!action || action === "cancel") return;
     if (action === "upload-all") await showUploadAll(ctx);
-    else if (action === "restore-all") await showRestoreAll(ctx);
+    else if (action === "restore-all") await showRestoreAll(ctx, setModel);
     else if (action === "upload-pi") await showUploadPackage(ctx, "pi");
     else if (action === "upload-skills") await showUploadPackage(ctx, "skills");
     else if (action === "upload-sessions") await showUploadSessionsArchive(ctx);
-    else if (action === "restore-pi") await showRestorePackage(ctx, "pi");
+    else if (action === "restore-pi") await showRestorePackage(ctx, "pi", false, true, setModel);
     else if (action === "restore-skills") await showRestorePackage(ctx, "skills");
     else if (action === "restore-sessions") await showRestoreSessionsArchive(ctx);
     else if (action === "configure") await showConfigureSettings(ctx);
@@ -572,6 +594,6 @@ export function registerSyncCommand(pi: ExtensionAPI): void {
   pi.registerCommand("sync", {
     description: "Back up and restore Pi data via WebDAV",
     getArgumentCompletions: () => null,
-    handler: async (_args, ctx) => handleSyncCommand(ctx),
+    handler: async (_args, ctx) => handleSyncCommand(ctx, (model) => pi.setModel(model)),
   });
 }
