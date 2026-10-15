@@ -350,28 +350,47 @@ test("type cycling preserves known remote chat metadata across classifier and im
   assert.equal(rows[0]!.reasoning, true);
 });
 
-test("external/read-only 默认展示为选中但 Enter、Ctrl+D 与结果都不能修改或接管", async () => {
+test("models.json 外部模型默认选中且可直接取消勾选，不再需要接管", async () => {
   const external = candidateFromExternal(chat("external", "External model"));
+  assert.equal(external.readOnly, undefined);
   let rendered = "";
   const ctx = customContext<SelectionResult>((component) => {
-    component.handleInput("\r");
-    component.handleInput("\x04"); // Ctrl+D
     rendered = component.render(100).join("\n");
+    component.handleInput("\r"); // uncheck the external row directly
+    component.handleInput("\x04"); // Ctrl+D
     component.handleInput("\x13");
   });
 
   const result = await selectModels(ctx, "en", "fixture", draft, [external]);
-  assert.match(rendered, /read-only/u);
+  assert.doesNotMatch(rendered, /read-only/u);
   assert.match(rendered, /→ \[✓\]/u);
   assert.deepEqual(result.selected, []);
 });
 
-test("edit action identifies external models for takeover instead of treating them as managed", async () => {
+test("runtime catalog rows stay read-only and cannot be unchecked", async () => {
+  const installed = candidateFromInstalled(chat("catalog", "Catalog model") as any);
+  let rendered = "";
+  const ctx = customContext<SelectionResult>((component) => {
+    component.handleInput("\r"); // read-only rows ignore toggling
+    rendered = component.render(100).join("\n");
+    component.handleInput("\x13");
+  });
+  const result = await selectModels(ctx, "en", "fixture", draft, [installed]);
+  assert.equal(installed.readOnly, true);
+  assert.equal(installed.readOnlyReason, "runtime-catalog");
+  assert.match(rendered, /read-only/u);
+  assert.match(rendered, /→ \[ \]/u);
+  assert.doesNotMatch(rendered, /→ \[✓\]/u);
+  assert.deepEqual(result.selected, []);
+});
+
+test("edit action identifies external models as directly editable", async () => {
   const external = candidateFromExternal(chat("external-edit", "External edit"));
   const result = await selectModels(customContext<SelectionResult>((component) => component.handleInput("\x05")), "en", "fixture", draft, [external]);
   assert.equal(result.action, "edit");
-  assert.deepEqual(result.target, { id: "external-edit", type: "chat", source: "external", readOnlyReason: "external-config" });
-  assert.deepEqual(result.selected, []);
+  assert.deepEqual(result.target, { id: "external-edit", type: "chat", source: "external", readOnlyReason: undefined });
+  assert.equal(result.selected.length, 1);
+  assert.equal(result.selected[0]!.id, "external-edit");
 });
 
 test("model details show thinking default/source plus input, image output, and cost", async () => {

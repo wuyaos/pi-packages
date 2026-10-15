@@ -76,8 +76,10 @@ export function candidateFromManaged(model: ManagedModel, metadata?: ModelMetada
   return { ...cloneManaged(model), source: "managed", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined) } as CandidateModel;
 }
 
+/** A models.json row belongs to this provider configuration and is immediately editable.
+ * It becomes managed on the next save; only runtime catalog rows remain read-only. */
 export function candidateFromExternal(model: ManagedModel, metadata?: ModelMetadataEntry): CandidateModel {
-  return { ...cloneManaged(model), source: "external", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined), readOnly: true, readOnlyReason: "external-config" } as CandidateModel;
+  return { ...cloneManaged(model), source: "external", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined) } as CandidateModel;
 }
 
 export function mergeCandidates(provider: string, installed: CandidateModel[], managed: CandidateModel[], remote: CandidateModel[]): CandidateModel[] {
@@ -206,7 +208,7 @@ class ModelSelector implements Component, Focusable {
     const row = this.filtered[this.index];
     if (!row) return;
     if (row.readOnly) {
-      this.status = t(this.language, row.readOnlyReason === "external-config" ? "selectorReadonlyExternal" : row.readOnlyReason === "runtime-catalog" ? "selectorReadonlyRuntime" : "selectorReadonlyStatus");
+      this.status = t(this.language, row.readOnlyReason === "runtime-catalog" ? "selectorReadonlyRuntime" : "selectorReadonlyStatus");
       this.tui.requestRender();
       return;
     }
@@ -405,7 +407,7 @@ class ModelSelector implements Component, Focusable {
       ...(current.type === "image" ? [t(this.language, "panelModelOutput", { value: current.output.join(", ") || t(this.language, "valueUnset") })] : []),
       t(this.language, "panelModelCost", { input: current.cost.input, output: current.cost.output, cacheRead: current.cost.cacheRead, cacheWrite: current.cost.cacheWrite }),
       t(this.language, "panelModelBaseUrl", { value: current.baseUrl ?? t(this.language, "valueDefault") }),
-      ...(current.readOnly ? [t(this.language, current.readOnlyReason === "external-config" ? "panelModelReadonlyExternal" : current.readOnlyReason === "runtime-catalog" ? "panelModelReadonlyRuntime" : "panelModelReadonly")] : []),
+      ...(current.readOnly ? [t(this.language, current.readOnlyReason === "runtime-catalog" ? "panelModelReadonlyRuntime" : "panelModelReadonly")] : []),
     ] : [];
     const rightAll = detailText.flatMap((line) => wrapTextWithAnsi(this.theme.fg("muted", line), rightWidth));
     this.detailMaxScroll = Math.max(0, rightAll.length - bodyBudget);

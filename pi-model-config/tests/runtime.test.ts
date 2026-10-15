@@ -73,9 +73,37 @@ test("enabled unowned config-only third-party provider is not unregistered", () 
   assert.deepEqual(unregistered, []);
 });
 
-test("owned provider with missing chat context metadata becomes a startup issue", () => {
-  const pi = { registerProvider() {} } as any;
+test("owned chat missing context/max registers with Pi compat defaults and no error", () => {
+  const registered: any[] = [];
+  const pi = { registerProvider(...args: any[]) { registered.push(args.length === 1 ? args[0] : args[1]); } } as any;
   const issues = registerConfiguredProviders(pi, { version: 1, providers: { owned: { enabled: true, owned: true, authMode: "reuse-pi" } } }, { providers: { owned: { baseUrl: "http://127.0.0.1/v1", models: [{ id: "missing", api: "openai-completions" }] } } }, "en");
-  assert.equal(issues.length, 1);
-  assert.equal((issues[0]!.error as any).code, "MCFG_E_MODEL_SHAPE");
+  assert.equal(issues.length, 0);
+  const models = registered.flatMap((config) => config.getModels ? config.getModels() : config.models ?? []);
+  const missing = models.find((model: any) => model.id === "missing");
+  assert.equal(missing?.contextWindow, 128000);
+  assert.equal(missing?.maxTokens, 16384);
+});
+
+test("invalid entries are skipped without blocking registration of valid models", () => {
+  const registered: any[] = [];
+  const pi = { registerProvider(...args: any[]) { registered.push(args.length === 1 ? args[0] : args[1]); } } as any;
+  const issues = registerConfiguredProviders(pi, { version: 1, providers: { owned: { enabled: true, owned: true, authMode: "reuse-pi" } } }, {
+    providers: {
+      owned: {
+        baseUrl: "http://127.0.0.1/v1",
+        models: [
+          { id: "valid-a", api: "openai-completions", contextWindow: 1000000, maxTokens: 128000 },
+          { id: "missing-fields", api: "openai-completions" },
+          { id: "", api: "openai-completions", contextWindow: 1000000, maxTokens: 128000 },
+          { id: "bad-type", type: "image", api: "openai-images" },
+        ],
+      },
+    },
+  }, "en");
+  // 有效条目仍注册；无效条目只记录 issue 不阻止
+  assert.equal(issues.length, 2);
+  const allModels = registered.flatMap((config) => config.getModels ? config.getModels() : config.models ?? []);
+  assert.ok(allModels.some((model: any) => model.id === "valid-a"));
+  assert.ok(allModels.some((model: any) => model.id === "missing-fields"), "missing-fields 以兼容默认注册");
+  assert.ok(!allModels.some((model: any) => model.id === "bad-type"));
 });

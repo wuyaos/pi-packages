@@ -120,9 +120,9 @@ export interface ProviderDraft {
 export type CandidateModel = ManagedModel & {
   source: "managed" | "external" | "installed" | "remote";
   mutableType: boolean;
-  /** Read-only entries are visible but cannot be toggled until an explicit supported ownership action. */
+  /** Read-only entries are visible but cannot be toggled: only runtime catalog rows. */
   readOnly?: boolean;
-  readOnlyReason?: "external-config" | "runtime-catalog";
+  readOnlyReason?: "runtime-catalog";
   contextSource?: ModelMetadataSource;
   maxTokensSource?: ModelMetadataSource;
   thinkingSource?: ThinkingMetadataSource;

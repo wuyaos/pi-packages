@@ -38,7 +38,7 @@ for (const file of [
   "context-probe.test.ts",
   "model-editor.test.ts",
   "thinking-probe.test.ts",
-  "command.test.ts",
+  "command.test.ts"
 ]) {
   await jiti.import(join(here, file));
 }

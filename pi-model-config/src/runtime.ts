@@ -159,34 +159,61 @@ function normalizeChatModels(providerId: string, provider: ModelsJsonProvider, c
   }));
 }
 
-function validateRuntimeConfig(providerId: string, config: ProviderConnectionConfig, modelsProvider: ModelsJsonProvider | undefined): void {
+function validateRuntimeConfig(providerId: string, config: ProviderConnectionConfig, modelsProvider: ModelsJsonProvider | undefined, issues: ProviderRegistrationIssue[] = []): void {
   if (config.discoveryUrl) validateHttpUrl(config.discoveryUrl, `${providerId} Discovery URL`);
   if (config.proxyUrl) validateHttpUrl(config.proxyUrl, `${providerId}.proxyUrl`);
   const chatApis = new Set<string>();
   for (const model of modelsProvider?.models ?? []) {
-    if (typeof model.id !== "string" || !model.id) throw mcError("MCFG_E_MODEL_SHAPE", { file: "models.json", provider: providerId });
+    if (typeof model.id !== "string" || !model.id) {
+      issues.push({ providerId, error: mcError("MCFG_E_MODEL_SHAPE", { file: "models.json", provider: providerId }) });
+      continue;
+    }
     if (model.type === "classifier" || model.type === "image") {
-      throw mcError("MCFG_E_TYPE_API", { identity: `${providerId}/chat/${model.id}`, api: String(model.api ?? model.type) });
+      issues.push({ providerId, error: mcError("MCFG_E_TYPE_API", { identity: `${providerId}/chat/${model.id}`, api: String(model.api ?? model.type) }) });
+      continue;
     }
     const api = typeof model.api === "string" ? model.api : (modelsProvider?.api ?? config.chatApi ?? "openai-completions");
-    if (!CHAT_APIS.has(api)) throw mcError("MCFG_E_UNSUPPORTED_API", { identity: `${providerId}/chat/${model.id}`, api });
+    if (!CHAT_APIS.has(api)) {
+      issues.push({ providerId, error: mcError("MCFG_E_UNSUPPORTED_API", { identity: `${providerId}/chat/${model.id}`, api }) });
+      continue;
+    }
     chatApis.add(api);
-    if (config.owned) validateHttpUrl(String(model.baseUrl ?? modelsProvider?.baseUrl ?? ""), `${providerId}/${model.id} Base URL`);
-    if (config.owned && (typeof model.contextWindow !== "number" || typeof model.maxTokens !== "number")) throw mcError("MCFG_E_MODEL_SHAPE", { file: "models.json", provider: providerId });
+    // owned chat 缺失 context/max 由 normalizeChatModels 补 Pi 兼容默认（128000/16384），
+    // 不再作为错误阻断注册；来源标记在保存时记录为 compat。
+    if (config.owned) {
+      try { validateHttpUrl(String(model.baseUrl ?? modelsProvider?.baseUrl ?? ""), `${providerId}/${model.id} Base URL`); }
+      catch (error) { issues.push({ providerId, error }); continue; }
+    }
   }
   for (const model of config.models ?? []) {
     const supported = model.type === "classifier" ? CLASSIFIER_APIS : model.type === "image" ? IMAGE_APIS : undefined;
-    if (!supported) throw mcError("MCFG_E_MODEL_SHAPE", { file: "model-config.json", provider: providerId });
-    if (!supported.has(model.api)) throw mcError("MCFG_E_TYPE_API", { identity: `${providerId}/${model.type}/${model.id}`, api: model.api });
+    if (!supported) {
+      issues.push({ providerId, error: mcError("MCFG_E_MODEL_SHAPE", { file: "model-config.json", provider: providerId }) });
+      continue;
+    }
+    if (!supported.has(model.api)) {
+      issues.push({ providerId, error: mcError("MCFG_E_TYPE_API", { identity: `${providerId}/${model.type}/${model.id}`, api: model.api }) });
+      continue;
+    }
+    if (config.authMode === "anonymous" && model.type === "image" && SELF_IMAGE_APIS.has(model.api)) {
+      issues.push({ providerId, error: mcError("MCFG_E_ANONYMOUS_UNSUPPORTED", { identity: `${providerId}/image/${model.id}` }) });
+      continue;
+    }
+    if (config.owned && model.type === "classifier" && typeof model.contextWindow !== "number") {
+      issues.push({ providerId, error: mcError("MCFG_E_MODEL_SHAPE", { file: "model-config.json", provider: providerId }) });
+      continue;
+    }
     const effectiveBaseUrl = model.type === "image"
       ? resolveImageBaseUrl(model.api, model.baseUrl, modelsProvider?.baseUrl)
       : model.baseUrl ?? modelsProvider?.baseUrl;
-    if (config.owned && !effectiveBaseUrl) throw mcError("MCFG_E_BASE_URL_REQUIRED");
-    if (config.owned && effectiveBaseUrl) validateHttpUrl(effectiveBaseUrl, `${providerId}/${model.id} Base URL`);
-    if (config.authMode === "anonymous" && model.type === "image" && SELF_IMAGE_APIS.has(model.api)) {
-      throw mcError("MCFG_E_ANONYMOUS_UNSUPPORTED", { identity: `${providerId}/image/${model.id}` });
+    if (config.owned && !effectiveBaseUrl) {
+      issues.push({ providerId, error: mcError("MCFG_E_BASE_URL_REQUIRED") });
+      continue;
     }
-    if (config.owned && model.type === "classifier" && typeof model.contextWindow !== "number") throw mcError("MCFG_E_MODEL_SHAPE", { file: "model-config.json", provider: providerId });
+    if (config.owned && effectiveBaseUrl) {
+      try { validateHttpUrl(effectiveBaseUrl, `${providerId}/${model.id} Base URL`); }
+      catch (error) { issues.push({ providerId, error }); continue; }
+    }
   }
   if (!config.owned && (config.models?.length ?? 0) > 0) {
     throw mcError("MCFG_E_NOT_OWNED", { provider: providerId });
@@ -202,14 +229,17 @@ function validateRuntimeConfig(providerId: string, config: ProviderConnectionCon
 }
 
 function registerOwnedProvider(pi: ExtensionAPI, providerId: string, config: ProviderConnectionConfig, modelsProvider: ModelsJsonProvider, language: UiLanguage): void {
-  const chatModels = normalizeChatModels(providerId, modelsProvider, config);
-  const extraModels = (config.models ?? []).map((model) => ({
-    ...model,
-    provider: providerId,
-    baseUrl: model.type === "image"
-      ? resolveImageBaseUrl(model.api, model.baseUrl, modelsProvider.baseUrl) ?? ""
-      : model.baseUrl ?? modelsProvider.baseUrl ?? "",
-  }));
+  const chatModels = normalizeChatModels(providerId, modelsProvider, config)
+    .filter((model) => typeof model.id === "string" && model.id && CHAT_APIS.has(model.api) && typeof model.contextWindow === "number" && typeof model.maxTokens === "number");
+  const extraModels = (config.models ?? [])
+    .map((model) => ({
+      ...model,
+      provider: providerId,
+      baseUrl: model.type === "image"
+        ? resolveImageBaseUrl(model.api, model.baseUrl, modelsProvider.baseUrl) ?? ""
+        : model.baseUrl ?? modelsProvider.baseUrl ?? "",
+    }))
+    .filter((model) => typeof model.id === "string" && model.id && (model.type !== "classifier" || typeof model.contextWindow === "number"));
   const allModels = [...chatModels, ...extraModels];
   if (allModels.length === 0) return;
   const chatApis = new Set(chatModels.map((model) => model.api));
@@ -297,7 +327,7 @@ export function registerConfiguredProviders(
         registerDisabledProvider(pi, providerId, config, modelsProvider);
         continue;
       }
-      validateRuntimeConfig(providerId, config, modelsProvider);
+      validateRuntimeConfig(providerId, config, modelsProvider, issues);
       if (config.owned) {
         if (!modelsProvider) throw mcError("MCFG_E_OWNED_PROVIDER_MISSING", { provider: providerId });
         registerOwnedProvider(pi, providerId, config, modelsProvider, language);

@@ -409,7 +409,9 @@ export function applyChanges(
   const originalRows = new Map(
     (oldProvider.models ?? []).filter((row) => typeof row.id === "string").map((row) => [row.id as string, row]),
   );
-  const managedScopeIds = new Set([...oldManagedIds, ...adoptedChatIds]);
+  // models.json rows are managed scope by default: selected rows are rewritten (merging
+  // unknown fields), unchecked rows are removed. Only rows without a string id are kept verbatim.
+  const managedScopeIds = new Set([...oldManagedIds, ...adoptedChatIds, ...originalRows.keys()]);
   const unmanagedRows = (oldProvider.models ?? []).filter((row) => typeof row.id !== "string" || !managedScopeIds.has(row.id));
   const selectedChat = selected.filter((model) => model.type === "chat");
   provider.models = [...unmanagedRows, ...selectedChat.map((model) => ({
@@ -795,19 +797,48 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
           const draft = draftFrom(target.id, oldProvider, oldConfig, target.isNew);
           const baselineDraft = structuredClone(draft);
           const managedBefore = previousManaged(oldProvider, oldConfig);
-          const baselineSelected = structuredClone(managedBefore);
           const persistedMetadata = new Map((oldConfig?.modelMetadata ?? []).map((entry) => [`${entry.type}\0${entry.id}`, entry]));
-          let selectedMetadata: ModelMetadataEntry[] = managedBefore.map((model) => {
-            const stored = persistedMetadata.get(`${model.type}\0${model.id}`);
-            if (stored) return structuredClone(stored);
-            const raw = model.type === "chat" ? oldProvider?.models?.find((entry) => entry.id === model.id) : oldConfig?.models?.find((entry) => entry.type === model.type && entry.id === model.id);
-            const explicitThinkingMap = model.type === "chat" && typeof (raw as any)?.thinkingLevelMap === "object" && (raw as any).thinkingLevelMap !== null && !Array.isArray((raw as any).thinkingLevelMap);
-            return { type: model.type, id: model.id, contextSource: model.type === "image" ? undefined : typeof (raw as any)?.contextWindow === "number" ? "existing" : "compat", maxTokensSource: model.type === "chat" ? typeof (raw as any)?.maxTokens === "number" ? "existing" : "compat" : undefined, thinkingSource: explicitThinkingMap ? "existing" : undefined };
-          });
+          const parseConfig: ProviderConnectionConfig = oldConfig ?? {
+            authMode: draft.authMode === "temporary" ? "reuse-pi" : draft.authMode,
+            chatApi: draft.chatApi,
+          };
+          // models.json rows outside managedChatIds are directly editable and become
+          // managed on the next save; only runtime catalog rows stay read-only.
+          const managedChatIdSet = new Set(oldConfig?.managedChatIds ?? []);
+          const externalModels: ManagedModel[] = [];
+          const externalMetadata = new Map<string, ModelMetadataEntry>();
+          for (const raw of oldProvider?.models ?? []) {
+            if (typeof raw.id !== "string" || managedChatIdSet.has(raw.id)) continue;
+            const model = parseManagedChat(raw, oldProvider!, parseConfig, true);
+            if (!model) continue;
+            externalModels.push(model);
+            const explicitMap = typeof raw.thinkingLevelMap === "object" && raw.thinkingLevelMap !== null && !Array.isArray(raw.thinkingLevelMap);
+            externalMetadata.set(model.id, persistedMetadata.get(`${model.type}\0${model.id}`) ?? {
+              type: model.type,
+              id: model.id,
+              contextSource: model.type === "image" ? undefined : typeof raw.contextWindow === "number" ? "existing" : "compat",
+              maxTokensSource: model.type === "chat" ? typeof raw.maxTokens === "number" ? "existing" : "compat" : undefined,
+              thinkingSource: model.type === "chat" ? explicitMap ? "existing" as const : protocolThinkingMap(model.api) ? "protocol" as const : undefined : undefined,
+            });
+          }
+          const metadataEntryFor = (model: ManagedModel, raw: Record<string, unknown> | undefined, fallback: ModelMetadataEntry | undefined): ModelMetadataEntry => fallback ?? {
+            type: model.type,
+            id: model.id,
+            contextSource: model.type === "image" ? undefined : typeof raw?.contextWindow === "number" ? "existing" : "compat",
+            maxTokensSource: model.type === "chat" ? typeof raw?.maxTokens === "number" ? "existing" : "compat" : undefined,
+            thinkingSource: model.type === "chat" && typeof raw?.thinkingLevelMap === "object" && raw.thinkingLevelMap !== null && !Array.isArray(raw.thinkingLevelMap) ? "existing" as const : undefined,
+          };
+          let selectedMetadata: ModelMetadataEntry[] = [
+            ...managedBefore.map((model) => {
+              const raw = model.type === "chat" ? oldProvider?.models?.find((entry) => entry.id === model.id) : oldConfig?.models?.find((entry) => entry.type === model.type && entry.id === model.id);
+              return structuredClone(metadataEntryFor(model, raw as Record<string, unknown> | undefined, persistedMetadata.get(`${model.type}\0${model.id}`)));
+            }),
+            ...externalModels.map((model) => structuredClone(externalMetadata.get(model.id)!)),
+          ];
+          const baselineSelected = structuredClone([...managedBefore, ...externalModels]);
           const baselineMetadata = structuredClone(selectedMetadata);
 
-          let selectedDraft = structuredClone(managedBefore);
-          const adoptedChatIds = new Set<string>();
+          let selectedDraft = structuredClone(baselineSelected);
           let cachedRemote: CandidateModel[] = [];
           let page: "connection" | "model" | "preview" = "connection";
           let previewOrigin: "connection" | "model" = "model";
@@ -816,18 +847,14 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
           const previewState: MenuPanelState = { selectedId: "provider", focus: "list", actionIndex: 0, detailScroll: 0 };
           activeSecrets.push(draft.apiKeyRaw);
 
-          const adoptableIds = () => {
-            const alreadyManaged = new Set(oldConfig?.managedChatIds ?? []);
-            return (oldProvider?.models ?? [])
-              .filter((model) => typeof model.id === "string" && !alreadyManaged.has(model.id) && !adoptedChatIds.has(model.id))
-              .map((model) => model.id as string);
-          };
+          const adoptableIds = () => externalModels
+            .filter((model) => !selectedDraft.some((selected) => selected.id === model.id && selected.type === model.type))
+            .map((model) => model.id);
           const selectionFingerprint = (models: ManagedModel[]) => JSON.stringify([...models].sort((a, b) => identityOf(a, target.id).localeCompare(identityOf(b, target.id))));
           const metadataFingerprint = (entries: ModelMetadataEntry[]) => JSON.stringify([...entries].sort((a, b) => `${a.type}\0${a.id}`.localeCompare(`${b.type}\0${b.id}`)));
           const isDirty = () => JSON.stringify(draft) !== JSON.stringify(baselineDraft)
             || selectionFingerprint(selectedDraft) !== selectionFingerprint(baselineSelected)
-            || metadataFingerprint(selectedMetadata) !== metadataFingerprint(baselineMetadata)
-            || adoptedChatIds.size > 0;
+            || metadataFingerprint(selectedMetadata) !== metadataFingerprint(baselineMetadata);
           const preparePreview = async (): Promise<boolean> => {
             if (draft.authMode === "temporary") {
               ctx.ui.notify(t(language, "temporarySaveBlocked"), "warning");
@@ -835,7 +862,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
             }
             try { validateSelection(draft, selectedDraft, installedModels(ctx, target.id), oldProvider); }
             catch (error) { ctx.ui.notify(displayError(language, error, activeSecrets), "error"); return false; }
-            if ((managedBefore.length > 0 || adoptedChatIds.size > 0) && selectedDraft.length === 0) {
+            if (baselineSelected.length > 0 && selectedDraft.length === 0) {
               const empty = await showConfirmationPanel(ctx, {
                 title: t(language, "emptyTitle"), summary: [t(language, "emptyBody")], severity: "error",
                 defaultActionIndex: 0, cancelActionId: "cancel",
@@ -849,10 +876,11 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
             return true;
           };
           const adoptExisting = async (): Promise<boolean> => {
-            const ids = adoptableIds();
-            if (!ids.length) { ctx.ui.notify(t(language, "takeoverModelsNone"), "info"); return false; }
+            const selectedKeys = new Set(selectedDraft.map((model) => identityOf(model, target.id)));
+            const missing = externalModels.filter((model) => !selectedKeys.has(identityOf(model, target.id)));
+            if (!missing.length) { ctx.ui.notify(t(language, "takeoverModelsNone"), "info"); return false; }
             const action = await showConfirmationPanel(ctx, {
-              title: t(language, "takeoverModelsTitle"), summary: [t(language, "takeoverModelsBody", { provider: target.id, count: ids.length })],
+              title: t(language, "takeoverModelsTitle"), summary: [t(language, "takeoverModelsBody", { provider: target.id, count: missing.length })],
               details: [t(language, "diffSafety")], severity: "warning", defaultActionIndex: 0, cancelActionId: "cancel",
               actions: [
                 { id: "cancel", label: t(language, "confirmCancel") },
@@ -860,16 +888,10 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               ],
             });
             if (action !== "confirm") return false;
-            const parseConfig: ProviderConnectionConfig = oldConfig ?? {
-              authMode: draft.authMode === "temporary" ? "reuse-pi" : draft.authMode,
-              chatApi: draft.chatApi,
-            };
-            const selectedKeys = new Set(selectedDraft.map((model) => identityOf(model, target.id)));
-            for (const raw of oldProvider?.models ?? []) {
-              if (typeof raw.id !== "string" || !ids.includes(raw.id)) continue;
-              const model = parseManagedChat(raw, oldProvider!, parseConfig, true);
-              if (model && !selectedKeys.has(identityOf(model, target.id))) selectedDraft.push(model);
-              adoptedChatIds.add(raw.id);
+            for (const model of missing) {
+              selectedDraft.push(structuredClone(model));
+              const metadata = externalMetadata.get(model.id)!;
+              if (!selectedMetadata.some((entry) => entry.type === metadata.type && entry.id === metadata.id)) selectedMetadata.push(structuredClone(metadata));
             }
             return true;
           };
@@ -911,24 +933,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
             if (page === "model") {
               const installedRaw = installedModels(ctx, target.id);
               const installed = installedRaw.map(candidateFromInstalled);
-              const managedChatIds = new Set(oldConfig?.managedChatIds ?? []);
-              const parseConfig: ProviderConnectionConfig = oldConfig ?? {
-                authMode: draft.authMode === "temporary" ? "reuse-pi" : draft.authMode,
-                chatApi: draft.chatApi,
-              };
-              const external = (oldProvider?.models ?? [])
-                .filter((model) => typeof model.id === "string" && !managedChatIds.has(model.id))
-                .map((model) => parseManagedChat(model, oldProvider!, parseConfig, adoptedChatIds.has(typeof model.id === "string" ? model.id : "")))
-                .filter((model): model is ManagedModel => model !== undefined)
-                .map((model) => {
-                  const raw = oldProvider?.models?.find((entry) => entry.id === model.id);
-                  const explicitMap = typeof raw?.thinkingLevelMap === "object" && raw.thinkingLevelMap !== null && !Array.isArray(raw.thinkingLevelMap);
-                  const defaultThinkingSource = model.type === "chat"
-                    ? explicitMap ? "existing" as const : adoptedChatIds.has(model.id) && protocolThinkingMap(model.api) ? "protocol" as const : undefined
-                    : undefined;
-                  const metadata = persistedMetadata.get(`${model.type}\0${model.id}`) ?? { type: model.type, id: model.id, contextSource: model.type === "image" ? undefined : "compat", maxTokensSource: model.type === "chat" ? "compat" : undefined, thinkingSource: defaultThinkingSource };
-                  return adoptedChatIds.has(model.id) ? candidateFromManaged(model, metadata) : candidateFromExternal(model, metadata);
-                });
+              const external = externalModels.map((model) => candidateFromExternal(model, externalMetadata.get(model.id)));
               const candidates = mergeCandidates(target.id, [...external, ...installed], managedBefore.map((model) => candidateFromManaged(model, persistedMetadata.get(`${model.type}\0${model.id}`))), cachedRemote);
               const selection = await selectModels(ctx, language, target.id, draft, candidates, selectedDraft, modelState, selectedMetadata);
               selectedDraft = selection.selected;
@@ -936,7 +941,6 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               if (selection.action === "back") { page = "connection"; continue; }
               if (selection.action === "edit") {
                 const editTarget = selection.target;
-                if (editTarget?.readOnlyReason === "external-config") { ctx.ui.notify(t(language, "editorExternalTakeover"), "warning"); continue; }
                 const managedIndex = editTarget ? selectedDraft.findIndex((model) => model.id === editTarget.id && model.type === editTarget.type) : -1;
                 if (managedIndex < 0) { ctx.ui.notify(t(language, "editorManagedOnly"), "warning"); continue; }
                 const model = selectedDraft[managedIndex]!;
@@ -1050,7 +1054,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
             const confirmed = await confirmAction(ctx, language, t(language, "finalSaveTitle"), [t(language, "finalSaveBody"), ...risk], [...details.providerDetails, ...details.modelDetails], t(language, "confirmSave"));
             if (!confirmed) continue;
             try {
-              const next = applyChanges(files, target.id, draft, selectedDraft, adoptedChatIds, selectedMetadata);
+              const next = applyChanges(files, target.id, draft, selectedDraft, new Set(externalModels.map((model) => model.id)), selectedMetadata);
               const transaction = writeConfigTransaction(files.modelsSnapshot, files.configSnapshot, next.models, next.config);
               ctx.ui.notify(t(language, "saveSuccess", { count: transaction.backups.length }), "info");
               continue mainLoop;
