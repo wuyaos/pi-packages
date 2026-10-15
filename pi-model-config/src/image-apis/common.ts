@@ -155,16 +155,16 @@ function timedSignal(signal: AbortSignal | undefined, timeoutMs: number): { sign
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) abort();
   else signal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => controller.abort(new Error("DashScope image download timed out")), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error("Image download timed out")), timeoutMs);
   return { signal: controller.signal, dispose: () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); } };
 }
 
 async function readLimitedBody(response: Response, limit: number): Promise<Uint8Array> {
   const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > limit) throw new Error(`DashScope image exceeds ${limit} byte limit`);
+  if (Number.isFinite(contentLength) && contentLength > limit) throw new Error(`Image download exceeds ${limit} byte limit`);
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > limit) throw new Error(`DashScope image exceeds ${limit} byte limit`);
+    if (bytes.byteLength > limit) throw new Error(`Image download exceeds ${limit} byte limit`);
     return bytes;
   }
   const reader = response.body.getReader();
@@ -175,7 +175,7 @@ async function readLimitedBody(response: Response, limit: number): Promise<Uint8
       const next = await reader.read();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > limit) { await reader.cancel(); throw new Error(`DashScope image exceeds ${limit} byte limit`); }
+      if (size > limit) { await reader.cancel(); throw new Error(`Image download exceeds ${limit} byte limit`); }
       chunks.push(next.value);
     }
   } finally {
@@ -187,32 +187,46 @@ async function readLimitedBody(response: Response, limit: number): Promise<Uint8
   return bytes;
 }
 
-/** Downloads only public HTTP(S) URLs, preserves origin across at most five manual redirects, and sends no API headers. */
-export async function downloadDashScopeImage(urlValue: string, fetcher: FetchFunction, signal?: AbortSignal): Promise<{ mimeType: string; data: string }> {
+function sniffImageMime(bytes: Uint8Array): string | undefined {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  return undefined;
+}
+
+export interface DownloadImageUrlOptions {
+  fetch?: FetchFunction;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  sizeLimit?: number;
+}
+
+/** Downloads a public image without credentials. Every manually followed redirect is revalidated for SSRF. */
+export async function downloadImageUrl(urlValue: string, options: DownloadImageUrlOptions = {}): Promise<{ mimeType: string; data: string }> {
   const initial = validatePublicImageUrl(urlValue);
-  const origin = initial.origin;
-  const timed = timedSignal(signal, 30_000);
+  const fetcher = options.fetch ?? (globalThis.fetch as FetchFunction);
+  const timed = timedSignal(options.signal, options.timeoutMs ?? 30_000);
+  const sizeLimit = options.sizeLimit ?? 10 * 1024 * 1024;
   try {
     let current = initial;
     for (let redirects = 0; redirects <= 5; redirects++) {
       const response = await fetcher(current, { method: "GET", redirect: "manual", signal: timed.signal });
       if (redirectStatus(response.status)) {
-        if (redirects === 5) throw new Error("DashScope image redirect limit exceeded");
+        if (redirects === 5) throw new Error("Image download redirect limit exceeded");
         const location = response.headers.get("location");
-        if (!location) throw new Error(`DashScope image redirect ${response.status} lacks Location`);
+        if (!location) throw new Error(`Image download redirect ${response.status} lacks Location`);
+        // Signed-image CDNs may change public origins; each redirect must still pass URL and SSRF validation.
         const next = validatePublicImageUrl(new URL(location, current).toString());
-        if (next.origin !== origin) throw new Error("DashScope image redirect changed origin");
         await response.body?.cancel();
         current = next;
         continue;
       }
-      if (!response.ok) throw new Error(`DashScope image download failed: HTTP ${response.status}`);
-      const bytes = await readLimitedBody(response, 10 * 1024 * 1024);
+      if (!response.ok) throw new Error(`Image download failed: HTTP ${response.status}`);
+      const bytes = await readLimitedBody(response, sizeLimit);
       const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-      const mimeType = contentType?.startsWith("image/") ? contentType : "image/png";
+      const mimeType = contentType?.startsWith("image/") ? contentType : sniffImageMime(bytes) ?? "image/jpeg";
       return { mimeType, data: dataUrl(mimeType, Buffer.from(bytes).toString("base64")) };
     }
-    throw new Error("DashScope image redirect limit exceeded");
+    throw new Error("Image download redirect limit exceeded");
   } finally {
     timed.dispose();
   }

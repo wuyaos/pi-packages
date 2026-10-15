@@ -127,7 +127,7 @@ Chat 写入 Pi 标准 `models.json`。Classifier 和 image 通过 Pi 的原生 m
 - `xai-images`（xAI Images；默认 `https://api.x.ai/v1`；当前将 base64 结果标为 `image/jpeg`，待真实服务商响应验证）
 - `dashscope-images`（DashScope 同步 multimodal-generation；默认 `https://dashscope.aliyuncs.com/api/v1`）
 
-这四个新增协议由本插件直接实现请求级 `generateImages()`，**不经过宿主图像管线**。模型级 Base URL 优先，其次服务商 Base URL，最后才采用上列协议默认值；`openrouter-images` 与未知/自定义协议没有默认 URL，必须由用户明确填写。图像响应不计算 token/cost usage（保持为空）。DashScope 固定使用同步 `/services/aigc/multimodal-generation/generation`，解析 `output.choices[0].message.content[].image`（URL 字符串或 `{ url }`）；不发送 `X-DashScope-Async`。返回 URL 会经同源重定向、内网地址、30 秒和 10 MiB 限制后下载。
+这四个新增协议由本插件直接实现请求级 `generateImages()`，**不经过宿主图像管线**。模型级 Base URL 优先，其次服务商 Base URL，最后才采用上列协议默认值；`openrouter-images` 与未知/自定义协议没有默认 URL，必须由用户明确填写。图像响应不计算 token/cost usage（保持为空）。OpenAI 兼容网关的 `data[].url`（包括 `b64_json: null`）及 DashScope 的 `output.choices[0].message.content[].image`（URL 字符串或 `{ url }`）都会下载并转为 data URL；下载不携带认证头，逐跳重验私网/CGNAT/mapped-IPv6，允许公开对象存储跨源跳转，并有 30 秒和 10 MiB 限制。DashScope 不发送 `X-DashScope-Async`。
 
 支持的 chat API：
 

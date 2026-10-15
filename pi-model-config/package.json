@@ -1,6 +1,6 @@
 {
   "name": "@wuyaos/pi-model-config",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Pi provider 连接、远程发现与 chat/classifier/image 模型配置 TUI",
   "keywords": [

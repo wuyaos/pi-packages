@@ -5,7 +5,7 @@ import { generateImages as openai } from "../src/image-apis/openai.ts";
 import { generateImages as gemini } from "../src/image-apis/gemini.ts";
 import { generateImages as xai } from "../src/image-apis/xai.ts";
 import { generateImages as dashscope } from "../src/image-apis/dashscope.ts";
-import { IMAGE_API_DEFAULT_BASE_URLS, downloadDashScopeImage, resolveImageBaseUrl, validatePublicImageUrl } from "../src/image-apis/common.ts";
+import { IMAGE_API_DEFAULT_BASE_URLS, downloadImageUrl, resolveImageBaseUrl, validatePublicImageUrl } from "../src/image-apis/common.ts";
 import { registerConfiguredProviders } from "../src/runtime.ts";
 import { applyProviderTransport, IMAGE_APIS } from "../src/transport.ts";
 
@@ -33,6 +33,37 @@ test("OpenAI image adapter injects supplied fetch, normalizes v1, and returns a 
     fetch: async (_url: RequestInfo | URL, init?: RequestInit) => { dallEBody = JSON.parse(String(init!.body)); return json({ data: [{ b64_json: "YWJj" }] }); },
   } as any);
   assert.deepEqual(dallEBody, { model: "dall-e-3", prompt: "draw a red dot", n: 1, response_format: "b64_json" });
+});
+
+test("OpenAI accepts b64_json:null URL responses and downloads a JPEG without credentials", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const result = await openai(model("openai-images", "seedream-4"), context, {
+    apiKey: "openai-key",
+    fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init! });
+      if (calls.length === 1) return json({ data: [{ b64_json: null, url: "https://tos-cn.volces.com/signed-image.jpg" }] });
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0x00]));
+    },
+  } as any);
+  assert.equal(calls[1]!.url, "https://tos-cn.volces.com/signed-image.jpg");
+  assert.equal(calls[1]!.init.headers, undefined);
+  assert.deepEqual(result.output, [{ type: "image", mimeType: "image/jpeg", data: "data:image/jpeg;base64,/9j/AA==" }]);
+});
+
+test("OpenAI URL output rejects private images, limits size and reports missing output", async () => {
+  const ssrf = await openai(model("openai-images"), context, {
+    apiKey: "openai-key", fetch: async () => json({ data: [{ b64_json: null, url: "http://127.0.0.1/image" }] }),
+  } as any);
+  assert.equal(ssrf.stopReason, "error");
+  assert.match(ssrf.errorMessage!, /private network/u);
+  const missing = await openai(model("openai-images"), context, {
+    apiKey: "openai-key", fetch: async () => json({ data: [{ b64_json: null }] }),
+  } as any);
+  assert.equal(missing.stopReason, "error");
+  assert.match(missing.errorMessage!, /no usable/u);
+  await assert.rejects(() => downloadImageUrl("https://images.example/large", {
+    fetch: async () => new Response(new Uint8Array(11)), sizeLimit: 10,
+  }), /byte limit/u);
 });
 
 test("Gemini URL encodes model IDs and parses inline_data",  async () => {
@@ -84,17 +115,21 @@ test("DashScope uses synchronous results and safely downloads a public image thr
 
 test("DashScope image download rejects private/CGNAT/mapped IPv6 SSRF, redirect overflow, and an over-limit body", async () => {
   for (const privateUrl of ["http://127.0.0.1/private.png", "http://[::1]/private.png", "http://[::ffff:127.0.0.1]/private.png", "http://[::ffff:10.1.2.3]/private.png", "http://100.64.0.1/private.png"]) {
-    await assert.rejects(() => downloadDashScopeImage(privateUrl, fetch as any), /private network/u);
+    await assert.rejects(() => downloadImageUrl(privateUrl), /private network/u);
   }
   assert.equal(validatePublicImageUrl("https://images.example/public.png").origin, "https://images.example");
   let redirects = 0;
-  await assert.rejects(() => downloadDashScopeImage("https://images.example/a", (async () => {
+  await assert.rejects(() => downloadImageUrl("https://images.example/a", { fetch: async () => {
     redirects++;
     return new Response(null, { status: 302, headers: { location: "https://images.example/a" } });
-  }) as any), /redirect limit/u);
+  } }), /redirect limit/u);
   assert.equal(redirects, 6);
-  await assert.rejects(() => downloadDashScopeImage("https://images.example/large", (async () =>
-    new Response(new Uint8Array(10 * 1024 * 1024 + 1))) as any), /byte limit/u);
+  await assert.rejects(() => downloadImageUrl("https://images.example/large", { fetch: async () =>
+    new Response(new Uint8Array(10 * 1024 * 1024 + 1)) }), /byte limit/u);
+  await assert.rejects(() => downloadImageUrl("https://images.example/timeout", {
+    timeoutMs: 1,
+    fetch: async (_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })),
+  }), /timed out/u);
 });
 
 test("image failures are redacted and protocol default URLs do not require a provider URL", async () => {

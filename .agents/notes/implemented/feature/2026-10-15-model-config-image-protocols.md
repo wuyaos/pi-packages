@@ -14,7 +14,7 @@ Pi 1.2.0 的 host image catalog 只提供 `openrouter-images`。`pi-model-config
 
 模型级 Base URL 优先于服务商级；两者缺失时，四个新协议才采用各自的官方默认 URL。`openrouter-images` 和未被本插件识别的自定义协议没有默认 URL，仍要求用户明确配置。图像 usage/cost 不推导，结果保持为空。
 
-DashScope 使用同步 `/services/aigc/multimodal-generation/generation`，从 `output.choices[0].message.content[].image` 读取 URL 字符串或 `{ url }`；不发送 `X-DashScope-Async`。下载不携带认证头，拒绝 localhost、私有/CGNAT/IP-mapped IPv6 和带凭据/secret query 的 URL，只允许初始 origin 内最多五次手动重定向，下载有 30 秒 timeout 与 10 MiB 流式上限。
+OpenAI 兼容网关可在 `data[]` 返回 `b64_json: null` 加签名 `url`（例如 Doubao-Seedream）；adapter 优先 base64，缺失时下载 URL 并嗅探 JPEG/PNG 或采用 content-type。DashScope 使用同步 `/services/aigc/multimodal-generation/generation`，从 `output.choices[0].message.content[].image` 读取 URL 字符串或 `{ url }`；不发送 `X-DashScope-Async`。共享下载器不携带认证头，拒绝 localhost、私有/CGNAT/IP-mapped IPv6 和带凭据/secret query 的 URL；每个手动重定向均重验 URL 与 SSRF，但允许公开对象存储跨 origin 跳转，最多五跳、30 秒 timeout 与 10 MiB 流式上限。
 
 协议 endpoint、最小 body 与响应形状参考本机 `img-research` 中 `@amaster.ai/pi-image-gen` 的 Apache-2.0 发布包 `dist/providers/{openai,gemini,dashscope}.js`，并核对其依赖的 `pi-image-gen-core/src/providers/xai.ts`。本项目独立实现：没有复制源码、UI、缓存、宿主图像管线或注册逻辑。
 
@@ -38,4 +38,4 @@ DashScope 使用同步 `/services/aigc/multimodal-generation/generation`，从 `
 
 ## Verification
 
-离线 `image-apis.test.ts` mock fetch 覆盖 URL/body/headers、OpenAI model-family format、xAI 最小 payload/JPEG 假定、Gemini `inline_data`、DashScope 同步 choices URL 下载、私网/CGNAT/IP-mapped IPv6 拒绝、五跳限制、10 MiB 上限、非 2xx body 脱敏、default URL、schema enum 和匿名拒绝自有 image API。全套离线测试、strict typecheck 与真实 loader smoke 均在同一改动中执行；未访问真实 provider。
+离线 `image-apis.test.ts` mock fetch 覆盖 URL/body/headers、OpenAI model-family format 与 `b64_json: null` URL 下载、xAI 最小 payload/JPEG 假定、Gemini `inline_data`、DashScope 同步 choices URL 下载、私网/CGNAT/IP-mapped IPv6 拒绝、五跳限制、timeout、10 MiB 上限、非 2xx body 脱敏、default URL、schema enum 和匿名拒绝自有 image API。全套离线测试、strict typecheck 与真实 loader smoke 均在同一改动中执行；未访问真实 provider。

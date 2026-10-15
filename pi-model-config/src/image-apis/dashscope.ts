@@ -1,5 +1,5 @@
 import type { AssistantImages, ImageModel, ImagesContext, ImagesOptions } from "@earendil-works/pi-ai";
-import { apiKey, downloadDashScopeImage, failedImageResult, fetchFor, imageResult, normalizeBaseUrl, promptFromContext, records, requestHeaders, resolveImageBaseUrl, responseJson } from "./common.ts";
+import { apiKey, downloadImageUrl, failedImageResult, fetchFor, imageResult, normalizeBaseUrl, promptFromContext, records, requestHeaders, resolveImageBaseUrl, responseJson } from "./common.ts";
 
 /** DashScope multimodal-generation synchronous endpoint. Deliberately does not set X-DashScope-Async. */
 export async function generateImages(model: ImageModel<string>, context: ImagesContext, options?: ImagesOptions, activeSecrets: readonly string[] = []): Promise<AssistantImages> {
@@ -31,7 +31,7 @@ export async function generateImages(model: ImageModel<string>, context: ImagesC
           ? String((imageField as Record<string, unknown>).url)
           : undefined;
       if (!url) continue;
-      const image = await downloadDashScopeImage(url, fetcher, options?.signal);
+      const image = await downloadImageUrl(url, { fetch: fetcher, signal: options?.signal });
       result.output.push({ type: "image", mimeType: image.mimeType, data: image.data });
     }
     if (!result.output.length) throw new Error("DashScope Images returned no downloadable image URLs");
