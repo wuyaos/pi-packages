@@ -1,6 +1,6 @@
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import type { FetchFunction, ProviderEnv, ProviderHeaders, Transport } from "@earendil-works/pi-ai";
-import type { ProviderDraft } from "./types.ts";
+import { IMAGE_API_NAMES, type ProviderDraft } from "./types.ts";
 import { validateHttpUrl } from "./config.ts";
 import { mcError } from "./i18n.ts";
 
@@ -26,7 +26,7 @@ export const CLASSIFIER_APIS = new Set([
   "cloudflare-workers-ai-system-one",
   "openai-decisions",
 ]);
-export const IMAGE_APIS = new Set(["openrouter-images"]);
+export const IMAGE_APIS = new Set(IMAGE_API_NAMES);
 
 export function assertSupportedProtocol(draft: ProviderDraft, type: "chat" | "classifier" | "image"): void {
   const api = type === "chat" ? draft.chatApi : type === "classifier" ? draft.classifierApi : draft.imageApi;
@@ -87,6 +87,7 @@ export function applyProviderTransport<T extends TransportOptions>(
       ...next.headers,
       authorization: null,
       "x-api-key": null,
+      "x-goog-api-key": null,
       "cf-aig-authorization": null,
     };
   }

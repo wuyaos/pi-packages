@@ -122,6 +122,12 @@ Chat 写入 Pi 标准 `models.json`。Classifier 和 image 通过 Pi 的原生 m
 支持的 image API：
 
 - `openrouter-images`
+- `openai-images`（OpenAI Images；默认 `https://api.openai.com/v1`）
+- `gemini-images`（Gemini GenerateContent；默认 `https://generativelanguage.googleapis.com`）
+- `xai-images`（xAI Images；默认 `https://api.x.ai/v1`；当前将 base64 结果标为 `image/jpeg`，待真实服务商响应验证）
+- `dashscope-images`（DashScope 同步 multimodal-generation；默认 `https://dashscope.aliyuncs.com/api/v1`）
+
+这四个新增协议由本插件直接实现请求级 `generateImages()`，**不经过宿主图像管线**。模型级 Base URL 优先，其次服务商 Base URL，最后才采用上列协议默认值；`openrouter-images` 与未知/自定义协议没有默认 URL，必须由用户明确填写。图像响应不计算 token/cost usage（保持为空）。DashScope 固定使用同步 `/services/aigc/multimodal-generation/generation`，解析 `output.choices[0].message.content[].image`（URL 字符串或 `{ url }`）；不发送 `X-DashScope-Async`。返回 URL 会经同源重定向、内网地址、30 秒和 10 MiB 限制后下载。
 
 支持的 chat API：
 
@@ -188,6 +194,7 @@ Chat 写入 Pi 标准 `models.json`。Classifier 和 image 通过 Pi 的原生 m
 
 - 行为调研参考了 @indexyz/pi-provider-sub2api（MIT）对 Codex manifest、slug/display_name 和保守失败策略的说明，以及 @router-for-me/pi-cliproxyapi-provider（MIT）公开的 endpoint 约定。
 - 同时查看了 @keywaytech/pi-provider-manager 的发布包行为；其 package 标记 UNLICENSED，因此本项目没有复制或改写其源码，只独立实现了协议 profile、认证头和安全读取逻辑。
+- 图像协议行为还参考本机 `img-research` 中 `@amaster.ai/pi-image-gen` 发布包的 Apache-2.0 `dist/providers/{openai,gemini,dashscope}.js`，以及其依赖 `pi-image-gen-core/src/providers/xai.ts`；仅用于核实公开 endpoint、body 和响应形状，没有复制源码、宿主管线或 UI。
 - 本实现没有照搬上述包的缓存、client_version、名称正则推理、provider 注册或 UI 代码；尤其不会仅凭 CLIProxy 名称添加查询参数。
 
 ## 已知限制
@@ -199,3 +206,4 @@ Chat 写入 Pi 标准 `models.json`。Classifier 和 image 通过 Pi 的原生 m
 - 插件自有 provider 的“复用 Pi auth”仅处理同 ID 的 API-key credential；OAuth 只适用于未被插件接管、继续使用原生认证实现的 provider，不能移植到另一个自定义 provider ID。
 - 第三方 extension provider 若不由本插件接管，只能管理 chat overlay，不能启用本插件代理或匿名 transport。
 - 保存模型配置后需要 `/reload` 才能更新 extension transport 与 classifier/image 注册；仅切换界面语言不需要 reload。
+- 图像 API 只覆盖文本提示词和各协议的最小一图请求；没有接入宿主图像管线、编辑/多图输入或 usage/cost 计费统计。

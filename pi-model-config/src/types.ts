@@ -1,7 +1,9 @@
 import type { AnyModel } from "@earendil-works/pi-ai";
 
 export const MODEL_TYPES = ["chat", "classifier", "image"] as const;
+export const IMAGE_API_NAMES = ["openrouter-images", "openai-images", "gemini-images", "xai-images", "dashscope-images"] as const;
 export type ManagedModelType = (typeof MODEL_TYPES)[number];
+export type ImageApiName = (typeof IMAGE_API_NAMES)[number];
 export type ModelIdentity = `${string}\u0000${ManagedModelType}\u0000${string}`;
 
 export type AuthMode = "models-json" | "reuse-pi" | "anonymous";
@@ -64,7 +66,7 @@ export interface ProviderConnectionConfig {
   proxyUrl?: string;
   chatApi?: string;
   classifierApi?: string;
-  imageApi?: string;
+  imageApi?: ImageApiName;
   defaultType?: ManagedModelType;
   defaultContextWindow?: number;
   defaultMaxTokens?: number;
@@ -111,7 +113,7 @@ export interface ProviderDraft {
   proxyUrl?: string;
   chatApi: string;
   classifierApi: string;
-  imageApi: string;
+  imageApi: ImageApiName;
   defaultType: ManagedModelType;
 }
 

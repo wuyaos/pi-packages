@@ -162,7 +162,13 @@
           "type": "string"
         },
         "imageApi": {
-          "type": "string"
+          "enum": [
+            "openrouter-images",
+            "openai-images",
+            "gemini-images",
+            "xai-images",
+            "dashscope-images"
+          ]
         },
         "defaultType": {
           "enum": [

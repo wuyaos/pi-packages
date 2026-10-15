@@ -13,6 +13,8 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ModelConfigFile, ModelsJsonFile, ModelsJsonProvider, ProviderConnectionConfig } from "./types.ts";
 import { validateHttpUrl } from "./config.ts";
+import { resolveImageBaseUrl } from "./image-apis/common.ts";
+import { SELF_IMAGE_APIS, SELF_IMAGE_IMPLEMENTATIONS } from "./image-apis/index.ts";
 import { mcError, t, type UiLanguage } from "./i18n.ts";
 import { ANONYMOUS_SENTINEL, applyProviderTransport, CHAT_APIS, CLASSIFIER_APIS, IMAGE_APIS, PROXY_CHAT_APIS, type TransportOptions } from "./transport.ts";
 
@@ -105,7 +107,9 @@ function wrapClassifier(api: string, config: ProviderConnectionConfig): Provider
 }
 
 function wrapImages(api: string, config: ProviderConnectionConfig): ProviderImages {
-  const base = requiredImplementation(HOST_APIS.image, api, "image");
+  // Pi 1.2.0's ImageApi remains open to custom strings, while its host catalog only
+  // knows openrouter-images. The four entries below are extension-owned adapters.
+  const base = SELF_IMAGE_APIS.has(api) ? SELF_IMAGE_IMPLEMENTATIONS[api]! : requiredImplementation(HOST_APIS.image, api, "image");
   return {
     generateImages: (model, context, options) => base.generateImages(model, context, applyProviderTransport(options, {
       proxyUrl: config.proxyUrl,
@@ -174,7 +178,14 @@ function validateRuntimeConfig(providerId: string, config: ProviderConnectionCon
     const supported = model.type === "classifier" ? CLASSIFIER_APIS : model.type === "image" ? IMAGE_APIS : undefined;
     if (!supported) throw mcError("MCFG_E_MODEL_SHAPE", { file: "model-config.json", provider: providerId });
     if (!supported.has(model.api)) throw mcError("MCFG_E_TYPE_API", { identity: `${providerId}/${model.type}/${model.id}`, api: model.api });
-    if (config.owned) validateHttpUrl(model.baseUrl ?? modelsProvider?.baseUrl ?? "", `${providerId}/${model.id} Base URL`);
+    const effectiveBaseUrl = model.type === "image"
+      ? resolveImageBaseUrl(model.api, model.baseUrl, modelsProvider?.baseUrl)
+      : model.baseUrl ?? modelsProvider?.baseUrl;
+    if (config.owned && !effectiveBaseUrl) throw mcError("MCFG_E_BASE_URL_REQUIRED");
+    if (config.owned && effectiveBaseUrl) validateHttpUrl(effectiveBaseUrl, `${providerId}/${model.id} Base URL`);
+    if (config.authMode === "anonymous" && model.type === "image" && SELF_IMAGE_APIS.has(model.api)) {
+      throw mcError("MCFG_E_ANONYMOUS_UNSUPPORTED", { identity: `${providerId}/image/${model.id}` });
+    }
     if (config.owned && model.type === "classifier" && typeof model.contextWindow !== "number") throw mcError("MCFG_E_MODEL_SHAPE", { file: "model-config.json", provider: providerId });
   }
   if (!config.owned && (config.models?.length ?? 0) > 0) {
@@ -192,7 +203,13 @@ function validateRuntimeConfig(providerId: string, config: ProviderConnectionCon
 
 function registerOwnedProvider(pi: ExtensionAPI, providerId: string, config: ProviderConnectionConfig, modelsProvider: ModelsJsonProvider, language: UiLanguage): void {
   const chatModels = normalizeChatModels(providerId, modelsProvider, config);
-  const extraModels = (config.models ?? []).map((model) => ({ ...model, provider: providerId, baseUrl: model.baseUrl ?? modelsProvider.baseUrl ?? "" }));
+  const extraModels = (config.models ?? []).map((model) => ({
+    ...model,
+    provider: providerId,
+    baseUrl: model.type === "image"
+      ? resolveImageBaseUrl(model.api, model.baseUrl, modelsProvider.baseUrl) ?? ""
+      : model.baseUrl ?? modelsProvider.baseUrl ?? "",
+  }));
   const allModels = [...chatModels, ...extraModels];
   if (allModels.length === 0) return;
   const chatApis = new Set(chatModels.map((model) => model.api));

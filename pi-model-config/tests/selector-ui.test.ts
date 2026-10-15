@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { applyChanges } from "../src/command.ts";
 import { candidateFromExternal, candidateFromInstalled, candidateFromManaged, mergeCandidates, selectModels, type ModelPanelState } from "../src/selector.ts";
 import { secretInput } from "../src/ui.ts";
 import type { CandidateModel, ManagedChatModel, ProviderDraft, SelectionResult } from "../src/types.ts";
@@ -77,6 +78,82 @@ test("候选 merge 以 managed/external/installed 元数据优先，远程只补
   assert.equal(merged.find((row) => row.id === "same")?.name, "managed-name");
   assert.equal((merged.find((row) => row.id === "same") as ManagedChatModel).contextWindow, 111);
   assert.equal(merged.find((row) => row.id === "model-10")?.source, "remote");
+});
+
+test("远程获取后取消再勾选仍保留 managed 模型字段、元数据并按原值保存", async () => {
+  const managed: ManagedChatModel = {
+    ...chat("preserve-after-fetch", "Configured model"),
+    baseUrl: "https://provider.example/v1",
+    input: ["text", "image"],
+    cost: { input: 1.25, output: 2.5, cacheRead: 0.25, cacheWrite: 0.5 },
+    reasoning: true,
+    thinkingLevelMap: { off: null, medium: "configured-medium", high: "configured-high", max: null },
+    contextWindow: 200_000,
+    maxTokens: 16_000,
+    headers: { "x-model-header": "configured" },
+  };
+  const metadata = { type: "chat" as const, id: managed.id, contextSource: "user" as const, maxTokensSource: "user" as const, thinkingSource: "user" as const };
+  const remote = {
+    ...remoteChat(managed.id, "Remote replacement"),
+    contextWindow: 128_000,
+    maxTokens: 4_096,
+    reasoning: false,
+    input: ["text"] as ("text" | "image")[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const rows = mergeCandidates("fixture", [], [candidateFromManaged(managed, metadata)], [remote]);
+  assert.equal(rows.length, 1);
+  assert.equal((rows[0] as ManagedChatModel).contextWindow, 200_000);
+
+  const result = await selectModels(customContext<SelectionResult>((component) => {
+    component.handleInput("\r"); // cancel the managed selection
+    component.handleInput("\r"); // select it again
+    component.handleInput("\x13"); // Ctrl+S
+  }), "en", "fixture", draft, rows, [managed], undefined, [metadata]);
+
+  assert.deepEqual(result.selected, [managed]);
+  assert.deepEqual(result.metadata, [metadata]);
+  const { type: _type, ...persisted } = managed;
+  const saved = applyChanges({
+    models: { providers: { fixture: { models: [persisted] } } },
+    config: { version: 1, providers: { fixture: { owned: true, authMode: "anonymous", managedChatIds: [managed.id] } } },
+  }, "fixture", draft, result.selected, new Set(), result.metadata);
+  assert.deepEqual(saved.models.providers.fixture!.models, [persisted]);
+  assert.equal((saved.models.providers.fixture!.models![0] as any).contextWindow, 200_000);
+  assert.notEqual((saved.models.providers.fixture!.models![0] as any).contextWindow, 128_000);
+});
+
+test("会话内编辑后的模型在远程获取并重进 selector 后取消再勾选仍按编辑值保存", async () => {
+  const persisted: ManagedChatModel = {
+    ...chat("session-edited", "Persisted model"),
+    input: ["text", "image"],
+    cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+    reasoning: true,
+    thinkingLevelMap: { high: "persisted-high" },
+    contextWindow: 200_000,
+    maxTokens: 16_000,
+  };
+  const sessionEdited: ManagedChatModel = { ...persisted, contextWindow: 240_000, thinkingLevelMap: { high: "session-high", max: null } };
+  const metadata = { type: "chat" as const, id: persisted.id, contextSource: "user" as const, maxTokensSource: "user" as const, thinkingSource: "user" as const };
+  const remote = { ...remoteChat(persisted.id, "Remote stale value"), contextWindow: 128_000, maxTokens: 1_024, reasoning: false };
+  // `rows` models the catalog assembled after fetch; `sessionEdited` is the unsaved draft passed when reopening.
+  const rows = mergeCandidates("fixture", [], [candidateFromManaged(persisted, metadata)], [remote]);
+  const result = await selectModels(customContext<SelectionResult>((component) => {
+    component.handleInput("\r");
+    component.handleInput("\r");
+    component.handleInput("\x13");
+  }), "en", "fixture", draft, rows, [sessionEdited], undefined, [metadata]);
+
+  assert.deepEqual(result.selected, [sessionEdited]);
+  assert.deepEqual(result.metadata, [metadata]);
+  const { type: _persistedType, ...persistedJson } = persisted;
+  const saved = applyChanges({
+    models: { providers: { fixture: { models: [persistedJson] } } },
+    config: { version: 1, providers: { fixture: { owned: true, authMode: "anonymous", managedChatIds: [persisted.id] } } },
+  }, "fixture", draft, result.selected, new Set(), result.metadata);
+  assert.equal((saved.models.providers.fixture!.models![0] as any).contextWindow, 240_000);
+  assert.notEqual((saved.models.providers.fixture!.models![0] as any).contextWindow, 128_000);
+  assert.deepEqual((saved.models.providers.fixture!.models![0] as any).thinkingLevelMap, { high: "session-high", max: null });
 });
 
 test("搜索只缩小当前集合，Ctrl+A 选择过滤结果且保留已有 managed selection", async () => {

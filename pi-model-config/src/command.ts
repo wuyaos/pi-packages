@@ -24,6 +24,8 @@ import {
 } from "./panel.ts";
 import { candidateFromExternal, candidateFromInstalled, candidateFromManaged, mergeCandidates, selectModels, type ModelPanelState } from "./selector.ts";
 import { CHAT_APIS, CLASSIFIER_APIS, IMAGE_APIS, PROXY_CHAT_APIS } from "./transport.ts";
+import { resolveImageBaseUrl } from "./image-apis/common.ts";
+import { SELF_IMAGE_APIS } from "./image-apis/index.ts";
 import type {
   CandidateModel,
   ManagedModel,
@@ -100,6 +102,14 @@ function modelTypeLabel(language: UiLanguage, type: ManagedModel["type"]): strin
   return type === "classifier" ? t(language, "selectorTypeClassifier")
     : type === "image" ? t(language, "selectorTypeImage")
       : t(language, "selectorTypeChat");
+}
+
+function imageApiLabel(language: UiLanguage, api: string): string {
+  const key = api === "openai-images" ? "imageApiOpenai"
+    : api === "gemini-images" ? "imageApiGemini"
+      : api === "xai-images" ? "imageApiXai"
+        : api === "dashscope-images" ? "imageApiDashscope" : "imageApiOpenrouter";
+  return `${t(language, key)} (${api})`;
 }
 
 export function parseManagedChat(raw: Record<string, unknown>, provider: ModelsJsonProvider, config: ProviderConnectionConfig, applyDefaults = false): ManagedModel | undefined {
@@ -286,8 +296,10 @@ async function editConnectionPanel(ctx: ExtensionCommandContext, language: UiLan
           break;
         }
         case "imageApi": {
-          const value = await ctx.ui.select("Image API", [...IMAGE_APIS]);
-          if (value) draft.imageApi = value;
+          const choices = [...IMAGE_APIS].map((api) => ({ api, label: imageApiLabel(language, api) }));
+          const value = await ctx.ui.select("Image API", choices.map((choice) => choice.label));
+          const selected = choices.find((choice) => choice.label === value);
+          if (selected) draft.imageApi = selected.api;
           break;
         }
       }
@@ -326,10 +338,13 @@ function validateSelection(
   if (draft.proxyUrl) validateHttpUrl(draft.proxyUrl, "Provider proxy URL");
   if (draft.owned) {
     const missingExistingUrl = (existingProvider?.models ?? []).some((model) => typeof model.baseUrl !== "string" && !draft.baseUrl);
-    const missingSelectedUrl = selected.some((model) => !model.baseUrl && !draft.baseUrl);
+    const effectiveModelUrl = (model: ManagedModel) => model.type === "image"
+      ? resolveImageBaseUrl(model.api, model.baseUrl, draft.baseUrl)
+      : model.baseUrl ?? draft.baseUrl;
+    const missingSelectedUrl = selected.some((model) => !effectiveModelUrl(model));
     if (missingExistingUrl || missingSelectedUrl) throw mcError("MCFG_E_BASE_URL_REQUIRED");
     for (const model of existingProvider?.models ?? []) validateHttpUrl(String(model.baseUrl ?? draft.baseUrl), `${draft.id}/${String(model.id)} Base URL`);
-    for (const model of selected) validateHttpUrl(model.baseUrl ?? draft.baseUrl!, `${draft.id}/${model.id} Base URL`);
+    for (const model of selected) validateHttpUrl(effectiveModelUrl(model)!, `${draft.id}/${model.id} Base URL`);
   }
   if (!draft.owned && selected.some((model) => model.type !== "chat")) throw mcError("MCFG_E_NOT_OWNED", { provider: draft.id });
   if (!draft.owned && (draft.proxyUrl || draft.authMode === "anonymous") && !new Set<string>(getBuiltinProviders()).has(draft.id)) {
@@ -351,7 +366,8 @@ function validateSelection(
     const supported = model.type === "chat" ? CHAT_APIS : model.type === "classifier" ? CLASSIFIER_APIS : IMAGE_APIS;
     if (!supported.has(model.api)) throw mcError("MCFG_E_UNSUPPORTED_API", { identity: `${draft.id}/${model.type}/${model.id}`, api: model.api });
     if (draft.proxyUrl && model.type === "chat" && !PROXY_CHAT_APIS.has(model.api)) throw mcError("MCFG_E_PROXY_UNSUPPORTED", { identity: `${draft.id}/${model.type}/${model.id}` });
-    if (draft.authMode === "anonymous" && ["pi-messages", "bedrock-converse-stream", "google-generative-ai", "google-vertex"].includes(model.api)) {
+    if (draft.authMode === "anonymous" && (["pi-messages", "bedrock-converse-stream", "google-generative-ai", "google-vertex"].includes(model.api)
+      || model.type === "image" && SELF_IMAGE_APIS.has(model.api))) {
       throw mcError("MCFG_E_ANONYMOUS_UNSUPPORTED", { identity: `${draft.id}/${model.type}/${model.id}` });
     }
   }

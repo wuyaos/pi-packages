@@ -58,10 +58,10 @@ const config = {
     "model-config-smoke": {
       name: "Model Config Smoke",
       owned: true,
-      authMode: "anonymous",
+      authMode: "reuse-pi",
       chatApi: "openai-completions",
       classifierApi: "typesafe-system-one",
-      imageApi: "openrouter-images",
+      imageApi: "openai-images",
       managedChatIds: ["dummy-chat"],
       models: [
         {
@@ -77,7 +77,7 @@ const config = {
           type: "image",
           id: "dummy-image",
           name: "Dummy Image",
-          api: "openrouter-images",
+          api: "openai-images",
           input: ["text"],
           output: ["image"],
           cost,

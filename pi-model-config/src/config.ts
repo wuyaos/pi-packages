@@ -21,6 +21,7 @@ import type {
   ModelsJsonProvider,
   ProviderConnectionConfig,
 } from "./types.ts";
+import { IMAGE_API_NAMES } from "./types.ts";
 
 export const MODELS_SCHEMA = "https://pi.dev/schemas/models.schema.json";
 export const MODEL_CONFIG_SCHEMA = "https://raw.githubusercontent.com/wuyaos/pi-packages/main/pi-model-config/model-config.schema.json";
@@ -67,6 +68,9 @@ export function parseModelConfig(source: ConfigSnapshot): ModelConfigFile {
     if (provider.enabled !== undefined && typeof provider.enabled !== "boolean") throw mcError("MCFG_E_PROVIDER_SHAPE", { file: "model-config.json", provider: id });
     if (provider.discoveryAuthHeader !== undefined && !new Set(["auto", "bearer", "x-api-key", "api-key", "x-goog-api-key", "anthropic", "none"]).has(String(provider.discoveryAuthHeader))) {
       throw mcError("MCFG_E_DISCOVERY_AUTH_HEADER", { file: "model-config.json", provider: id });
+    }
+    if (provider.imageApi !== undefined && !IMAGE_API_NAMES.includes(String(provider.imageApi) as typeof IMAGE_API_NAMES[number])) {
+      throw mcError("MCFG_E_UNSUPPORTED_API", { identity: `${id}/image`, api: String(provider.imageApi) });
     }
     if (provider.models !== undefined && !Array.isArray(provider.models)) throw mcError("MCFG_E_MODELS_ARRAY", { file: "model-config.json", provider: id });
     if (Array.isArray(provider.models) && provider.models.some((model) => !isRecord(model))) throw mcError("MCFG_E_MODELS_ARRAY", { file: "model-config.json", provider: id });

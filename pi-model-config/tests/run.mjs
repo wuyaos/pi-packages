@@ -33,6 +33,7 @@ for (const file of [
   "config-transaction.test.ts",
   "discovery.test.ts",
   "runtime.test.ts",
+  "image-apis.test.ts",
   "model-test.test.ts",
   "context-probe.test.ts",
   "model-editor.test.ts",
