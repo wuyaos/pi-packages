@@ -7,7 +7,6 @@ import { normalizeLanguage, type SyncLanguage } from "./i18n";
 
 export const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const AGENT_SKILLS_DIR = path.join(os.homedir(), ".agents", "skills");
-export const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 export const SYNC_CONFIG_DIR = path.join(AGENT_DIR, "config");
 export const SYNC_CONFIG_PATH = path.join(SYNC_CONFIG_DIR, "sync.json");
 export const LEGACY_SYNC_CONFIG_PATH = path.join(AGENT_DIR, "sync_config.json");
@@ -25,12 +24,9 @@ export interface SyncConfig {
   webdavPass: string;
   language: SyncLanguage;
   backupProviders: boolean;
-  backupSessions: boolean;
   backupAgentSkills: boolean;
   piExcludePaths: string[];
   backupOnExit: boolean;
-  sessionProjects: string[];
-  sessionProjectMode: "whitelist" | "blacklist";
   maxBackups: number;
 }
 
@@ -77,21 +73,17 @@ export function loadConfig(): SyncConfig {
     }
   }
   const data = readJsonSafe<Partial<SyncConfig>>(SYNC_CONFIG_PATH, {});
-  const normalizeList = (value: unknown): string[] => Array.isArray(value) ? value.map(String).filter(Boolean) : [];
   const result: SyncConfig = {
     webdavUrl: data.webdavUrl || "",
     webdavUser: data.webdavUser || "",
     webdavPass: data.webdavPass || "",
     language: data.language ? normalizeLanguage(data.language) : defaultLanguage(),
     backupProviders: data.backupProviders !== false,
-    backupSessions: data.backupSessions !== false,
     backupAgentSkills: data.backupAgentSkills === true,
     piExcludePaths: isLegacyDefaultPiExcludePaths(data.piExcludePaths)
       ? [...DEFAULT_PI_EXCLUDE_PATHS]
       : normalizePiExcludePaths(data.piExcludePaths),
     backupOnExit: data.backupOnExit !== false,
-    sessionProjects: normalizeList(data.sessionProjects),
-    sessionProjectMode: data.sessionProjectMode === "whitelist" ? "whitelist" : "blacklist",
     maxBackups: typeof data.maxBackups === "number" && data.maxBackups >= 0 ? Math.floor(data.maxBackups) : 10,
   };
   configCache = result;
@@ -108,14 +100,6 @@ export function saveConfig(config: SyncConfig, ctx?: Pick<ExtensionContext, "ui"
 /** Refresh footer status from an already-loaded config (avoids re-reading the file). */
 export function refreshFooterStatusFromConfig(ctx: Pick<ExtensionContext, "ui">, config: SyncConfig): void {
   ctx.ui.setStatus("pi-sync", config.backupOnExit ? "backup:exit" : undefined);
-}
-
-export function isProjectAllowed(projectDir: string | undefined, config: SyncConfig): boolean {
-  if (!projectDir) return false;
-  const listed = config.sessionProjects.includes(projectDir);
-  // whitelist: only listed projects are backed up (empty = none)
-  // blacklist: listed projects are skipped (empty = all)
-  return config.sessionProjectMode === "blacklist" ? !listed : listed;
 }
 
 export function resolvePassword(pass: string): string {

@@ -10,24 +10,21 @@ function config(overrides: Partial<SyncConfig> = {}): SyncConfig {
     webdavPass: "pass",
     language: "en",
     backupProviders: true,
-    backupSessions: true,
     backupAgentSkills: true,
     piExcludePaths: ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"],
     backupOnExit: true,
-    sessionProjects: [],
-    sessionProjectMode: "blacklist",
     maxBackups: 10,
     ...overrides,
   };
 }
 
-test("main menu exposes stable actions in both languages", () => {
+test("main menu exposes Pi and shared Skills actions in both languages", () => {
   const english = buildMainMenuItems("en");
   const chinese = buildMainMenuItems("zh");
   const expected = [
     "upload-all", "restore-all",
-    "upload-pi", "upload-skills", "upload-sessions",
-    "restore-pi", "restore-skills", "restore-sessions",
+    "upload-pi", "upload-skills",
+    "restore-pi", "restore-skills",
     "configure", "language", "cancel",
   ];
   assert.deepEqual(english.map((item) => item.id), expected);
@@ -36,39 +33,26 @@ test("main menu exposes stable actions in both languages", () => {
   assert.notEqual(english[0]!.label, chinese[0]!.label);
 });
 
-test("executeBackupAll honors enabled categories and project blacklist in order", async () => {
+test("executeBackupAll honors enabled categories in order", async () => {
   const calls: string[] = [];
-  const result = await executeBackupAll(config({ sessionProjects: ["--skip--"] }), {
+  const result = await executeBackupAll(config(), {
     uploadPi: async () => { calls.push("pi"); return true; },
     uploadSkills: async () => { calls.push("skills"); return false; },
-    listProjects: () => ["--keep--", "--skip--"],
-    uploadSession: async (project) => { calls.push(`session:${project}`); return true; },
   });
 
-  assert.deepEqual(calls, ["pi", "skills", "session:--keep--"]);
+  assert.deepEqual(calls, ["pi", "skills"]);
   assert.deepEqual(result, [
     { kind: "pi", success: true },
     { kind: "skills", success: false },
-    { kind: "session", project: "--keep--", success: true },
   ]);
 });
 
-test("executeRestoreAll honors whitelist and reports remote listing failures", async () => {
+test("executeRestoreAll skips disabled categories", async () => {
   const calls: string[] = [];
-  const selected = await executeRestoreAll(config({ sessionProjectMode: "whitelist", sessionProjects: ["--keep--"] }), {
+  const result = await executeRestoreAll(config({ backupProviders: false }), {
     restorePi: async () => { calls.push("pi"); return true; },
     restoreSkills: async () => { calls.push("skills"); return true; },
-    listProjects: async () => ["--skip--", "--keep--"],
-    restoreSession: async (project) => { calls.push(`session:${project}`); return true; },
   });
-  assert.deepEqual(calls, ["pi", "skills", "session:--keep--"]);
-  assert.deepEqual(selected.at(-1), { kind: "session", project: "--keep--", success: true });
-
-  const failed = await executeRestoreAll(config({ backupProviders: false, backupAgentSkills: false }), {
-    restorePi: async () => { throw new Error("must not run"); },
-    restoreSkills: async () => { throw new Error("must not run"); },
-    listProjects: async () => { throw new Error("offline"); },
-    restoreSession: async () => true,
-  });
-  assert.deepEqual(failed, [{ kind: "session", success: false, error: "offline" }]);
+  assert.deepEqual(calls, ["skills"]);
+  assert.deepEqual(result, [{ kind: "skills", success: true }]);
 });

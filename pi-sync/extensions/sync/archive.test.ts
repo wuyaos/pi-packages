@@ -24,18 +24,15 @@ test("Pi agent archive excludes configured trees without staging a copy", async 
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(source, "config"), { recursive: true });
   fs.mkdirSync(path.join(source, "npm", "pkg"), { recursive: true });
-  fs.mkdirSync(path.join(source, "sessions", "project"), { recursive: true });
   fs.writeFileSync(path.join(source, "settings.json"), "{}");
   fs.writeFileSync(path.join(source, "config", "sync.json"), "{}");
   fs.writeFileSync(path.join(source, "npm", "pkg", "index.js"), "installed");
-  fs.writeFileSync(path.join(source, "sessions", "project", "session.jsonl"), "session");
 
-  await createPiAgentZip({ piExcludePaths: ["npm", "sessions"] }, archive, source);
+  await createPiAgentZip({ piExcludePaths: ["npm"] }, archive, source);
   const entries = await listArchiveEntries(archive);
   assert.ok(entries.includes("settings.json"));
   assert.ok(entries.includes("config/sync.json"));
   assert.ok(!entries.some((entry) => entry === "npm" || entry.startsWith("npm/")));
-  assert.ok(!entries.some((entry) => entry === "sessions" || entry.startsWith("sessions/")));
 });
 
 test("Pi agent archive skips unsafe entries within an excluded runtime tree", async (t) => {

@@ -5,7 +5,6 @@ import { runCommand } from "../_shared/spawn";
 import {
   AGENT_DIR,
   AGENT_SKILLS_DIR,
-  SESSIONS_DIR,
   ensureDir,
   normalizePiExcludePaths,
   type ManifestFile,
@@ -97,10 +96,6 @@ export function writeManifest(tempDir: string, agentDir: string, files: Manifest
     fileCount: files.length,
     files,
   }, null, 2), "utf8");
-}
-
-export function extractSessionTs(filename: string): string | null {
-  return filename.match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_/)?.[1] ?? null;
 }
 
 export async function listArchiveEntries(archivePath: string): Promise<string[]> {
@@ -212,18 +207,3 @@ export async function createAgentSkillsZip(archivePath: string): Promise<string[
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }
 
-export async function createSessionsArchiveZip(projectDir: string, archivePath: string): Promise<string[]> {
-  const sourceDir = path.join(SESSIONS_DIR, projectDir);
-  if (!fs.existsSync(sourceDir)) throw new Error(`Session project not found: ${projectDir}`);
-  const tempDir = path.join(os.tmpdir(), `pi_sessions_temp_${Date.now()}`);
-  const destDir = path.join(tempDir, "sessions", projectDir);
-  const manifest: ManifestFile[] = [];
-  try {
-    copyRecursiveSync(sourceDir, destDir);
-    collectManifest(destDir, `sessions/${projectDir}`, `sessions/${projectDir}`, manifest);
-    if (manifest.length === 0) throw new Error(`No session files found for ${projectDir}.`);
-    writeManifest(tempDir, AGENT_DIR, manifest);
-    await packTemporaryArchive(tempDir, archivePath);
-    return [`Sessions: ${projectDir} (${manifest.length} file(s))`];
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
-}

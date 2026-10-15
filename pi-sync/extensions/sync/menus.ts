@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -8,37 +8,20 @@ import {
   archiveTimestamp,
   createAgentSkillsZip,
   createPiAgentZip,
-  createSessionsArchiveZip,
   listArchiveEntries,
   platformTag,
   validateArchiveEntries,
 } from "./archive";
-import {
-  SESSIONS_DIR,
-  isProjectAllowed,
-  loadConfig,
-  normalizePiExcludePaths,
-  saveConfig,
-  type SyncConfig,
-} from "./config";
+import { loadConfig, normalizePiExcludePaths, saveConfig, type SyncConfig } from "./config";
 import { t, type SyncLanguage } from "./i18n";
-import {
-  extractAgentSkillsZip,
-  extractPiAgentZip,
-  extractSessionsArchiveZip,
-  getRestorePlan,
-} from "./restore";
+import { extractAgentSkillsZip, extractPiAgentZip, getRestorePlan } from "./restore";
 import {
   downloadFromWebdavDir,
   listWebdavDir,
   pruneOldBackupsInDir,
   uploadToWebdavDir,
-  webdavAuth,
-  webdavDirBase,
-  webdavList,
   WEBDAV_AGENT_SKILLS_DIR,
   WEBDAV_PI_BACKUP_DIR,
-  WEBDAV_SESSIONS_ARCHIVE_DIR,
 } from "./webdav";
 
 export type SelectItem<T extends string> = { id: T; label: string };
@@ -47,13 +30,12 @@ type BackupKind = "pi" | "skills";
 export type SetModelFn = (model: Model<any>) => Promise<boolean>;
 export type MainAction =
   | "upload-all" | "restore-all"
-  | "upload-pi" | "upload-skills" | "upload-sessions"
-  | "restore-pi" | "restore-skills" | "restore-sessions"
+  | "upload-pi" | "upload-skills"
+  | "restore-pi" | "restore-skills"
   | "configure" | "language" | "cancel";
 
 export interface BulkResult {
-  kind: "pi" | "skills" | "session";
-  project?: string;
+  kind: BackupKind;
   success: boolean;
   error?: string;
 }
@@ -61,15 +43,11 @@ export interface BulkResult {
 export interface BackupAllOperations {
   uploadPi(): Promise<boolean>;
   uploadSkills(): Promise<boolean>;
-  listProjects(): string[];
-  uploadSession(project: string): Promise<boolean>;
 }
 
 export interface RestoreAllOperations {
   restorePi(): Promise<boolean>;
   restoreSkills(): Promise<boolean>;
-  listProjects(): Promise<string[]>;
-  restoreSession(project: string): Promise<boolean>;
 }
 
 async function selectAction<T extends string>(
@@ -83,11 +61,7 @@ async function selectAction<T extends string>(
 }
 
 function cloneConfig(config: SyncConfig): SyncConfig {
-  return {
-    ...config,
-    piExcludePaths: [...config.piExcludePaths],
-    sessionProjects: [...config.sessionProjects],
-  };
+  return { ...config, piExcludePaths: [...config.piExcludePaths] };
 }
 
 function onOff(language: SyncLanguage, value: boolean): string {
@@ -104,72 +78,12 @@ export function buildMainMenuItems(language: SyncLanguage): SelectItem<MainActio
     { id: "restore-all", label: t(language, "restoreAllBackups") },
     { id: "upload-pi", label: t(language, "uploadPiBackup") },
     { id: "upload-skills", label: t(language, "uploadSkillsBackup") },
-    { id: "upload-sessions", label: t(language, "uploadSessionsArchive") },
     { id: "restore-pi", label: t(language, "restorePiBackup") },
     { id: "restore-skills", label: t(language, "restoreSkillsBackup") },
-    { id: "restore-sessions", label: t(language, "restoreSessionsArchive") },
     { id: "configure", label: t(language, "configureSettings") },
     { id: "language", label: t(language, "switchLanguage") },
     { id: "cancel", label: t(language, "cancel") },
   ];
-}
-
-function listSessionProjects(): string[] {
-  if (!fs.existsSync(SESSIONS_DIR)) return [];
-  return fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith("--") && entry.name.endsWith("--"))
-    .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-}
-
-function sessionDirToPath(dirName: string): string {
-  let value = dirName;
-  if (value.startsWith("--")) value = value.slice(2);
-  if (value.endsWith("--")) value = value.slice(0, -2);
-  return value ? `/${value.replace(/-/g, "/")}` : dirName;
-}
-
-function sessionSelectionLabel(config: SyncConfig): string {
-  const language = config.language;
-  if (config.sessionProjects.length === 0) {
-    return t(language, config.sessionProjectMode === "blacklist" ? "projectSelectionAll" : "projectSelectionWhitelist");
-  }
-  const mode = t(language, config.sessionProjectMode === "blacklist" ? "projectModeBlacklist" : "projectModeWhitelist");
-  return `${mode}: ${config.sessionProjects.length}`;
-}
-
-async function showSessionProjectSelect(ctx: ExtensionCommandContext, config: SyncConfig): Promise<void> {
-  let cursor = 0;
-  while (true) {
-    const language = config.language;
-    const projects = listSessionProjects();
-    const modeLabel = t(language, config.sessionProjectMode === "blacklist" ? "projectModeBlacklist" : "projectModeWhitelist");
-    const items: SelectItem<string>[] = [
-      { id: "mode", label: t(language, "switchProjectMode", { mode: modeLabel }) },
-      { id: "all", label: t(language, "selectAllProjects") },
-      { id: "reset", label: t(language, "resetProjects") },
-      ...projects.map((project) => ({
-        id: `project:${project}`,
-        label: `[${config.sessionProjects.includes(project) ? "x" : " "}] ${sessionDirToPath(project)}`,
-      })),
-      { id: "back", label: t(language, "back") },
-    ];
-    const action = await selectAction(ctx, t(language, "selectSessionProjects", { mode: modeLabel }), items, cursor);
-    if (!action || action === "back") return;
-    cursor = Math.max(0, items.findIndex((item) => item.id === action));
-    if (action === "mode") {
-      config.sessionProjectMode = config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist";
-    } else if (action === "all") {
-      config.sessionProjects = [...projects];
-    } else if (action === "reset") {
-      config.sessionProjects = [];
-    } else if (action.startsWith("project:")) {
-      const project = action.slice("project:".length);
-      config.sessionProjects = config.sessionProjects.includes(project)
-        ? config.sessionProjects.filter((item) => item !== project)
-        : [...config.sessionProjects, project];
-    }
-  }
 }
 
 export async function showSetupWizard(ctx: ExtensionCommandContext): Promise<boolean> {
@@ -197,11 +111,8 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       { id: "password", label: t(language, "webdavPassword", { value: config.webdavPass ? t(language, "passwordSet") : t(language, "notSet") }) },
       { id: "pi", label: t(language, "piBackup", { value: onOff(language, config.backupProviders) }) },
       { id: "skills", label: t(language, "skillsBackup", { value: onOff(language, config.backupAgentSkills) }) },
-      { id: "sessions", label: t(language, "sessionsBackup", { value: onOff(language, config.backupSessions) }) },
       { id: "exit", label: t(language, "backupOnExit", { value: onOff(language, config.backupOnExit) }) },
       { id: "exclude", label: t(language, "piExcludePaths", { value: config.piExcludePaths.join(", ") || t(language, "none") }) },
-      { id: "projects", label: t(language, "sessionProjects", { value: sessionSelectionLabel(config) }) },
-      { id: "mode", label: t(language, "sessionProjectMode", { value: t(language, config.sessionProjectMode === "blacklist" ? "projectModeBlacklist" : "projectModeWhitelist") }) },
       { id: "max", label: t(language, "maxCloudBackups", { value: config.maxBackups === 0 ? t(language, "keepAll") : config.maxBackups }) },
       { id: "save", label: t(language, "save") },
       { id: "back", label: t(language, "back") },
@@ -227,17 +138,11 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       config.backupProviders = !config.backupProviders;
     } else if (action === "skills") {
       config.backupAgentSkills = !config.backupAgentSkills;
-    } else if (action === "sessions") {
-      config.backupSessions = !config.backupSessions;
     } else if (action === "exit") {
       config.backupOnExit = !config.backupOnExit;
     } else if (action === "exclude") {
       const value = await ctx.ui.input(t(language, "promptExcludePaths"), config.piExcludePaths.join(", "));
       if (value !== undefined) config.piExcludePaths = normalizePiExcludePaths(value.split(/[\n,]/));
-    } else if (action === "projects") {
-      await showSessionProjectSelect(ctx, config);
-    } else if (action === "mode") {
-      config.sessionProjectMode = config.sessionProjectMode === "whitelist" ? "blacklist" : "whitelist";
     } else if (action === "max") {
       const value = await ctx.ui.input(t(language, "promptMaxBackups"), String(config.maxBackups));
       const count = value ? Number.parseInt(value, 10) : Number.NaN;
@@ -253,8 +158,12 @@ function packageMeta(kind: BackupKind): { filename: string; dir: string; prefix:
     : { filename: `agent_skills_${timestamp}.tar.xz`, dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" };
 }
 
-async function showUploadPackage(ctx: ExtensionCommandContext, kind: BackupKind, notify = true): Promise<boolean> {
-  const config = loadConfig();
+export async function uploadBackupPackage(
+  ctx: ExtensionCommandContext,
+  kind: BackupKind,
+  config = loadConfig(),
+  notify = true,
+): Promise<boolean> {
   const language = config.language;
   const label = kindLabel(language, kind);
   const enabled = kind === "pi" ? config.backupProviders : config.backupAgentSkills;
@@ -277,49 +186,6 @@ async function showUploadPackage(ctx: ExtensionCommandContext, kind: BackupKind,
     if (notify) ctx.ui.notify(t(language, "backupFailed", { kind: label, error: error instanceof Error ? error.message : String(error) }), "error");
     return false;
   } finally { fs.rmSync(archive, { force: true }); }
-}
-
-export async function uploadSessionProjectArchive(
-  ctx: ExtensionContext,
-  config: SyncConfig,
-  project: string,
-  notify = true,
-): Promise<boolean> {
-  const language = config.language;
-  const filename = `sessions_${platformTag()}_${archiveTimestamp()}.tar.xz`;
-  const archive = path.join(os.tmpdir(), filename);
-  const remoteDir = `${WEBDAV_SESSIONS_ARCHIVE_DIR}${project}/`;
-  try {
-    const contents = await createSessionsArchiveZip(project, archive);
-    await uploadToWebdavDir(archive, remoteDir, filename, config, ctx);
-    await pruneOldBackupsInDir(config, ctx, remoteDir, "sessions_");
-    if (notify) ctx.ui.notify(t(language, "sessionArchiveUploaded", { filename, contents: contents.join("\n") }), "info");
-    return true;
-  } catch (error) {
-    if (notify) ctx.ui.notify(t(language, "sessionArchiveFailed", { error: error instanceof Error ? error.message : String(error) }), "error");
-    return false;
-  } finally { fs.rmSync(archive, { force: true }); }
-}
-
-async function showUploadSessionsArchive(ctx: ExtensionCommandContext): Promise<boolean> {
-  const config = loadConfig();
-  const language = config.language;
-  if (!config.backupSessions) {
-    ctx.ui.notify(t(language, "backupDisabled", { kind: t(language, "sessionsKind") }), "warning");
-    return false;
-  }
-  const projects = listSessionProjects().filter((project) => isProjectAllowed(project, config));
-  if (!projects.length) {
-    ctx.ui.notify(t(language, "noAllowedSessionProjects"), "warning");
-    return false;
-  }
-  const items: SelectItem<string>[] = [
-    ...projects.map((project) => ({ id: project, label: sessionDirToPath(project) })),
-    { id: "cancel", label: t(language, "cancel") },
-  ];
-  const project = await selectAction(ctx, t(language, "archiveSessionProject"), items);
-  if (!project || project === "cancel") return false;
-  return uploadSessionProjectArchive(ctx, config, project);
 }
 
 async function showRestorePackage(
@@ -372,29 +238,18 @@ async function showRestorePackage(
       const restored = kind === "pi" ? await extractPiAgentZip(local) : await extractAgentSkillsZip(local);
       if (kind === "pi") {
         try {
-          // ctx.reload() 只重载扩展等资源，不会刷新内存中的 ModelRegistry。
-          // 禁用网络请求，仅重读刚恢复的 ~/.pi/agent/models.json，使模型选择器立即可见最新目录。
           const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
-          if (refresh.errors.size > 0) {
-            console.warn(`[pi-sync] Model catalog refresh completed with ${refresh.errors.size} error(s)`);
-          }
+          if (refresh.errors.size > 0) console.warn(`[pi-sync] Model catalog refresh completed with ${refresh.errors.size} error(s)`);
         } catch (error) {
-          // 文件已恢复；模型刷新失败不应让整个恢复操作误报失败，重启 Pi 后仍会重新读取 models.json。
           console.warn(`[pi-sync] Failed to refresh restored model catalog: ${error instanceof Error ? error.message : String(error)}`);
         }
-        // refresh() 会把 ModelRegistry 里的模型对象整体替换成恢复后的 models.json 版本，
-        // 但当前会话的模型引用（ctx.model）仍是旧对象。旧对象的能力字段（reasoning /
-        // thinkingLevelMap）与恢复后的目录可能不一致，导致思考级别选择器失效（表现为
-        // "没有思考模式"），除非手动重新选择一次模型。这里主动把当前模型重新绑定到新对象。
         if (setModel) {
           const current = ctx.model;
           if (current) {
             const fresh = ctx.modelRegistry.find(current.provider, current.id);
             if (fresh && fresh !== current) {
               const bound = await setModel(fresh);
-              if (!bound) {
-                console.warn(`[pi-sync] Failed to rebind current model ${current.provider}/${current.id}; auth may be unconfigured.`);
-              }
+              if (!bound) console.warn(`[pi-sync] Failed to rebind current model ${current.provider}/${current.id}; auth may be unconfigured.`);
             } else if (!fresh) {
               console.warn(`[pi-sync] Current model ${current.provider}/${current.id} is absent from the restored catalog; select a model manually.`);
             }
@@ -413,136 +268,38 @@ async function showRestorePackage(
   }
 }
 
-async function restoreSessionProjectArchive(
-  ctx: ExtensionCommandContext,
-  config: SyncConfig,
-  project: string,
-  autoLatest = false,
-  notify = true,
-): Promise<boolean> {
-  const language = config.language;
-  const remoteDir = `${WEBDAV_SESSIONS_ARCHIVE_DIR}${project}/`;
-  try {
-    const files = (await listWebdavDir(remoteDir, config, ctx))
-      .filter((name) => name.startsWith("sessions_") && name.endsWith(".tar.xz"))
-      .sort()
-      .reverse();
-    if (!files.length) {
-      if (notify) ctx.ui.notify(t(language, "noArchivesFound", { kind: t(language, "sessionsKind") }), "warning");
-      return false;
-    }
-    let selected: string | undefined;
-    if (autoLatest) {
-      selected = files[0];
-    } else {
-      const archiveItems: SelectItem<string>[] = [
-        ...files.map((file) => ({ id: file, label: file })),
-        { id: "cancel", label: t(language, "cancel") },
-      ];
-      selected = await selectAction(ctx, t(language, "selectSessionArchive"), archiveItems);
-    }
-    if (!selected || selected === "cancel") return false;
-    const local = path.join(os.tmpdir(), path.basename(selected));
-    try {
-      await downloadFromWebdavDir(selected, remoteDir, local, config, ctx);
-      const restored = await extractSessionsArchiveZip(local);
-      if (notify) ctx.ui.notify(t(language, "sessionRestoreCompleted", { contents: restored.join("\n") }), "info");
-      return true;
-    } finally { fs.rmSync(local, { force: true }); }
-  } catch (error) {
-    if (notify) ctx.ui.notify(t(language, "sessionRestoreFailed", { error: error instanceof Error ? error.message : String(error) }), "error");
-    return false;
-  }
-}
-
-async function listRemoteSessionProjects(ctx: ExtensionCommandContext, config: SyncConfig): Promise<string[]> {
-  const base = webdavDirBase(config, WEBDAV_SESSIONS_ARCHIVE_DIR);
-  return webdavList(base, webdavAuth(config), ctx, (name) => name.startsWith("--") && name.endsWith("--"));
-}
-
-async function showRestoreSessionsArchive(ctx: ExtensionCommandContext): Promise<boolean> {
-  const config = loadConfig();
-  const language = config.language;
-  try {
-    const projects = (await listRemoteSessionProjects(ctx, config)).filter((project) => isProjectAllowed(project, config));
-    if (!projects.length) {
-      ctx.ui.notify(t(language, "noRemoteSessionProjects"), "warning");
-      return false;
-    }
-    const projectItems: SelectItem<string>[] = [
-      ...projects.map((project) => ({ id: project, label: sessionDirToPath(project) })),
-      { id: "cancel", label: t(language, "cancel") },
-    ];
-    const project = await selectAction(ctx, t(language, "restoreSessionProject"), projectItems);
-    if (!project || project === "cancel") return false;
-    return restoreSessionProjectArchive(ctx, config, project);
-  } catch (error) {
-    ctx.ui.notify(t(language, "sessionRestoreFailed", { error: error instanceof Error ? error.message : String(error) }), "error");
-    return false;
-  }
-}
-
 export async function executeBackupAll(config: SyncConfig, operations: BackupAllOperations): Promise<BulkResult[]> {
   const results: BulkResult[] = [];
-  if (config.backupProviders) {
-    results.push({ kind: "pi", success: await operations.uploadPi() });
-  }
-  if (config.backupAgentSkills) {
-    results.push({ kind: "skills", success: await operations.uploadSkills() });
-  }
-  if (config.backupSessions) {
-    const projects = operations.listProjects().filter((project) => isProjectAllowed(project, config));
-    for (const project of projects) {
-      results.push({ kind: "session", project, success: await operations.uploadSession(project) });
-    }
-  }
+  if (config.backupProviders) results.push({ kind: "pi", success: await operations.uploadPi() });
+  if (config.backupAgentSkills) results.push({ kind: "skills", success: await operations.uploadSkills() });
   return results;
 }
 
 export async function executeRestoreAll(config: SyncConfig, operations: RestoreAllOperations): Promise<BulkResult[]> {
   const results: BulkResult[] = [];
-  if (config.backupProviders) {
-    results.push({ kind: "pi", success: await operations.restorePi() });
-  }
-  if (config.backupAgentSkills) {
-    results.push({ kind: "skills", success: await operations.restoreSkills() });
-  }
-  if (config.backupSessions) {
-    try {
-      const projects = (await operations.listProjects()).filter((project) => isProjectAllowed(project, config));
-      for (const project of projects) {
-        results.push({ kind: "session", project, success: await operations.restoreSession(project) });
-      }
-    } catch (error) {
-      results.push({ kind: "session", success: false, error: errorMessage(error) });
-    }
-  }
+  if (config.backupProviders) results.push({ kind: "pi", success: await operations.restorePi() });
+  if (config.backupAgentSkills) results.push({ kind: "skills", success: await operations.restoreSkills() });
   return results;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function formatBulkResults(language: SyncLanguage, results: BulkResult[]): string {
+  return results.map((result) => `${result.success ? "✅" : "❌"} ${kindLabel(language, result.kind)}${result.error ? `: ${result.error}` : ""}`).join("\n");
 }
 
-function formatBulkResults(language: SyncLanguage, results: BulkResult[]): string {
-  return results.map((result) => {
-    const label = result.kind === "pi"
-      ? t(language, "piKind")
-      : result.kind === "skills"
-        ? t(language, "skillsKind")
-        : result.project ? sessionDirToPath(result.project) : t(language, "sessionsKind");
-    return `${result.success ? "✅" : "❌"} ${label}${result.error ? `: ${result.error}` : ""}`;
-  }).join("\n");
+export async function uploadEnabledBackups(ctx: ExtensionCommandContext, config = loadConfig(), notify = true): Promise<boolean> {
+  const results = await executeBackupAll(config, {
+    uploadPi: () => uploadBackupPackage(ctx, "pi", config, notify),
+    uploadSkills: () => uploadBackupPackage(ctx, "skills", config, notify),
+  });
+  return results.length > 0 && results.every((result) => result.success);
 }
 
 async function showUploadAll(ctx: ExtensionCommandContext): Promise<void> {
   const config = loadConfig();
   const language = config.language;
   const results = await executeBackupAll(config, {
-    uploadPi: () => showUploadPackage(ctx, "pi", false),
-    uploadSkills: () => showUploadPackage(ctx, "skills", false),
-    listProjects: () => listSessionProjects(),
-    uploadSession: (project) => uploadSessionProjectArchive(ctx, config, project, false),
+    uploadPi: () => uploadBackupPackage(ctx, "pi", config, false),
+    uploadSkills: () => uploadBackupPackage(ctx, "skills", config, false),
   });
   ctx.ui.notify(t(language, "allBackupCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
 }
@@ -554,8 +311,6 @@ async function showRestoreAll(ctx: ExtensionCommandContext, setModel?: SetModelF
   const results = await executeRestoreAll(config, {
     restorePi: () => showRestorePackage(ctx, "pi", true, false, setModel),
     restoreSkills: () => showRestorePackage(ctx, "skills", true, false),
-    listProjects: () => listRemoteSessionProjects(ctx, config),
-    restoreSession: (project) => restoreSessionProjectArchive(ctx, config, project, true, false),
   });
   ctx.ui.notify(t(language, "allRestoreCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
   if (results.some((result) => result.success)
@@ -572,21 +327,16 @@ export async function handleSyncCommand(ctx: ExtensionCommandContext, setModel?:
   while (true) {
     config = loadConfig();
     const language = config.language;
-    const items = buildMainMenuItems(language);
-    const action = await selectAction(ctx, t(language, "menuTitle"), items);
+    const action = await selectAction(ctx, t(language, "menuTitle"), buildMainMenuItems(language));
     if (!action || action === "cancel") return;
     if (action === "upload-all") await showUploadAll(ctx);
     else if (action === "restore-all") await showRestoreAll(ctx, setModel);
-    else if (action === "upload-pi") await showUploadPackage(ctx, "pi");
-    else if (action === "upload-skills") await showUploadPackage(ctx, "skills");
-    else if (action === "upload-sessions") await showUploadSessionsArchive(ctx);
+    else if (action === "upload-pi") await uploadBackupPackage(ctx, "pi");
+    else if (action === "upload-skills") await uploadBackupPackage(ctx, "skills");
     else if (action === "restore-pi") await showRestorePackage(ctx, "pi", false, true, setModel);
     else if (action === "restore-skills") await showRestorePackage(ctx, "skills");
-    else if (action === "restore-sessions") await showRestoreSessionsArchive(ctx);
     else if (action === "configure") await showConfigureSettings(ctx);
-    else if (action === "language") {
-      saveConfig({ ...config, language: language === "zh" ? "en" : "zh" }, ctx);
-    }
+    else if (action === "language") saveConfig({ ...config, language: language === "zh" ? "en" : "zh" }, ctx);
   }
 }
 

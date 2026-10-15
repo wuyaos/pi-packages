@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { timestampForBackup } from "../_shared/json-io";
 import { copyRecursiveSync, listArchiveEntries, runTar, validateArchiveEntries, validateArchiveEntryTypes } from "./archive";
-import { AGENT_DIR, AGENT_SKILLS_DIR, SESSIONS_DIR, ensureDir } from "./config";
+import { AGENT_DIR, AGENT_SKILLS_DIR, ensureDir } from "./config";
 
 async function extractToTemp(archivePath: string, prefix: string): Promise<string> {
   const tempDir = path.join(os.tmpdir(), `${prefix}_${Date.now()}`);
@@ -15,7 +15,7 @@ async function extractToTemp(archivePath: string, prefix: string): Promise<strin
 }
 
 function assertSafeRestoreParent(root: string, destination: string): void {
-  // destination 就是 root 本身（sessions 顶层合并的目标）是安全的：
+  // destination 就是 root 本身时是安全的：
   // 此时 dirname(destination) 在 root 之外，会被下面的检查误判为路径逃逸。
   if (path.resolve(destination) === path.resolve(root)) return;
   const relative = path.relative(root, path.dirname(destination));
@@ -84,13 +84,10 @@ export async function extractPiAgentZip(archivePath: string, targetDir = AGENT_D
 
 export function getRestorePlan(entries: string[]): string[] {
   if (entries.some((entry) => entry === "settings.json" || entry === "models.json" || entry === "AGENTS.md")) {
-    return ["Pi agent files will be merged; excluded install/session/state directories remain untouched."];
+    return ["Pi agent files will be merged; excluded install and runtime directories remain untouched."];
   }
   if (entries.some((entry) => entry === "agent-skills" || entry.startsWith("agent-skills/"))) {
     return ["Shared skills will replace ~/.agents/skills after the current directory is moved to a timestamped backup."];
-  }
-  if (entries.some((entry) => entry === "sessions" || entry.startsWith("sessions/"))) {
-    return ["Session files will be merged into ~/.pi/agent/sessions/."];
   }
   return ["Archive files will be merged into their destination."];
 }
@@ -137,14 +134,3 @@ export async function extractAgentSkillsZip(archivePath: string, targetDir = AGE
   }
 }
 
-export async function extractSessionsArchiveZip(archivePath: string, targetDir = SESSIONS_DIR): Promise<string[]> {
-  const tempDir = await extractToTemp(archivePath, "pi_sessions_extract");
-  try {
-    const source = path.join(tempDir, "sessions");
-    if (!fs.existsSync(source)) throw new Error("Archive does not contain sessions/.");
-    const target = path.resolve(targetDir);
-    fs.mkdirSync(target, { recursive: true });
-    const fileCount = copyExtractedTree(source, target, target);
-    return [`Session archive merged: ${fileCount} file(s)`];
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
-}
