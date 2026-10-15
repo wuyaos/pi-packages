@@ -72,6 +72,7 @@ export function parseModelConfig(source: ConfigSnapshot): ModelConfigFile {
     if (provider.imageApi !== undefined && !IMAGE_API_NAMES.includes(String(provider.imageApi) as typeof IMAGE_API_NAMES[number])) {
       throw mcError("MCFG_E_UNSUPPORTED_API", { identity: `${id}/image`, api: String(provider.imageApi) });
     }
+    if (provider.hiddenRemoteIds !== undefined && (!Array.isArray(provider.hiddenRemoteIds) || provider.hiddenRemoteIds.some((modelId) => typeof modelId !== "string"))) throw mcError("MCFG_E_PROVIDER_SHAPE", { file: "model-config.json", provider: id });
     if (provider.models !== undefined && !Array.isArray(provider.models)) throw mcError("MCFG_E_MODELS_ARRAY", { file: "model-config.json", provider: id });
     if (Array.isArray(provider.models) && provider.models.some((model) => !isRecord(model))) throw mcError("MCFG_E_MODELS_ARRAY", { file: "model-config.json", provider: id });
     for (const model of Array.isArray(provider.models) ? provider.models : []) {

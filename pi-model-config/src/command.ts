@@ -18,6 +18,7 @@ import {
   showPreviewPanel,
   showProviderPanel,
   showConfirmationPanel,
+  showRestoreHiddenPanel,
   type MenuPanelState,
   type OverviewPanelState,
   type PanelItem,
@@ -36,7 +37,7 @@ import type {
   ProviderConnectionConfig,
   ProviderDraft,
 } from "./types.ts";
-import { identityOf } from "./types.ts";
+import { hiddenRemoteKey, identityOf, isHiddenRemote, normalizeHiddenRemoteKeys } from "./types.ts";
 import { loadUiLanguage, saveUiLanguage } from "./ui-config.ts";
 import { secretInput, withCancellableLoader } from "./ui.ts";
 import { showModelTestFlow } from "./model-test.ts";
@@ -157,6 +158,7 @@ function draftFrom(providerId: string, provider: ModelsJsonProvider | undefined,
     classifierApi: config?.classifierApi ?? "typesafe-system-one",
     imageApi: config?.imageApi ?? "openrouter-images",
     defaultType: config?.defaultType ?? "chat",
+    hiddenRemoteIds: normalizeHiddenRemoteKeys(config?.hiddenRemoteIds ?? []),
   };
 }
 
@@ -248,9 +250,9 @@ function connectionPanelFields(language: UiLanguage, draft: ProviderDraft): Pane
   ];
 }
 
-async function editConnectionPanel(ctx: ExtensionCommandContext, language: UiLanguage, draft: ProviderDraft, state: MenuPanelState, canTakeover: boolean): Promise<"models" | "takeover" | "testModels" | "preview" | "back"> {
+async function editConnectionPanel(ctx: ExtensionCommandContext, language: UiLanguage, draft: ProviderDraft, state: MenuPanelState, canTakeover: boolean, hiddenRemoteCount: number): Promise<"models" | "takeover" | "restoreHidden" | "testModels" | "preview" | "back"> {
   while (true) {
-    const result = await showConnectionPanel(ctx, language, draft.id, connectionPanelFields(language, draft), state, canTakeover);
+    const result = await showConnectionPanel(ctx, language, draft.id, connectionPanelFields(language, draft), state, canTakeover, hiddenRemoteCount);
     if (result.action !== "field") return result.action;
     try {
       switch (result.fieldId) {
@@ -424,8 +426,10 @@ export function applyChanges(
   if (draft.authMode === "models-json") provider.apiKey = draft.apiKeyRaw; else delete provider.apiKey;
   models.providers[providerId] = provider;
 
+  const normalizedHiddenRemoteIds = normalizeHiddenRemoteKeys(draft.hiddenRemoteIds ?? []);
+  const { hiddenRemoteIds: _oldHiddenRemoteIds, ...oldConfigWithoutHiddenRemoteIds } = oldConfig ?? {};
   config.providers[providerId] = {
-    ...(oldConfig ?? {}),
+    ...oldConfigWithoutHiddenRemoteIds,
     name: draft.name,
     owned: draft.owned,
     enabled: draft.enabled,
@@ -436,6 +440,7 @@ export function applyChanges(
     imageApi: draft.imageApi,
     defaultType: draft.defaultType,
     managedChatIds: selectedChat.map((model) => model.id),
+    ...(normalizedHiddenRemoteIds.length ? { hiddenRemoteIds: normalizedHiddenRemoteIds } : {}),
     models: selected.filter((model): model is Extract<ManagedModel, { type: "classifier" | "image" }> => model.type !== "chat"),
     modelMetadata: modelMetadata.map((entry) => structuredClone(entry)),
   };
@@ -514,6 +519,7 @@ export interface ProviderChoice {
   id: string;
   label: string;
   priority: number;
+  enabled: boolean;
 }
 
 export function buildConfiguredProviderChoices(
@@ -524,20 +530,21 @@ export function buildConfiguredProviderChoices(
 ): ProviderChoice[] {
   const ids = new Set([...Object.keys(models.providers), ...Object.keys(config.providers)]);
   const choices: ProviderChoice[] = [];
-  for (const id of ids) {
+  for (const id of [...ids].sort((a, b) => a.localeCompare(b))) {
     const owned = config.providers[id]?.owned === true;
     const builtin = builtinProviderIds.has(id);
     const name = config.providers[id]?.name ?? models.providers[id]?.name;
     const displayBase = name && name !== id ? `${name} (${id})` : id;
     const display = config.providers[id]?.enabled === false ? `${displayBase} · ${t(language, "providerDisabled")}` : displayBase;
     const status = t(language, builtin ? "providerTagBuiltin" : "providerTagCustom");
+    const enabled = config.providers[id]?.enabled !== false;
     choices.push(owned
-      ? { id, label: t(language, "providerLabelCustom", { display, status }), priority: 0 }
+      ? { id, label: t(language, "providerLabelCustom", { display, status }), priority: 0, enabled }
       : builtin
-        ? { id, label: t(language, "providerLabelBuiltin", { display, status }), priority: 1 }
-        : { id, label: t(language, "providerLabelCustom", { display, status }), priority: 2 });
+        ? { id, label: t(language, "providerLabelBuiltin", { display, status }), priority: 1, enabled }
+        : { id, label: t(language, "providerLabelCustom", { display, status }), priority: 2, enabled });
   }
-  return choices.sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
+  return choices.sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.priority - b.priority || a.id.localeCompare(b.id));
 }
 
 function buildProviderPanelItems(
@@ -591,7 +598,7 @@ function buildProviderPanelItems(
 export function buildBuiltinProviderChoices(language: UiLanguage, builtinProviderIds: Iterable<string>): ProviderChoice[] {
   return [...new Set(builtinProviderIds)]
     .sort((a, b) => a.localeCompare(b))
-    .map((id) => ({ id, label: t(language, "providerLabelBuiltin", { display: id, status: t(language, "providerTagBuiltin") }), priority: 0 }));
+    .map((id) => ({ id, label: t(language, "providerLabelBuiltin", { display: id, status: t(language, "providerTagBuiltin") }), priority: 0, enabled: true }));
 }
 
 async function chooseBuiltinProvider(ctx: ExtensionCommandContext, language: UiLanguage): Promise<{ id: string; isNew: false } | undefined> {
@@ -657,6 +664,7 @@ function draftPanelItem(language: UiLanguage, draft: ProviderDraft, selected: Ma
     ],
     modelDetails: [
       t(language, "panelSummaryModels", { chat, classifier, image }),
+      ...(draft.hiddenRemoteIds?.length ? [t(language, "panelHiddenRemoteCount", { count: draft.hiddenRemoteIds.length })] : []),
       t(language, "detailFetchHint"),
       ...(adoptableCount ? [t(language, "panelTakeoverCount", { count: adoptableCount })] : []),
     ],
@@ -840,6 +848,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
 
           let selectedDraft = structuredClone(baselineSelected);
           let cachedRemote: CandidateModel[] = [];
+          let fetchInFlight = false;
           let page: "connection" | "model" | "preview" = "connection";
           let previewOrigin: "connection" | "model" = "model";
           const connectionState: MenuPanelState = { focus: "list", actionIndex: 0, detailScroll: 0 };
@@ -898,10 +907,15 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
 
           providerSession: while (true) {
             if (page === "connection") {
-              const connection = await editConnectionPanel(ctx, language, draft, connectionState, adoptableIds().length > 0);
+              const connection = await editConnectionPanel(ctx, language, draft, connectionState, adoptableIds().length > 0, draft.hiddenRemoteIds?.length ?? 0);
               activeSecrets.push(draft.apiKeyRaw, draft.temporaryKey);
               if (connection === "models") { page = "model"; continue; }
               if (connection === "takeover") { if (await adoptExisting()) page = "model"; continue; }
+              if (connection === "restoreHidden") {
+                const restored = await showRestoreHiddenPanel(ctx, language, draft.hiddenRemoteIds ?? []);
+                if (restored.action === "apply") draft.hiddenRemoteIds = (draft.hiddenRemoteIds ?? []).filter((key) => !restored.restored.includes(key));
+                continue;
+              }
               if (connection === "testModels") {
                 if (!draft.enabled) { ctx.ui.notify(t(language, "testProviderDisabled"), "warning"); continue; }
                 if (draft.authMode === "temporary" || isDirty()) { ctx.ui.notify(t(language, "testDraftDirty"), "warning"); continue; }
@@ -934,7 +948,8 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               const installedRaw = installedModels(ctx, target.id);
               const installed = installedRaw.map(candidateFromInstalled);
               const external = externalModels.map((model) => candidateFromExternal(model, externalMetadata.get(model.id)));
-              const candidates = mergeCandidates(target.id, [...external, ...installed], managedBefore.map((model) => candidateFromManaged(model, persistedMetadata.get(`${model.type}\0${model.id}`))), cachedRemote);
+              const visibleRemote = cachedRemote.filter((model) => !isHiddenRemote(model, draft.hiddenRemoteIds ?? []));
+              const candidates = mergeCandidates(target.id, [...external, ...installed], managedBefore.map((model) => candidateFromManaged(model, persistedMetadata.get(`${model.type}\0${model.id}`))), visibleRemote);
               const selection = await selectModels(ctx, language, target.id, draft, candidates, selectedDraft, modelState, selectedMetadata);
               selectedDraft = selection.selected;
               selectedMetadata = selection.metadata.map((entry) => ({ ...(selectedMetadata.find((old) => old.type === entry.type && old.id === entry.id) ?? {}), ...entry }));
@@ -987,6 +1002,9 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
                 continue;
               }
               if (selection.action === "fetch") {
+                if (fetchInFlight) continue;
+                fetchInFlight = true;
+                try {
                 const fallbackBases = [
                   ...(oldProvider?.models ?? []).map((model) => typeof model.baseUrl === "string" ? model.baseUrl : undefined),
                   ...installedRaw.map((model) => model.baseUrl),
@@ -1029,6 +1047,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
                 draft.discoveryUrl = result.value!.url;
                 cachedRemote = [...result.value!.models];
                 continue;
+                } finally { fetchInFlight = false; }
               }
               if (await preparePreview()) { previewOrigin = "model"; page = "preview"; }
               continue;
@@ -1049,10 +1068,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               if (discard === "discard") continue mainLoop;
               continue;
             }
-            const compatItems = selectedMetadata.filter((entry) => entry.contextSource === "compat" || entry.maxTokensSource === "compat").map((entry) => entry.type + '/' + entry.id);
-            const risk = compatItems.length ? [t(language, "compatSaveRisk", { items: compatItems.join(", ") })] : [];
-            const confirmed = await confirmAction(ctx, language, t(language, "finalSaveTitle"), [t(language, "finalSaveBody"), ...risk], [...details.providerDetails, ...details.modelDetails], t(language, "confirmSave"));
-            if (!confirmed) continue;
+            // Preview is the sole save confirmation: Ctrl+S there commits the reviewed draft.
             try {
               const next = applyChanges(files, target.id, draft, selectedDraft, new Set(externalModels.map((model) => model.id)), selectedMetadata);
               const transaction = writeConfigTransaction(files.modelsSnapshot, files.configSnapshot, next.models, next.config);

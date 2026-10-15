@@ -114,7 +114,7 @@ test("DashScope uses synchronous results and safely downloads a public image thr
 });
 
 test("DashScope image download rejects private/CGNAT/mapped IPv6 SSRF, redirect overflow, and an over-limit body", async () => {
-  for (const privateUrl of ["http://127.0.0.1/private.png", "http://[::1]/private.png", "http://[::ffff:127.0.0.1]/private.png", "http://[::ffff:10.1.2.3]/private.png", "http://100.64.0.1/private.png"]) {
+  for (const privateUrl of ["http://127.0.0.1/private.png", "http://[::]/private.png", "http://[::1]/private.png", "http://[fe80::1]/private.png", "http://[febf::1]/private.png", "http://[::ffff:127.0.0.1]/private.png", "http://[::ffff:10.1.2.3]/private.png", "http://100.64.0.1/private.png"]) {
     await assert.rejects(() => downloadImageUrl(privateUrl), /private network/u);
   }
   assert.equal(validatePublicImageUrl("https://images.example/public.png").origin, "https://images.example");

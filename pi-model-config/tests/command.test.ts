@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ManagedChatModel } from "../src/types.ts";
 import { buildDiscoveryCandidates } from "../src/discovery.ts";
 import { applyChanges, buildBuiltinProviderChoices, buildConfiguredProviderChoices, parseManagedChat, registerModelConfigCommand, removeProvider } from "../src/command.ts";
+import { parseModelConfig, snapshot } from "../src/config.ts";
 
 const sdkRoot = process.env.PI_MODEL_CONFIG_TEST_SDK!;
 const loader = await import(pathToFileURL(join(sdkRoot, "dist/core/extensions/loader.js")).href);
@@ -65,6 +66,26 @@ test("configured and builtin provider choices are separated and bilingual", () =
   assert.ok(builtinZh.every((item) => item.label.includes("内置")));
   const builtinEn = buildBuiltinProviderChoices("en", ["openai"]);
   assert.match(builtinEn[0]!.label, /Built-in/u);
+});
+
+test("configured provider choices use a deterministic ID tie-breaker", () => {
+  const choices = buildConfiguredProviderChoices("en", new Set(), { providers: { zeta: {}, alpha: {}, disabled: {} } }, { version: 1, providers: { zeta: { authMode: "reuse-pi" }, alpha: { authMode: "reuse-pi" }, disabled: { authMode: "reuse-pi", enabled: false } } });
+  assert.deepEqual(choices.map((choice) => choice.id), ["alpha", "zeta", "disabled"]);
+});
+
+test("hidden remote IDs must be string arrays", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-model-config-hidden-remote-shape-"));
+  try {
+    const path = join(dir, "model-config.json");
+    writeFileSync(path, JSON.stringify({ version: 1, providers: { p: { authMode: "reuse-pi", hiddenRemoteIds: ["ok", 1] } } }));
+    assert.throws(() => parseModelConfig(snapshot(path)), (error: any) => error?.code === "MCFG_E_PROVIDER_SHAPE");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("applyChanges omits empty hidden remote IDs", () => {
+  const draft: any = { id: "p", name: "p", owned: false, enabled: true, authMode: "reuse-pi", authHeader: "auto", chatApi: "openai-completions", classifierApi: "typesafe-system-one", imageApi: "openrouter-images", defaultType: "chat", hiddenRemoteIds: [] };
+  const next = applyChanges({ models: { providers: { p: { models: [] } } }, config: { version: 1, providers: { p: { authMode: "reuse-pi", hiddenRemoteIds: ["chat\u0000old"] } } } }, "p", draft, [], new Set());
+  assert.equal("hiddenRemoteIds" in next.config.providers.p, false);
 });
 
 test("Discovery candidate derivation normalizes paths, removes query/hash, and uses resolved model bases", () => {
@@ -331,7 +352,7 @@ test("models.json-only custom provider can toggle and delete, while config-only 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("custom provider saves only after preview and unified final confirmation", async () => {
+test("custom provider saves after preview confirmation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-model-config-save-"));
   try {
     await withAgentDir(dir, async () => {
@@ -348,7 +369,7 @@ test("custom provider saves only after preview and unified final confirmation", 
               case 1: component.handleInput("\x0d"); break;
               case 2: component.handleInput("\x13"); break;
               case 3: component.handleInput("\x13"); break;
-              case 4: component.handleInput("\x13"); break;
+              case 4: component.handleInput("\x1b"); break;
               default: component.handleInput("\x1b");
             }
           }, reject);
@@ -361,7 +382,7 @@ test("custom provider saves only after preview and unified final confirmation", 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("managed parameter edit stays dirty through selector reopen, preview, and final confirmation", async () => {
+test("managed parameter edit stays dirty through selector reopen and preview confirmation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-model-config-edit-chain-"));
   try {
     const modelsPath = join(dir, "models.json");
@@ -388,8 +409,7 @@ test("managed parameter edit stays dirty through selector reopen, preview, and f
             else if (rendered.includes("Configure Models")) component.handleInput(draftApplied ? "\x13" : "\x05");
             else if (rendered.includes("Edit model parameters")) { component.handleInput("\r"); for (let index = 0; index < 32; index++) component.handleInput("\x7f"); component.handleInput("Edited"); component.handleInput("\r"); component.handleInput("\x13"); }
             else if (rendered.includes("Apply model parameters to the draft?")) { draftApplied = true; component.handleInput("\x13"); }
-            else if (rendered.includes("Preview Changes")) { component.handleInput("\x1b[B"); preview = component.render(100).join("\n"); component.handleInput("\x13"); }
-            else if (rendered.includes("Confirm Save")) { saveConfirmed = true; component.handleInput("\x13"); }
+            else if (rendered.includes("Preview Changes")) { component.handleInput("\x1b[B"); preview = component.render(100).join("\n"); saveConfirmed = true; component.handleInput("\x13"); }
             else component.handleInput("\x1b");
           }, reject);
         }),

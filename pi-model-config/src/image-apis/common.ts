@@ -130,13 +130,13 @@ function privateHostname(hostname: string): boolean {
     const low = Number.parseInt(mappedHex[2]!, 16);
     normalized = `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
   }
-  if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
+  if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized === "::" || normalized === "0:0:0:0:0:0:0:0" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
   const ipv4 = normalized.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u)?.slice(1).map(Number);
   if (ipv4 && ipv4.every((part) => part >= 0 && part <= 255)) {
     const [a, b] = ipv4;
     return a === 0 || a === 10 || a === 127 || a === 100 && b >= 64 && b <= 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
   }
-  return normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+  return normalized.startsWith("fc") || normalized.startsWith("fd") || /^(?:fe8|fe9|fea|feb)[0-9a-f]:/u.test(normalized);
 }
 
 export function validatePublicImageUrl(value: string): URL {

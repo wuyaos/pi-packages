@@ -43,7 +43,7 @@ export type ProviderPanelResult =
 
 export type ConnectionPanelResult =
   | { action: "field"; fieldId: string }
-  | { action: "models" | "takeover" | "testModels" | "preview" | "back" };
+  | { action: "models" | "takeover" | "restoreHidden" | "testModels" | "preview" | "back" };
 
 export type PreviewPanelResult = { action: "save" | "back" | "discard" };
 
@@ -434,11 +434,13 @@ export async function showConnectionPanel(
   fields: PanelItem[],
   state: MenuPanelState = { focus: "list", actionIndex: 0, detailScroll: 0 },
   canTakeover = false,
+  hiddenRemoteCount = 0,
 ): Promise<ConnectionPanelResult> {
   const actions: FooterAction[] = [
     { id: "edit", label: t(language, "connectionModify"), key: Key.enter },
     { id: "models", label: t(language, "detailConfigureModels"), key: Key.ctrl("m") },
     ...(canTakeover ? [{ id: "takeover", label: t(language, "detailTakeover"), key: Key.ctrl("t") }] : []),
+    ...(hiddenRemoteCount > 0 ? [{ id: "restoreHidden", label: t(language, "detailRestoreHidden", { count: hiddenRemoteCount }), key: Key.ctrl("h") }] : []),
     { id: "testModels", label: t(language, "detailTestModels"), key: Key.ctrl("p") },
     { id: "preview", label: t(language, "connectionPreview"), key: Key.ctrl("s") },
     { id: "back", label: t(language, "connectionBack"), key: Key.escape },
@@ -448,8 +450,31 @@ export async function showConnectionPanel(
   if (result.kind === "back" || result.id === "back") return { action: "back" };
   if (result.kind === "item" && result.id) return { action: "field", fieldId: result.id };
   if (result.id === "edit" && state.selectedId) return { action: "field", fieldId: state.selectedId };
-  if (result.id === "models" || result.id === "takeover" || result.id === "testModels" || result.id === "preview") return { action: result.id };
+  if (result.id === "models" || result.id === "takeover" || result.id === "restoreHidden" || result.id === "testModels" || result.id === "preview") return { action: result.id };
   return { action: "back" };
+}
+
+export async function showRestoreHiddenPanel(
+  ctx: ExtensionCommandContext,
+  language: UiLanguage,
+  hiddenKeys: string[],
+  state: MenuPanelState = { focus: "list", actionIndex: 0, detailScroll: 0 },
+): Promise<{ action: "apply" | "back"; restored: string[] }> {
+  const selected = new Set<string>();
+  const actions: FooterAction[] = [
+    { id: "all", label: t(language, "restoreHiddenAll"), key: Key.ctrl("a") },
+    { id: "apply", label: t(language, "restoreHiddenApply"), key: Key.ctrl("s") },
+    { id: "back", label: t(language, "restoreHiddenBack"), key: Key.escape },
+  ];
+  while (true) {
+    const items = hiddenKeys.map((key) => ({ id: key, label: `${selected.has(key) ? "[✓]" : "[ ]"} ${key.replace("\u0000", "/")}`, details: [t(language, "restoreHiddenItemDetail")] }));
+    const result = await ctx.ui.custom<{ kind: "item" | "action" | "language" | "back"; id?: string }>((tui, theme, _keys, done) =>
+      new MenuDetailPanel(tui, theme, language, t(language, "restoreHiddenTitle"), items, actions, state, true, done), MODEL_CONFIG_OVERLAY_OPTIONS);
+    if (result.kind === "back" || result.id === "back") return { action: "back", restored: [] };
+    if (result.kind === "item" && result.id) { if (selected.has(result.id)) selected.delete(result.id); else selected.add(result.id); continue; }
+    if (result.id === "all") { for (const hiddenKey of hiddenKeys) selected.add(hiddenKey); continue; }
+    if (result.id === "apply") return { action: "apply", restored: [...selected] };
+  }
 }
 
 export async function showPreviewPanel(

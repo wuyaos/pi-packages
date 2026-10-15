@@ -15,7 +15,7 @@ import { t, type UiLanguage } from "./i18n.ts";
 import { COMPAT_CONTEXT_WINDOW, COMPAT_MAX_TOKENS } from "./discovery.ts";
 import { MODEL_CONFIG_OVERLAY_OPTIONS, overlayViewportRows, renderActionFooter, renderPanelBox, type FooterAction } from "./panel.ts";
 import type { CandidateModel, ManagedModel, ManagedModelType, ModelMetadataEntry, ProviderDraft, SelectionResult, ThinkingLevelMap, ThinkingMetadataSource } from "./types.ts";
-import { identityOf } from "./types.ts";
+import { hiddenRemoteKey, identityOf } from "./types.ts";
 import { protocolThinkingMap } from "./thinking-defaults.ts";
 import { describeThinking } from "./model-editor.ts";
 
@@ -218,6 +218,19 @@ class ModelSelector implements Component, Focusable {
     this.tui.requestRender();
   }
 
+  private hideCurrentRemote(): void {
+    const row = this.current();
+    if (!row || row.source !== "remote") return;
+    const hidden = new Set(this.draft.hiddenRemoteIds ?? []);
+    hidden.add(hiddenRemoteKey(row));
+    this.draft.hiddenRemoteIds = [...hidden].sort((a, b) => a.localeCompare(b));
+    this.selected.delete(this.key(row));
+    const index = this.rows.indexOf(row);
+    if (index >= 0) this.rows.splice(index, 1);
+    this.status = t(this.language, "selectorRemoteHidden", { id: row.id });
+    this.refresh();
+  }
+
   private cycleType(): void {
     const row = this.filtered[this.index];
     if (!row?.mutableType) return;
@@ -277,6 +290,7 @@ class ModelSelector implements Component, Focusable {
       { id: "probe", label: t(this.language, "modelProbeContext"), key: Key.ctrl("k") },
       { id: "probeThinking", label: t(this.language, "modelProbeThinking"), key: Key.ctrl("l") },
       { id: "fetch", label: t(this.language, "modelFetch"), key: Key.ctrl("r") },
+      { id: "hideRemote", label: t(this.language, "modelHideRemote"), key: Key.ctrl("delete"), enabled: this.current()?.source === "remote" },
       { id: "preview", label: t(this.language, "modelPreview"), key: Key.ctrl("s") },
       { id: "back", label: t(this.language, "modelBack"), key: Key.escape },
     ];
@@ -301,12 +315,14 @@ class ModelSelector implements Component, Focusable {
     if (action.id === "selectFiltered") { for (const row of this.filtered) if (!row.readOnly) this.selected.add(this.key(row)); this.request(); return; }
     if (action.id === "deselectFiltered") { for (const row of this.filtered) if (!row.readOnly) this.selected.delete(this.key(row)); this.request(); return; }
     if (action.id === "cycleType") { this.cycleType(); return; }
+    if (action.id === "hideRemote") { this.hideCurrentRemote(); return; }
     this.finish(action.id as SelectionResult["action"]);
   }
 
   handleInput(data: string): void {
     if (data === "/") { this.state.focus = "search"; this.request(); return; }
     if (matchesKey(data, Key.ctrl("r"))) { this.finish("fetch"); return; }
+    if (matchesKey(data, Key.ctrl("delete"))) { this.hideCurrentRemote(); return; }
     if (matchesKey(data, Key.ctrl("e"))) { this.finish("edit"); return; }
     if (matchesKey(data, Key.ctrl("k"))) { this.finish("probe"); return; }
     if (matchesKey(data, Key.ctrl("l"))) { this.finish("probeThinking"); return; }

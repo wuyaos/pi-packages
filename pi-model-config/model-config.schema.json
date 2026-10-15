@@ -192,6 +192,14 @@
           },
           "uniqueItems": true
         },
+        "hiddenRemoteIds": {
+          "description": "Remote catalog model IDs hidden by the user across discovery refreshes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
         "models": {
           "type": "array",
           "items": {

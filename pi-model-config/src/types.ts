@@ -71,6 +71,8 @@ export interface ProviderConnectionConfig {
   defaultContextWindow?: number;
   defaultMaxTokens?: number;
   managedChatIds?: string[];
+  /** Remote catalog keys (`type\0id`) hidden by the user; retained across discovery refreshes. */
+  hiddenRemoteIds?: string[];
   models?: Array<ManagedClassifierModel | ManagedImageModel>;
   modelMetadata?: ModelMetadataEntry[];
 }
@@ -115,6 +117,7 @@ export interface ProviderDraft {
   classifierApi: string;
   imageApi: ImageApiName;
   defaultType: ManagedModelType;
+  hiddenRemoteIds?: string[];
 }
 
 export type CandidateModel = ManagedModel & {
@@ -140,6 +143,20 @@ export interface ConfigSnapshot {
   path: string;
   exists: boolean;
   text?: string;
+}
+
+/** Persistent remote-hide identity. Legacy id-only entries are interpreted as chat-only on read. */
+export function hiddenRemoteKey(model: Pick<ManagedModel, "id" | "type">): string { return `${model.type}\u0000${model.id}`; }
+
+export function isHiddenRemote(model: Pick<ManagedModel, "id" | "type">, hiddenKeys: readonly string[]): boolean {
+  const key = hiddenRemoteKey(model);
+  // Compatibility: prior releases stored bare IDs; treating those as chat-only prevents
+  // a legacy hidden chat model from also hiding classifier/image models with the same ID.
+  return hiddenKeys.includes(key) || model.type === "chat" && hiddenKeys.includes(model.id);
+}
+
+export function normalizeHiddenRemoteKeys(hiddenKeys: readonly string[]): string[] {
+  return [...new Set(hiddenKeys.map((key) => key.includes("\u0000") ? key : hiddenRemoteKey({ type: "chat", id: key })))].sort((a, b) => a.localeCompare(b));
 }
 
 export function identityOf(model: Pick<ManagedModel, "id" | "type"> & { provider?: string }, provider?: string): ModelIdentity {

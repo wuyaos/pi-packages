@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { applyChanges } from "../src/command.ts";
 import { candidateFromExternal, candidateFromInstalled, candidateFromManaged, mergeCandidates, selectModels, type ModelPanelState } from "../src/selector.ts";
 import { secretInput } from "../src/ui.ts";
+import { hiddenRemoteKey, isHiddenRemote, normalizeHiddenRemoteKeys } from "../src/types.ts";
 import type { CandidateModel, ManagedChatModel, ProviderDraft, SelectionResult } from "../src/types.ts";
 
 const theme = {
@@ -444,4 +445,49 @@ test("model action focus uses left/right while up/down do not change action", as
     component.handleInput("\x1b");
   });
   await selectModels(ctx, "en", "fixture", draft, [remoteChat("nav")], undefined, state);
+});
+
+
+test("Ctrl+Del stores a typed remote-hide key without hiding another type with the same ID", async () => {
+  const chatRemote = remoteChat("same-id", "Chat remote");
+  const classifierRemote: CandidateModel = { type: "classifier", id: "same-id", name: "Classifier remote", api: "typesafe-system-one", input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, source: "remote", mutableType: true };
+  const result = await selectModels(customContext<SelectionResult>((component) => {
+    component.handleInput("\x1b[3^");
+    component.handleInput("\x13");
+  }), "en", "fixture", draft, [chatRemote, classifierRemote]);
+  assert.deepEqual(result.selected, []);
+  assert.deepEqual(draft.hiddenRemoteIds, ["chat\u0000same-id"]);
+  assert.equal(isHiddenRemote(chatRemote, draft.hiddenRemoteIds!), true);
+  assert.equal(isHiddenRemote(classifierRemote, draft.hiddenRemoteIds!), false);
+  const saved = applyChanges(
+    { models: { providers: { fixture: { models: [] } } }, config: { version: 1, providers: {} } },
+    "fixture", draft, result.selected, new Set(), result.metadata,
+  );
+  assert.deepEqual(saved.config.providers.fixture.hiddenRemoteIds, [hiddenRemoteKey(chatRemote)]);
+});
+
+
+test("hidden remote filtering remains effective after reopening and restoring re-exposes the cached model", async () => {
+  const remote = remoteChat("reopen", "Reopen remote");
+  const sessionDraft: ProviderDraft = { ...draft, hiddenRemoteIds: [hiddenRemoteKey(remote)] };
+  // Fetch retains the complete remote cache. The model-page projection is the one
+  // filtering point, so removing the draft key re-exposes this cached row without fetch.
+  const fetchedRemote = [remote];
+  const first = await selectModels(customContext<SelectionResult>((component) => {
+    const rendered = component.render(100).join("\n");
+    assert.doesNotMatch(rendered, /reopen/u);
+    component.handleInput("\x13");
+  }), "en", "fixture", sessionDraft, fetchedRemote.filter((model) => !isHiddenRemote(model, sessionDraft.hiddenRemoteIds!)));
+  assert.deepEqual(first.selected, []);
+  assert.deepEqual(fetchedRemote, [remote]);
+  sessionDraft.hiddenRemoteIds = [];
+  const second = await selectModels(customContext<SelectionResult>((component) => {
+    assert.match(component.render(100).join("\n"), /reopen/u);
+    component.handleInput("\x13");
+  }), "en", "fixture", sessionDraft, fetchedRemote.filter((model) => !isHiddenRemote(model, sessionDraft.hiddenRemoteIds!)));
+  assert.deepEqual(second.selected, []);
+});
+
+test("normalizing a legacy bare hidden ID migrates it to the chat key", () => {
+  assert.deepEqual(normalizeHiddenRemoteKeys(["legacy", "chat\u0000legacy"]), ["chat\u0000legacy"]);
 });

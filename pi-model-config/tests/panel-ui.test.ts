@@ -5,6 +5,7 @@ import {
   showConnectionPanel,
   showConfirmationPanel,
   showPreviewPanel,
+  showRestoreHiddenPanel,
   showProviderPanel,
   type MenuPanelState,
   type OverviewPanelState,
@@ -202,4 +203,23 @@ test("connection action focus uses horizontal arrows only", async () => {
     component.handleInput("\r");
   }), "en", "fixture", [{ id: "x", label: "X", details: [] }], state);
   assert.equal(result.action, "models");
+});
+
+
+
+
+test("restore hidden panel toggles individual entries and restores all entries", async () => {
+  const keys = ["chat\u0000same", "image\u0000same"];
+  let visits = 0;
+  const restored = await showRestoreHiddenPanel(context(12, (component) => {
+    if (visits++ === 0) component.handleInput("\r");
+    else component.handleInput("\x13");
+  }), "en", keys);
+  assert.deepEqual(restored, { action: "apply", restored: [keys[0]] });
+
+  const all = await showRestoreHiddenPanel(context(12, (component) => {
+    if (visits++ === 2) component.handleInput("\x01");
+    else component.handleInput("\x13");
+  }), "en", keys);
+  assert.deepEqual(all, { action: "apply", restored: keys });
 });
