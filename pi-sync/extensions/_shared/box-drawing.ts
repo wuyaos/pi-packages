@@ -1,7 +1,7 @@
 /**
  * Shared box-drawing utilities for TUI dashboards.
  *
- * Reusable across extensions (cost-tracker, session-manager, etc.).
+ * Reusable across extensions (cost-tracker and other TUI features).
  * Import: import { … } from "../_shared/box-drawing"
  */
 

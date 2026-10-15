@@ -10,6 +10,19 @@ function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-archive-"));
 }
 
+function createSymlinkOrSkip(t: { skip(message?: string): void }, target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") {
+      t.skip("symbolic link creation requires Windows developer mode or elevated privileges");
+      return false;
+    }
+    throw error;
+  }
+}
+
 test("archive entry path validation accepts plugin files and rejects path escapes", () => {
   validateArchiveEntries(["settings.json", "config/sync.json", "extensions/plugin/config.json", "manifest.json"]);
   for (const unsafe of ["../escape", "/etc/passwd", "config//settings.json", "C:/outside", "config/./settings.json"]) {
@@ -42,7 +55,7 @@ test("Pi agent archive skips unsafe entries within an excluded runtime tree", as
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(source, "tmp"), { recursive: true });
   fs.writeFileSync(path.join(source, "settings.json"), "{}");
-  fs.symlinkSync("/etc/passwd", path.join(source, "tmp", "runtime-link"));
+  if (!createSymlinkOrSkip(t, "/etc/passwd", path.join(source, "tmp", "runtime-link"))) return;
 
   await createPiAgentZip({ piExcludePaths: ["tmp"] }, archive, source);
 
@@ -57,20 +70,20 @@ test("Pi agent archive refuses symbolic links before invoking tar", async (t) =>
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(source);
   fs.writeFileSync(path.join(source, "settings.json"), "{}");
-  fs.symlinkSync("/etc/passwd", path.join(source, "unsafe-link"));
+  if (!createSymlinkOrSkip(t, "/etc/passwd", path.join(source, "unsafe-link"))) return;
   await assert.rejects(
     () => createPiAgentZip({ piExcludePaths: [] }, path.join(root, "backup.tar.xz"), source),
     /Refusing unsafe filesystem entry/,
   );
 });
 
-test("archive type validation rejects symbolic links before extraction", async () => {
+test("archive type validation rejects symbolic links before extraction", async (t) => {
   const root = tempDir();
   const payload = path.join(root, "payload");
   const archive = path.join(root, "unsafe.tar");
   fs.mkdirSync(payload);
   fs.writeFileSync(path.join(payload, "safe.txt"), "safe");
-  fs.symlinkSync("/etc/passwd", path.join(payload, "escape-link"));
+  if (!createSymlinkOrSkip(t, "/etc/passwd", path.join(payload, "escape-link"))) return;
   execFileSync("tar", ["-c", "-f", archive, "-C", payload, "."]);
   await assert.rejects(() => validateArchiveEntryTypes(archive), /Unsafe archive entry type rejected: l/);
 });

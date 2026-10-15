@@ -11,6 +11,19 @@ function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-restore-"));
 }
 
+function createSymlinkOrSkip(t: { skip(message?: string): void }, target: string, linkPath: string): boolean {
+  try {
+    fs.symlinkSync(target, linkPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") {
+      t.skip("symbolic link creation requires Windows developer mode or elevated privileges");
+      return false;
+    }
+    throw error;
+  }
+}
+
 test("Pi restore merges archived files and preserves excluded directories", async (t) => {
   const root = tempDir();
   const source = path.join(root, "source");
@@ -71,7 +84,7 @@ test("Pi restore rejects a symlink in the destination path", async (t) => {
   fs.writeFileSync(path.join(source, "config", "sync.json"), "config");
   fs.mkdirSync(target);
   fs.mkdirSync(outside);
-  fs.symlinkSync(outside, path.join(target, "config"));
+  if (!createSymlinkOrSkip(t, outside, path.join(target, "config"))) return;
 
   await createPiAgentZip({ piExcludePaths: [] }, archive, source);
   await assert.rejects(() => extractPiAgentZip(archive, target), /Unsafe restore destination rejected/);

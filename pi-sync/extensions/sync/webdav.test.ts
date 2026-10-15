@@ -59,12 +59,12 @@ test("WebDAV PUT and GET stream data and GET replaces the destination atomically
 test("webdavDirBase encodes non-ASCII path segments", () => {
   const config = { webdavUrl: "https://dav.example.com/sync/pi" } as never;
   assert.equal(
-    webdavDirBase(config, "backup/sessions/--mnt-d-work-论文-综述-agent_sci--/"),
-    "https://dav.example.com/sync/pi/backup/sessions/--mnt-d-work-%E8%AE%BA%E6%96%87-%E7%BB%BC%E8%BF%B0-agent_sci--/",
+    webdavDirBase(config, "backup/skills/论文-综述-agent_sci/"),
+    "https://dav.example.com/sync/pi/backup/skills/%E8%AE%BA%E6%96%87-%E7%BB%BC%E8%BF%B0-agent_sci/",
   );
   assert.equal(
-    webdavDirBase(config, "/backup/sessions/"),
-    "https://dav.example.com/sync/pi/backup/sessions/",
+    webdavDirBase(config, "/backup/skills/"),
+    "https://dav.example.com/sync/pi/backup/skills/",
   );
   assert.equal(
     webdavDirBase(config, "h ttp-path with spaces"),
