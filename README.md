@@ -11,6 +11,7 @@
 | [@wuyaos/pi-sync](https://www.npmjs.com/package/@wuyaos/pi-sync) | `npm:@wuyaos/pi-sync` | WebDAV 归档备份/恢复：Pi 主目录、共享 Skills、项目会话分包；退出归档在 reload/切会话时后台执行不阻塞，quit 时同步保证完成 |
 | [@wuyaos/pi-tool-gate](https://www.npmjs.com/package/@wuyaos/pi-tool-gate) | `npm:@wuyaos/pi-tool-gate` | 按需工具开关：重 schema 工具默认 inactive，gate_tools loader + /tool-gate 命令，降低每轮 tools[] token 占用 |
 | [@wuyaos/pi-model-roles](https://www.npmjs.com/package/@wuyaos/pi-model-roles) | `npm:@wuyaos/pi-model-roles` | 模型角色路由 — 不同任务分配不同模型+thinking level |
+| [@wuyaos/pi-model-config](pi-model-config/README.md) | `npm:@wuyaos/pi-model-config` | Provider 连接、独立 Discovery、原生 chat/classifier/image 目录和请求级代理配置 TUI |
 | [@wuyaos/pi-advisor](https://www.npmjs.com/package/@wuyaos/pi-advisor) | `npm:@wuyaos/pi-advisor` | 顾问模型 — 第二个模型审查每轮输出，注入建议/警告 |
 | [@wuyaos/pi-i18n](https://www.npmjs.com/package/@wuyaos/pi-i18n) | `npm:@wuyaos/pi-i18n` | pi `/` 菜单汉化 — autocomplete 中文显示 + 命令翻译模板 |
 | [@wuyaos/pi-zotero](https://www.npmjs.com/package/@wuyaos/pi-zotero) | `npm:@wuyaos/pi-zotero` | Zotero 10 Local API：检索、集合、CSL、引用审计、动态 Word 域与门控写操作 |
@@ -35,6 +36,7 @@ pi install npm:@wuyaos/pi-notify
 pi install npm:@wuyaos/pi-sync
 pi install npm:@wuyaos/pi-tool-gate
 pi install npm:@wuyaos/pi-model-roles
+pi install npm:@wuyaos/pi-model-config
 pi install npm:@wuyaos/pi-advisor
 pi install npm:@wuyaos/pi-i18n
 pi install npm:@wuyaos/pi-zotero

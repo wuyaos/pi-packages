@@ -1,0 +1,48 @@
+{
+  "name": "@wuyaos/pi-model-config",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi provider 连接、远程发现与 chat/classifier/image 模型配置 TUI",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "model-config",
+    "provider"
+  ],
+  "main": "extensions/model-config.ts",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true }
+  },
+  "dependencies": {
+    "undici": "8.10.2"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/model-config.ts"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-model-config"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE",
+    "model-config.schema.json"
+  ]
+}

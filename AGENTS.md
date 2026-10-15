@@ -1,6 +1,6 @@
 # AGENTS — pi-packages monorepo
 
-本仓库是 pi 扩展的 monorepo(npm workspaces),包含 8 个 `@wuyaos/xxx` 包。
+本仓库是 pi 扩展的 monorepo(npm workspaces),包含 9 个 `@wuyaos/xxx` 包。
 下面是开发、发布、安装的使用规范。
 
 ## 包清单
@@ -12,6 +12,7 @@
 | pi-sync | @wuyaos/pi-sync | WebDAV 归档备份/恢复：Pi、共享 Skills、项目会话分包 |
 | pi-tool-gate | @wuyaos/pi-tool-gate | 按需工具开关,降低 tools[] token 占用 |
 | pi-model-roles | @wuyaos/pi-model-roles | 模型角色路由 |
+| pi-model-config | @wuyaos/pi-model-config | Provider 连接、模型发现、原生多类型目录与请求级代理配置 |
 | pi-advisor | @wuyaos/pi-advisor | 顾问模型审查每轮输出 |
 | pi-i18n | @wuyaos/pi-i18n | pi `/` 菜单汉化 |
 | pi-zotero | @wuyaos/pi-zotero | Zotero 10 Local API 文献检索、整理、引用审计与 Word 动态域 |
@@ -34,6 +35,7 @@ pi install npm:@wuyaos/pi-notify
 pi install npm:@wuyaos/pi-sync
 pi install npm:@wuyaos/pi-tool-gate
 pi install npm:@wuyaos/pi-model-roles
+pi install npm:@wuyaos/pi-model-config
 pi install npm:@wuyaos/pi-advisor
 pi install npm:@wuyaos/pi-i18n
 pi install npm:@wuyaos/pi-zotero
@@ -68,7 +70,7 @@ workflow (`.github/workflows/publish.yml`) 会遍历所有 `pi-*` 包,逐个串�
 - 改多个包 → 打 tag 批量发
 
 ### 认证:OIDC Trusted Publishing
-8 个包都已配 npm Trusted Publisher,GitHub Action 通过 OIDC 免 token 发布,**不要重新往 GitHub Secrets 加 NPM_TOKEN**。
+已发布的包都配 npm Trusted Publisher,GitHub Action 通过 OIDC 免 token 发布；新包首次发布仍按下方流程处理。**不要长期往 GitHub Secrets 留 NPM_TOKEN**。
 
 配 Trusted Publisher(仅新包首次需要):
 1. npmjs.com → 包页面 → Settings(access)

@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wuyaos/pi-packages/main/pi-model-config/model-config.schema.json",
+  "title": "@wuyaos/pi-model-config settings",
+  "type": "object",
+  "required": [
+    "version",
+    "providers"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/provider"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "cost": {
+      "type": "object",
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite"
+      ],
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        }
+      }
+    },
+    "baseModel": {
+      "type": "object",
+      "required": [
+        "type",
+        "id",
+        "name",
+        "api",
+        "input",
+        "cost"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "classifier",
+            "image"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "api": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "text",
+              "image"
+            ]
+          }
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "contextWindow": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "text",
+              "image"
+            ]
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "authMode"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "owned": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "discoveryUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "authMode": {
+          "enum": [
+            "models-json",
+            "reuse-pi",
+            "anonymous"
+          ]
+        },
+        "discoveryAuthHeader": {
+          "enum": [
+            "auto",
+            "bearer",
+            "x-api-key",
+            "api-key",
+            "x-goog-api-key",
+            "anthropic",
+            "none"
+          ]
+        },
+        "proxyUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "chatApi": {
+          "type": "string"
+        },
+        "classifierApi": {
+          "type": "string"
+        },
+        "imageApi": {
+          "type": "string"
+        },
+        "defaultType": {
+          "enum": [
+            "chat",
+            "classifier",
+            "image"
+          ]
+        },
+        "defaultContextWindow": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "defaultMaxTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "managedChatIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/baseModel"
+          }
+        },
+        "modelMetadata": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelMetadata"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "modelMetadata": {
+      "type": "object",
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "chat",
+            "classifier",
+            "image"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "contextSource": {
+          "enum": [
+            "existing",
+            "remote",
+            "catalog",
+            "user",
+            "compat",
+            "probed"
+          ]
+        },
+        "maxTokensSource": {
+          "enum": [
+            "existing",
+            "remote",
+            "catalog",
+            "user",
+            "compat",
+            "probed"
+          ]
+        },
+        "verifiedAt": {
+          "type": "string"
+        },
+        "probeLower": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "probeUpper": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "probeEstimated": {
+          "type": "boolean"
+        },
+        "thinkingSource": {
+          "enum": [
+            "existing",
+            "remote",
+            "catalog",
+            "protocol",
+            "user",
+            "probed"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
