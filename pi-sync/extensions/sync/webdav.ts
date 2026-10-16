@@ -9,6 +9,7 @@ import { resolvePassword, type SyncConfig } from "./config";
 export const WEBDAV_FETCH_TIMEOUT_MS = 120_000;
 export const WEBDAV_PI_BACKUP_DIR = "backup/pi/";
 export const WEBDAV_AGENT_SKILLS_DIR = "backup/skills/";
+export const WEBDAV_CORTEXKIT_DIR = "backup/cortexkit/";
 
 export const ensureTrailingSlash = (url: string): string => url.endsWith("/") ? url : `${url}/`;
 /**

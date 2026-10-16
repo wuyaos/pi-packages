@@ -4,15 +4,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/app/scoop/persist/nodejs24/bin/node_modules/@earendil-works/pi-coding-agent");
+const repoRoot = resolve(here, "..", "..");
+const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/Users/wff19/.pi/agent/install/releases/1.3.0/node_modules/@earendil-works/pi-coding-agent");
 const sdkPackage = join(sdkRoot, "package.json");
 if (!existsSync(sdkPackage)) throw new Error(`Pi SDK not found: ${sdkPackage}`);
 
 const sdk = createRequire(sdkPackage)(sdkPackage);
-if (sdk.version !== "1.2.0") throw new Error(`Expected Pi SDK 1.2.0, found ${sdk.version}`);
+if (!/^1\.[23]\./.test(sdk.version)) throw new Error(`Expected Pi SDK 1.2.0+, found ${sdk.version}`);
 
-const { createJiti } = await import(pathToFileURL(join(sdkRoot, "node_modules/jiti/lib/jiti.mjs")).href);
-const dependencyRoot = join(sdkRoot, "node_modules");
+const { createJiti } = await import(pathToFileURL((existsSync(join(sdkRoot, "node_modules/jiti/lib/jiti.mjs")) ? join(sdkRoot, "node_modules/jiti/lib/jiti.mjs") : (existsSync(join(repoRoot ?? ".", "node_modules/jiti/lib/jiti.mjs")) ? join(repoRoot ?? ".", "node_modules/jiti/lib/jiti.mjs") : join(sdkRoot, "..", "..", "jiti/lib/jiti.mjs")))).href);
+const dependencyRoot = existsSync(join(sdkRoot, "node_modules/@earendil-works/pi-tui")) ? join(sdkRoot, "node_modules") : resolve(sdkRoot, "..", "..");
 const jiti = createJiti(import.meta.url, {
   moduleCache: true,
   alias: {

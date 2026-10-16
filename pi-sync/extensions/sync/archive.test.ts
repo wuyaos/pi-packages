@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
-import { createPiAgentZip, listArchiveEntries, validateArchiveEntries, validateArchiveEntryTypes } from "./archive.ts";
+import { createCortexkitZip, createPiAgentZip, listArchiveEntries, validateArchiveEntries, validateArchiveEntryTypes } from "./archive.ts";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-archive-"));
@@ -86,4 +86,31 @@ test("archive type validation rejects symbolic links before extraction", async (
   if (!createSymlinkOrSkip(t, "/etc/passwd", path.join(payload, "escape-link"))) return;
   execFileSync("tar", ["-c", "-f", archive, "-C", payload, "."]);
   await assert.rejects(() => validateArchiveEntryTypes(archive), /Unsafe archive entry type rejected: l/);
+});
+
+test("cortexkit archive packs config files and excludes log files", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "cortexkit");
+  const archive = path.join(root, "cortexkit.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(source, "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(source, "magic-context.jsonc"), "{}\n");
+  fs.writeFileSync(path.join(source, "debug.log"), "noise");
+  fs.writeFileSync(path.join(source, "sessions", "compaction.md"), "memory");
+
+  await createCortexkitZip(archive, source);
+
+  const entries = await listArchiveEntries(archive);
+  assert.ok(entries.includes("cortexkit/magic-context.jsonc"));
+  assert.ok(entries.includes("cortexkit/sessions/compaction.md"));
+  assert.ok(!entries.some((entry) => entry.endsWith(".log")));
+});
+
+test("cortexkit archive rejects a missing config directory", async (t) => {
+  const root = tempDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(
+    () => createCortexkitZip(path.join(root, "cortexkit.tar.xz"), path.join(root, "missing")),
+    /does not exist/,
+  );
 });

@@ -41,6 +41,7 @@ Run `/sync`. The interactive menu contains:
 - **Back Up All** / **Restore All (latest)**
 - Upload or restore **Pi Backup**
 - Upload or restore **Skills Backup**
+- Upload or restore **Magic Context Backup** (`~/.config/cortexkit`)
 - Configure backup settings
 - Switch the menu between English and Chinese
 
@@ -70,6 +71,14 @@ backup/pi/pi_agent_<platform>_<timestamp>.tar.xz
 backup/skills/agent_skills_<timestamp>.tar.xz
 ```
 
+### Magic Context backup
+
+`~/.config/cortexkit` is stored in a separate archive and is disabled by default (`"backupCortexkit": true` to enable). Log files (`*.log`) are excluded.
+
+```text
+backup/cortexkit/cortexkit_<timestamp>.tar.xz
+```
+
 ## WebDAV layout
 
 ```text
@@ -77,8 +86,10 @@ backup/skills/agent_skills_<timestamp>.tar.xz
 └── backup/
     ├── pi/
     │   └── pi_agent_<platform>_<timestamp>.tar.xz
-    └── skills/
-        └── agent_skills_<timestamp>.tar.xz
+    ├── skills/
+    │   └── agent_skills_<timestamp>.tar.xz
+    └── cortexkit/
+        └── cortexkit_<timestamp>.tar.xz
 ```
 
 `maxBackups` is enforced independently in each backup directory. `0` keeps every archive.
@@ -95,6 +106,7 @@ Configuration is stored at `~/.pi/agent/config/sync.json`:
   "language": "en",
   "backupProviders": true,
   "backupAgentSkills": false,
+  "backupCortexkit": false,
   "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"],
   "backupOnExit": true,
   "maxBackups": 10

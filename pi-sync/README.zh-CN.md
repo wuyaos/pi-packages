@@ -41,6 +41,7 @@ pi install git:github.com/wuyaos/pi-packages
 - **全部备份** / **全部恢复（最新）**
 - 单独上传或恢复 **Pi 备份**
 - 单独上传或恢复 **Skills 备份**
+- 单独上传或恢复 **Magic Context 备份**（`~/.config/cortexkit`）
 - 配置备份设置
 - 中英文菜单切换
 
@@ -70,6 +71,14 @@ backup/pi/pi_agent_<platform>_<timestamp>.tar.xz
 backup/skills/agent_skills_<timestamp>.tar.xz
 ```
 
+### Magic Context 备份
+
+`~/.config/cortexkit` 使用独立归档，默认关闭（设 `"backupCortexkit": true` 启用）。排除日志文件（`*.log`）。
+
+```text
+backup/cortexkit/cortexkit_<timestamp>.tar.xz
+```
+
 ## WebDAV 目录结构
 
 ```text
@@ -77,8 +86,10 @@ backup/skills/agent_skills_<timestamp>.tar.xz
 └── backup/
     ├── pi/
     │   └── pi_agent_<platform>_<timestamp>.tar.xz
-    └── skills/
-        └── agent_skills_<timestamp>.tar.xz
+    ├── skills/
+    │   └── agent_skills_<timestamp>.tar.xz
+    └── cortexkit/
+        └── cortexkit_<timestamp>.tar.xz
 ```
 
 `maxBackups` 在每个备份目录内独立生效；设为 `0` 表示全部保留。
@@ -95,6 +106,7 @@ backup/skills/agent_skills_<timestamp>.tar.xz
   "language": "zh",
   "backupProviders": true,
   "backupAgentSkills": false,
+  "backupCortexkit": false,
   "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"],
   "backupOnExit": true,
   "maxBackups": 10
@@ -111,6 +123,7 @@ backup/skills/agent_skills_<timestamp>.tar.xz
 - 若目标路径包含符号链接或类型冲突则拒绝恢复。
 - Pi 恢复只改写归档中存在的文件，黑名单目录保持原样。
 - Skills 恢复前会把现有 `~/.agents/skills` 移到带时间戳的备份目录。
+- Magic Context 恢复前会把现有 `~/.config/cortexkit` 移到带时间戳的备份目录。
 - Pi 恢复前展示计划，完成后可选择 `/reload`。
 
 归档可能包含 WebDAV 凭据、API Key、provider 配置及其他秘密，应把 WebDAV 存储视为敏感数据。

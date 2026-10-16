@@ -42,7 +42,7 @@ export interface ExitUploadDeps {
 }
 
 /**
- * 退出时备份已启用的 Pi 与共享 Skills 类别。
+ * 退出时备份已启用的 Pi、共享 Skills 与 Magic Context 配置类别。
  * quit：进程即将终止，同步等待上传完成；其他原因转入后台，不阻塞运行时重建。
  */
 export async function handleShutdown(
@@ -53,7 +53,7 @@ export async function handleShutdown(
   const config = deps.config ?? loadConfig();
   if (!config.backupOnExit) return;
   if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) return;
-  if (!config.backupProviders && !config.backupAgentSkills) return;
+  if (!config.backupProviders && !config.backupAgentSkills && !config.backupCortexkit) return;
   const now = deps.now ?? Date.now();
   const markerPath = deps.markerPath ?? exitUploadMarkerPath;
   if (!exitUploadDue(markerPath, now)) return;

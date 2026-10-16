@@ -7,6 +7,7 @@ import { normalizeLanguage, type SyncLanguage } from "./i18n";
 
 export const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const AGENT_SKILLS_DIR = path.join(os.homedir(), ".agents", "skills");
+export const CORTEXKIT_CONFIG_DIR = path.join(os.homedir(), ".config", "cortexkit");
 export const SYNC_CONFIG_DIR = path.join(AGENT_DIR, "config");
 export const SYNC_CONFIG_PATH = path.join(SYNC_CONFIG_DIR, "sync.json");
 export const LEGACY_SYNC_CONFIG_PATH = path.join(AGENT_DIR, "sync_config.json");
@@ -25,6 +26,7 @@ export interface SyncConfig {
   language: SyncLanguage;
   backupProviders: boolean;
   backupAgentSkills: boolean;
+  backupCortexkit: boolean;
   piExcludePaths: string[];
   backupOnExit: boolean;
   maxBackups: number;
@@ -80,6 +82,8 @@ export function loadConfig(): SyncConfig {
     language: data.language ? normalizeLanguage(data.language) : defaultLanguage(),
     backupProviders: data.backupProviders !== false,
     backupAgentSkills: data.backupAgentSkills === true,
+    // 默认关闭，向后兼容：仅显式 true 时启用。
+    backupCortexkit: data.backupCortexkit === true,
     piExcludePaths: isLegacyDefaultPiExcludePaths(data.piExcludePaths)
       ? [...DEFAULT_PI_EXCLUDE_PATHS]
       : normalizePiExcludePaths(data.piExcludePaths),

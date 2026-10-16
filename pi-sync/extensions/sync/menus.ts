@@ -7,6 +7,7 @@ import { enhancedSelect } from "../_shared/enhanced-select";
 import {
   archiveTimestamp,
   createAgentSkillsZip,
+  createCortexkitZip,
   createPiAgentZip,
   listArchiveEntries,
   platformTag,
@@ -14,24 +15,25 @@ import {
 } from "./archive";
 import { loadConfig, normalizePiExcludePaths, saveConfig, type SyncConfig } from "./config";
 import { t, type SyncLanguage } from "./i18n";
-import { extractAgentSkillsZip, extractPiAgentZip, getRestorePlan } from "./restore";
+import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip, getRestorePlan } from "./restore";
 import {
   downloadFromWebdavDir,
   listWebdavDir,
   pruneOldBackupsInDir,
   uploadToWebdavDir,
   WEBDAV_AGENT_SKILLS_DIR,
+  WEBDAV_CORTEXKIT_DIR,
   WEBDAV_PI_BACKUP_DIR,
 } from "./webdav";
 
 export type SelectItem<T extends string> = { id: T; label: string };
-type BackupKind = "pi" | "skills";
+type BackupKind = "pi" | "skills" | "cortexkit";
 /** 重新绑定当前会话模型：pi.setModel（ExtensionAPI）。恢复 Pi 备份后用于刷新过期模型引用。 */
 export type SetModelFn = (model: Model<any>) => Promise<boolean>;
 export type MainAction =
   | "upload-all" | "restore-all"
-  | "upload-pi" | "upload-skills"
-  | "restore-pi" | "restore-skills"
+  | "upload-pi" | "upload-skills" | "upload-cortexkit"
+  | "restore-pi" | "restore-skills" | "restore-cortexkit"
   | "configure" | "language" | "cancel";
 
 export interface BulkResult {
@@ -43,11 +45,13 @@ export interface BulkResult {
 export interface BackupAllOperations {
   uploadPi(): Promise<boolean>;
   uploadSkills(): Promise<boolean>;
+  uploadCortexkit(): Promise<boolean>;
 }
 
 export interface RestoreAllOperations {
   restorePi(): Promise<boolean>;
   restoreSkills(): Promise<boolean>;
+  restoreCortexkit(): Promise<boolean>;
 }
 
 async function selectAction<T extends string>(
@@ -69,7 +73,7 @@ function onOff(language: SyncLanguage, value: boolean): string {
 }
 
 function kindLabel(language: SyncLanguage, kind: BackupKind): string {
-  return t(language, kind === "pi" ? "piKind" : "skillsKind");
+  return t(language, kind === "pi" ? "piKind" : kind === "skills" ? "skillsKind" : "cortexkitKind");
 }
 
 export function buildMainMenuItems(language: SyncLanguage): SelectItem<MainAction>[] {
@@ -78,8 +82,10 @@ export function buildMainMenuItems(language: SyncLanguage): SelectItem<MainActio
     { id: "restore-all", label: t(language, "restoreAllBackups") },
     { id: "upload-pi", label: t(language, "uploadPiBackup") },
     { id: "upload-skills", label: t(language, "uploadSkillsBackup") },
+    { id: "upload-cortexkit", label: t(language, "uploadCortexkitBackup") },
     { id: "restore-pi", label: t(language, "restorePiBackup") },
     { id: "restore-skills", label: t(language, "restoreSkillsBackup") },
+    { id: "restore-cortexkit", label: t(language, "restoreCortexkitBackup") },
     { id: "configure", label: t(language, "configureSettings") },
     { id: "language", label: t(language, "switchLanguage") },
     { id: "cancel", label: t(language, "cancel") },
@@ -111,6 +117,7 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       { id: "password", label: t(language, "webdavPassword", { value: config.webdavPass ? t(language, "passwordSet") : t(language, "notSet") }) },
       { id: "pi", label: t(language, "piBackup", { value: onOff(language, config.backupProviders) }) },
       { id: "skills", label: t(language, "skillsBackup", { value: onOff(language, config.backupAgentSkills) }) },
+      { id: "cortexkit", label: t(language, "cortexkitBackup", { value: onOff(language, config.backupCortexkit) }) },
       { id: "exit", label: t(language, "backupOnExit", { value: onOff(language, config.backupOnExit) }) },
       { id: "exclude", label: t(language, "piExcludePaths", { value: config.piExcludePaths.join(", ") || t(language, "none") }) },
       { id: "max", label: t(language, "maxCloudBackups", { value: config.maxBackups === 0 ? t(language, "keepAll") : config.maxBackups }) },
@@ -138,6 +145,8 @@ export async function showConfigureSettings(ctx: ExtensionCommandContext): Promi
       config.backupProviders = !config.backupProviders;
     } else if (action === "skills") {
       config.backupAgentSkills = !config.backupAgentSkills;
+    } else if (action === "cortexkit") {
+      config.backupCortexkit = !config.backupCortexkit;
     } else if (action === "exit") {
       config.backupOnExit = !config.backupOnExit;
     } else if (action === "exclude") {
@@ -155,7 +164,9 @@ function packageMeta(kind: BackupKind): { filename: string; dir: string; prefix:
   const timestamp = archiveTimestamp();
   return kind === "pi"
     ? { filename: `pi_agent_${platformTag()}_${timestamp}.tar.xz`, dir: WEBDAV_PI_BACKUP_DIR, prefix: "pi_agent_" }
-    : { filename: `agent_skills_${timestamp}.tar.xz`, dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" };
+    : kind === "skills"
+      ? { filename: `agent_skills_${timestamp}.tar.xz`, dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" }
+      : { filename: `cortexkit_${timestamp}.tar.xz`, dir: WEBDAV_CORTEXKIT_DIR, prefix: "cortexkit_" };
 }
 
 export async function uploadBackupPackage(
@@ -166,7 +177,11 @@ export async function uploadBackupPackage(
 ): Promise<boolean> {
   const language = config.language;
   const label = kindLabel(language, kind);
-  const enabled = kind === "pi" ? config.backupProviders : config.backupAgentSkills;
+  const enabled = kind === "pi"
+    ? config.backupProviders
+    : kind === "skills"
+      ? config.backupAgentSkills
+      : config.backupCortexkit;
   if (!enabled) {
     if (notify) ctx.ui.notify(t(language, "backupDisabled", { kind: label }), "warning");
     return false;
@@ -176,7 +191,9 @@ export async function uploadBackupPackage(
   try {
     const contents = kind === "pi"
       ? await createPiAgentZip(config, archive)
-      : await createAgentSkillsZip(archive);
+      : kind === "skills"
+        ? await createAgentSkillsZip(archive)
+        : await createCortexkitZip(archive);
     await uploadToWebdavDir(archive, meta.dir, meta.filename, config, ctx);
     const deleted = await pruneOldBackupsInDir(config, ctx, meta.dir, meta.prefix);
     const pruned = deleted.length ? t(language, "prunedCount", { count: deleted.length }) : "";
@@ -219,9 +236,9 @@ async function showRestorePackage(
       selected = await selectAction(ctx, t(language, "restoreArchive", { kind: label }), items);
     }
     if (!selected || selected === "cancel") return false;
-    if (kind === "skills" && !await ctx.ui.confirm(
-      t(language, "replaceSharedSkillsTitle"),
-      t(language, "replaceSharedSkillsBody"),
+    if ((kind === "skills" || kind === "cortexkit") && !await ctx.ui.confirm(
+      t(language, kind === "skills" ? "replaceSharedSkillsTitle" : "replaceCortexkitTitle"),
+      t(language, kind === "skills" ? "replaceSharedSkillsBody" : "replaceCortexkitBody"),
     )) return false;
     const local = path.join(os.tmpdir(), path.basename(selected));
     try {
@@ -235,7 +252,11 @@ async function showRestorePackage(
           t(language, "confirmPiRestoreBody", { count: entries.length, plan }),
         )) return false;
       }
-      const restored = kind === "pi" ? await extractPiAgentZip(local) : await extractAgentSkillsZip(local);
+      const restored = kind === "pi"
+        ? await extractPiAgentZip(local)
+        : kind === "skills"
+          ? await extractAgentSkillsZip(local)
+          : await extractCortexkitZip(local);
       if (kind === "pi") {
         try {
           const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
@@ -272,6 +293,7 @@ export async function executeBackupAll(config: SyncConfig, operations: BackupAll
   const results: BulkResult[] = [];
   if (config.backupProviders) results.push({ kind: "pi", success: await operations.uploadPi() });
   if (config.backupAgentSkills) results.push({ kind: "skills", success: await operations.uploadSkills() });
+  if (config.backupCortexkit) results.push({ kind: "cortexkit", success: await operations.uploadCortexkit() });
   return results;
 }
 
@@ -279,6 +301,7 @@ export async function executeRestoreAll(config: SyncConfig, operations: RestoreA
   const results: BulkResult[] = [];
   if (config.backupProviders) results.push({ kind: "pi", success: await operations.restorePi() });
   if (config.backupAgentSkills) results.push({ kind: "skills", success: await operations.restoreSkills() });
+  if (config.backupCortexkit) results.push({ kind: "cortexkit", success: await operations.restoreCortexkit() });
   return results;
 }
 
@@ -290,6 +313,7 @@ export async function uploadEnabledBackups(ctx: ExtensionCommandContext, config 
   const results = await executeBackupAll(config, {
     uploadPi: () => uploadBackupPackage(ctx, "pi", config, notify),
     uploadSkills: () => uploadBackupPackage(ctx, "skills", config, notify),
+    uploadCortexkit: () => uploadBackupPackage(ctx, "cortexkit", config, notify),
   });
   return results.length > 0 && results.every((result) => result.success);
 }
@@ -300,6 +324,7 @@ async function showUploadAll(ctx: ExtensionCommandContext): Promise<void> {
   const results = await executeBackupAll(config, {
     uploadPi: () => uploadBackupPackage(ctx, "pi", config, false),
     uploadSkills: () => uploadBackupPackage(ctx, "skills", config, false),
+    uploadCortexkit: () => uploadBackupPackage(ctx, "cortexkit", config, false),
   });
   ctx.ui.notify(t(language, "allBackupCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
 }
@@ -311,6 +336,7 @@ async function showRestoreAll(ctx: ExtensionCommandContext, setModel?: SetModelF
   const results = await executeRestoreAll(config, {
     restorePi: () => showRestorePackage(ctx, "pi", true, false, setModel),
     restoreSkills: () => showRestorePackage(ctx, "skills", true, false),
+    restoreCortexkit: () => showRestorePackage(ctx, "cortexkit", true, false),
   });
   ctx.ui.notify(t(language, "allRestoreCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
   if (results.some((result) => result.success)
@@ -333,8 +359,10 @@ export async function handleSyncCommand(ctx: ExtensionCommandContext, setModel?:
     else if (action === "restore-all") await showRestoreAll(ctx, setModel);
     else if (action === "upload-pi") await uploadBackupPackage(ctx, "pi");
     else if (action === "upload-skills") await uploadBackupPackage(ctx, "skills");
+    else if (action === "upload-cortexkit") await uploadBackupPackage(ctx, "cortexkit");
     else if (action === "restore-pi") await showRestorePackage(ctx, "pi", false, true, setModel);
     else if (action === "restore-skills") await showRestorePackage(ctx, "skills");
+    else if (action === "restore-cortexkit") await showRestorePackage(ctx, "cortexkit");
     else if (action === "configure") await showConfigureSettings(ctx);
     else if (action === "language") saveConfig({ ...config, language: language === "zh" ? "en" : "zh" }, ctx);
   }

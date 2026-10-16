@@ -38,7 +38,7 @@ test("exit upload throttling tolerates missing, invalid, and fresh markers", () 
   }
 });
 
-function config(): SyncConfig {
+function config(overrides: Partial<SyncConfig> = {}): SyncConfig {
   return {
     webdavUrl: "https://dav.example/dav",
     webdavUser: "u",
@@ -46,9 +46,11 @@ function config(): SyncConfig {
     language: "en",
     backupProviders: true,
     backupAgentSkills: true,
+    backupCortexkit: false,
     piExcludePaths: [],
     backupOnExit: true,
     maxBackups: 10,
+    ...overrides,
   };
 }
 
@@ -101,6 +103,30 @@ test("exit upload is awaited on quit and skipped when throttled", async () => {
 
     await handleShutdown({ reason: "quit" } as never, ctx, { upload, config: config(), now: 6_000, markerPath: marker });
     assert.equal(calls.length, 1, "节流窗口内不重复上传");
+    resetExitUploadInFlight();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exit upload runs when only Magic Context backup is enabled", async () => {
+  resetExitUploadInFlight();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-cortexkit-"));
+  const marker = path.join(root, "marker.txt");
+  try {
+    const calls: string[] = [];
+    const upload = async (): Promise<boolean> => {
+      calls.push("upload");
+      return true;
+    };
+    const ctx = { ui: { notify: () => {} } } as never;
+
+    await handleShutdown(
+      { reason: "quit" } as never,
+      ctx,
+      { upload, config: config({ backupProviders: false, backupAgentSkills: false, backupCortexkit: true }), now: 7_000, markerPath: marker },
+    );
+    assert.equal(calls.length, 1, "仅启用 Magic Context 备份时退出上传仍应执行");
     resetExitUploadInFlight();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
