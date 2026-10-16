@@ -8,11 +8,23 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const repoRoot = resolve(packageRoot, "..");
-const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/app/scoop/persist/nodejs24/bin/node_modules/@earendil-works/pi-coding-agent");
+const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/Users/wff19/.pi/agent/install/releases/1.3.0/node_modules/@earendil-works/pi-coding-agent");
 const sdkPackage = join(sdkRoot, "package.json");
+
+function resolveEnvironmentJiti(sdkRoot, repoRoot) {
+  const candidates = [
+    join(sdkRoot, "node_modules/jiti/lib/jiti.mjs"),
+    join(repoRoot, "node_modules/jiti/lib/jiti.mjs"),
+    join(sdkRoot, "..", "..", "jiti/lib/jiti.mjs"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error("jiti not found for loader smoke");
+}
 if (!existsSync(sdkPackage)) throw new Error(`Pi SDK not found: ${sdkPackage}`);
 const sdk = createRequire(sdkPackage)(sdkPackage);
-if (sdk.version !== "1.2.0") throw new Error(`Expected Pi SDK 1.2.0, found ${sdk.version}`);
+if (!/^1\.[23]\./.test(sdk.version)) throw new Error(`Expected Pi SDK 1.2.0+, found ${sdk.version}`);
 
 const agentDir = mkdtempSync(join(tmpdir(), "pi-model-config-loader-smoke-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;

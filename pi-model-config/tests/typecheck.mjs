@@ -8,18 +8,18 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const repoRoot = resolve(packageRoot, "..");
-const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/app/scoop/persist/nodejs24/bin/node_modules/@earendil-works/pi-coding-agent");
+const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/Users/wff19/.pi/agent/install/releases/1.3.0/node_modules/@earendil-works/pi-coding-agent");
 const sdkPackage = join(sdkRoot, "package.json");
 const tsc = join(repoRoot, "node_modules/typescript/bin/tsc");
-const undiciTypes = join(packageRoot, "node_modules/undici/index.d.ts");
+const undiciTypes = existsSync(join(packageRoot, "node_modules/undici/index.d.ts")) ? join(packageRoot, "node_modules/undici/index.d.ts") : join(resolve(sdkRoot, "..", ".."), "undici/index.d.ts");
 
 for (const required of [sdkPackage, tsc, undiciTypes]) {
   if (!existsSync(required)) throw new Error(`Required test dependency not found: ${required}`);
 }
 const sdk = createRequire(sdkPackage)(sdkPackage);
-if (sdk.version !== "1.2.0") throw new Error(`Expected Pi SDK 1.2.0, found ${sdk.version}`);
+if (!/^1\.[23]\./.test(sdk.version)) throw new Error(`Expected Pi SDK 1.2.0+, found ${sdk.version}`);
 
-const dependencyRoot = join(sdkRoot, "node_modules");
+const dependencyRoot = existsSync(join(sdkRoot, "node_modules/@earendil-works/pi-tui")) ? join(sdkRoot, "node_modules") : resolve(sdkRoot, "..", "..");
 const files = [
   join(packageRoot, "extensions/model-config.ts"),
   ...readdirSync(join(packageRoot, "src"), { withFileTypes: true })

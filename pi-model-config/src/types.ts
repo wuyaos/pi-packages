@@ -80,6 +80,8 @@ export interface ProviderConnectionConfig {
 export interface ModelConfigFile {
   $schema?: string;
   version: 1;
+  /** Pre-save minimal parameter probe for newly checked chat models lacking context/max metadata; default true. */
+  autoProbeOnSave?: boolean;
   providers: Record<string, ProviderConnectionConfig>;
   [key: string]: unknown;
 }

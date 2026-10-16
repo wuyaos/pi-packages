@@ -12,6 +12,8 @@ import {
   writeConfigTransaction,
 } from "./config.ts";
 import { buildDiscoveryCandidates, discoverModelsFromCandidates } from "./discovery.ts";
+import { createProviderFetch } from "./transport.ts";
+import { probeChatParams, probeTargetsFor, resolveProbeApiKey, runAutoProbeFlow } from "./auto-probe.ts";
 import { formatError, mcError, t, type UiLanguage } from "./i18n.ts";
 import {
   showConnectionPanel,
@@ -457,6 +459,7 @@ function buildPreviewDetails(
   oldConfig: ProviderConnectionConfig | undefined,
   oldProvider: ModelsJsonProvider | undefined,
   draft: ProviderDraft,
+  metadata: ReadonlyArray<ModelMetadataEntry> = [],
 ): { providerDetails: string[]; modelDetails: string[] } {
   const oldMap = new Map(before.map((model) => [identityOf(model, providerId), model]));
   const newMap = new Map(after.map((model) => [identityOf(model, providerId), model]));
@@ -497,6 +500,13 @@ function buildPreviewDetails(
     const model = newMap.get(key) ?? oldMap.get(key)!;
     return `${modelTypeLabel(language, model.type)}/${model.id}`;
   };
+  // Newly added rows whose metadata was just probed get an explicit source marker.
+  const describeAdded = (key: ReturnType<typeof identityOf>) => {
+    const model = newMap.get(key)!;
+    const entry = metadata.find((item) => item.type === model.type && item.id === model.id);
+    const probed = entry?.contextSource === "probed" || entry?.maxTokensSource === "probed";
+    return `${describe(key)}${probed ? ` · ${t(language, "previewProbedDefaults")}` : ""}`;
+  };
   const settingsChanged = oldConnection !== nextConnection;
   const keyWillUpdate = draft.authMode === "models-json" && oldProvider?.apiKey !== draft.apiKeyRaw;
   return {
@@ -506,7 +516,7 @@ function buildPreviewDetails(
       ...(keyWillUpdate ? [t(language, "previewKeyUpdated")] : []),
     ],
     modelDetails: [
-      ...(added.length ? [t(language, "previewModelsAdded", { items: added.map(describe).join(", ") })] : []),
+      ...(added.length ? [t(language, "previewModelsAdded", { items: added.map(describeAdded).join(", ") })] : []),
       ...(deleted.length ? [t(language, "previewModelsRemoved", { items: deleted.map(describe).join(", ") })] : []),
       ...(modified.length ? [t(language, "previewModelsModified", { items: modified.map(describe).join(", ") })] : []),
       t(language, "previewModelsUnchanged", { count: unchanged }),
@@ -882,6 +892,48 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               });
               if (empty !== "confirm") return false;
             }
+            if (files.config.autoProbeOnSave !== false && draft.enabled) {
+              const wanted = new Set(probeTargetsFor(selectedDraft, selectedMetadata).map((model) => `${model.type}\u0000${model.id}`));
+              const targets = selectedDraft
+                .map((model, index) => ({ model, index, metadataIndex: selectedMetadata.findIndex((entry) => entry.type === model.type && entry.id === model.id) }))
+                .filter(({ model }) => wanted.has(`${model.type}\u0000${model.id}`));
+              if (targets.length) {
+                try {
+                  const piAuth = draft.authMode === "reuse-pi" ? await ctx.modelRegistry.getProviderAuth(target.id) : undefined;
+                  const fetchImpl = draft.proxyUrl ? createProviderFetch(draft.proxyUrl) : globalThis.fetch;
+                  const entries = targets.map(({ model }) => ({
+                    label: model.id,
+                    run: (signal: AbortSignal) => {
+                      const baseUrl = model.type === "chat" ? model.baseUrl ?? draft.baseUrl : draft.baseUrl;
+                      if (!baseUrl) return Promise.resolve(null);
+                      return probeChatParams(model, { fetch: fetchImpl, apiKey: resolveProbeApiKey(draft, piAuth, baseUrl), baseUrl, signal });
+                    },
+                  }));
+                  const outcomes = await runAutoProbeFlow(ctx, language, entries);
+                  for (let index = 0; index < targets.length; index++) {
+                    const { model, metadataIndex } = targets[index]!;
+                    const outcome = outcomes[index]!;
+                    if (model.type !== "chat" || outcome.cancelled || !outcome.result) continue;
+                    const result = outcome.result;
+                    model.maxTokens = result.maxTokens;
+                    model.reasoning = result.reasoning;
+                    if (result.reasoning && result.thinkingLevelMap) model.thinkingLevelMap = { ...result.thinkingLevelMap };
+                    else delete model.thinkingLevelMap;
+                    const metadata = {
+                      ...(metadataIndex >= 0 ? selectedMetadata[metadataIndex] : { type: model.type, id: model.id }),
+                      contextSource: "probed" as const,
+                      maxTokensSource: "probed" as const,
+                      thinkingSource: "probed" as const,
+                      verifiedAt: new Date().toISOString(),
+                    };
+                    if (metadataIndex >= 0) selectedMetadata[metadataIndex] = metadata; else selectedMetadata.push(metadata);
+                  }
+                  if (outcomes.some((outcome) => outcome.cancelled)) ctx.ui.notify(t(language, "autoProbeCancelled"), "info");
+                } catch {
+                  // Probe failures are silent: unprobed models keep compatibility defaults.
+                }
+              }
+            }
             return true;
           };
           const adoptExisting = async (): Promise<boolean> => {
@@ -1053,7 +1105,7 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               continue;
             }
 
-            const details = buildPreviewDetails(language, target.id, managedBefore, selectedDraft, oldConfig, oldProvider, draft);
+            const details = buildPreviewDetails(language, target.id, managedBefore, selectedDraft, oldConfig, oldProvider, draft, selectedMetadata);
             const preview = await showPreviewPanel(ctx, language, target.id, details.providerDetails, details.modelDetails, previewState);
             if (preview.action === "back") { page = previewOrigin; continue; }
             if (preview.action === "discard") {

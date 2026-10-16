@@ -14,6 +14,11 @@
     "version": {
       "const": 1
     },
+    "autoProbeOnSave": {
+      "description": "Pre-save minimal parameter probe for newly checked chat models lacking context/maxTokens metadata. Default true.",
+      "type": "boolean",
+      "default": true
+    },
     "providers": {
       "type": "object",
       "additionalProperties": {
