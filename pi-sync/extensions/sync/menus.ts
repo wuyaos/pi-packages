@@ -4,54 +4,53 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { enhancedSelect } from "../_shared/enhanced-select";
+import { platformCode, sanitizeDeviceName } from "./archive-name";
 import {
-  archiveTimestamp,
-  createAgentSkillsZip,
-  createCortexkitZip,
-  createPiAgentZip,
-  listArchiveEntries,
-  platformTag,
-  validateArchiveEntries,
-} from "./archive";
-import { loadConfig, normalizePiExcludePaths, saveConfig, type SyncConfig } from "./config";
+  LOCK_BUSY_ERROR,
+  runBackupKinds,
+} from "./backup";
+import {
+  AGENT_DIR,
+  AGENT_SKILLS_DIR,
+  CORTEXKIT_CONFIG_DIR,
+  loadConfig,
+  normalizePiExcludePaths,
+  saveConfig,
+  validateRemoteBaseDirInput,
+  webdavDir,
+  type BackupKind,
+  type SyncConfig,
+} from "./config";
+import { invalidateSyncState } from "./fingerprint";
 import { t, type SyncLanguage } from "./i18n";
-import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip, getRestorePlan } from "./restore";
-import {
-  downloadFromWebdavDir,
-  listWebdavDir,
-  pruneOldBackupsInDir,
-  uploadToWebdavDir,
-  WEBDAV_AGENT_SKILLS_DIR,
-  WEBDAV_CORTEXKIT_DIR,
-  WEBDAV_PI_BACKUP_DIR,
-} from "./webdav";
+import { multiSelect, type MultiSelectItem } from "./multi-select";
+import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip } from "./restore";
+import { runRepair } from "./repair";
+import { buildRestoreRows, RESTORE_TAG_ORDER, type RestoreRow } from "./restore-rows";
+import { selectRestoreRow } from "./restore-panel";
+import { downloadFromWebdavDir, listWebdavDir } from "./webdav";
 
 export type SelectItem<T extends string> = { id: T; label: string };
-type BackupKind = "pi" | "skills" | "cortexkit";
 /** 重新绑定当前会话模型：pi.setModel（ExtensionAPI）。恢复 Pi 备份后用于刷新过期模型引用。 */
 export type SetModelFn = (model: Model<any>) => Promise<boolean>;
 export type MainAction =
-  | "upload-all" | "restore-all"
-  | "upload-pi" | "upload-skills" | "upload-cortexkit"
-  | "restore-pi" | "restore-skills" | "restore-cortexkit"
-  | "configure" | "language" | "cancel";
+  | "backup" | "restore" | "repair" | "settings" | "quit";
 
-export interface BulkResult {
+const BACKUP_KINDS: readonly BackupKind[] = ["pi", "skills", "cortexkit"];
+
+export interface KindResultRow {
   kind: BackupKind;
-  success: boolean;
+  ok: boolean;
+  /** 成功时的说明文字（远端文件名或恢复详情）。 */
+  text?: string;
   error?: string;
 }
 
-export interface BackupAllOperations {
-  uploadPi(): Promise<boolean>;
-  uploadSkills(): Promise<boolean>;
-  uploadCortexkit(): Promise<boolean>;
-}
-
-export interface RestoreAllOperations {
-  restorePi(): Promise<boolean>;
-  restoreSkills(): Promise<boolean>;
-  restoreCortexkit(): Promise<boolean>;
+export interface RestoreKindResult {
+  kind: BackupKind;
+  ok: boolean;
+  detail?: string[];
+  error?: string;
 }
 
 async function selectAction<T extends string>(
@@ -64,10 +63,6 @@ async function selectAction<T extends string>(
   return items.find((item) => item.label === selected)?.id;
 }
 
-function cloneConfig(config: SyncConfig): SyncConfig {
-  return { ...config, piExcludePaths: [...config.piExcludePaths] };
-}
-
 function onOff(language: SyncLanguage, value: boolean): string {
   return t(language, value ? "on" : "off");
 }
@@ -78,293 +73,316 @@ function kindLabel(language: SyncLanguage, kind: BackupKind): string {
 
 export function buildMainMenuItems(language: SyncLanguage): SelectItem<MainAction>[] {
   return [
-    { id: "upload-all", label: t(language, "uploadAllBackups") },
-    { id: "restore-all", label: t(language, "restoreAllBackups") },
-    { id: "upload-pi", label: t(language, "uploadPiBackup") },
-    { id: "upload-skills", label: t(language, "uploadSkillsBackup") },
-    { id: "upload-cortexkit", label: t(language, "uploadCortexkitBackup") },
-    { id: "restore-pi", label: t(language, "restorePiBackup") },
-    { id: "restore-skills", label: t(language, "restoreSkillsBackup") },
-    { id: "restore-cortexkit", label: t(language, "restoreCortexkitBackup") },
-    { id: "configure", label: t(language, "configureSettings") },
-    { id: "language", label: t(language, "switchLanguage") },
-    { id: "cancel", label: t(language, "cancel") },
+    { id: "backup", label: t(language, "menuBackup") },
+    { id: "restore", label: t(language, "menuRestore") },
+    { id: "repair", label: t(language, "menuRepair") },
+    { id: "settings", label: t(language, "menuSettings") },
+    { id: "quit", label: t(language, "menuQuit") },
   ];
 }
 
 export async function showSetupWizard(ctx: ExtensionCommandContext): Promise<boolean> {
-  const config = cloneConfig(loadConfig());
+  const config = loadConfig();
   const language = config.language;
   ctx.ui.notify(t(language, "setupRequired"), "warning");
   const url = await ctx.ui.input(t(language, "promptWebdavUrl"), config.webdavUrl); if (!url) return false;
   const user = await ctx.ui.input(t(language, "promptWebdavUsername"), config.webdavUser); if (!user) return false;
   const pass = await ctx.ui.input(t(language, "promptWebdavPassword"), config.webdavPass); if (!pass) return false;
-  config.webdavUrl = url.trim();
-  config.webdavUser = user.trim();
-  config.webdavPass = pass.trim();
-  saveConfig(config, ctx);
+  saveConfig({ ...config, webdavUrl: url.trim(), webdavUser: user.trim(), webdavPass: pass.trim() }, ctx);
   return true;
 }
 
+// ── 汇总行渲染 ──────────────────────────────────────────────────────────
+
+/** 失败行错误文案：锁冲突标记映射为本地化提示，其余原样。 */
+function errorText(language: SyncLanguage, error: string | undefined): string {
+  return error === LOCK_BUSY_ERROR ? t(language, "lockBusy") : error ?? "";
+}
+
+function formatResultRows(
+  language: SyncLanguage,
+  rows: readonly { kind: BackupKind; ok: boolean; text?: string; error?: string }[],
+): string {
+  return rows.map((row) => {
+    const kind = kindLabel(language, row.kind);
+    return row.ok
+      ? t(language, "resultRowOk", { status: "✅", kind, text: row.text ?? "" })
+      : t(language, "resultRowFail", { status: "❌", kind, text: errorText(language, row.error) });
+  }).join("\n");
+}
+
+// ── 备份二级 ────────────────────────────────────────────────────────────
+
+function kindAvailable(kind: BackupKind): boolean {
+  return fs.existsSync(kind === "pi" ? AGENT_DIR : kind === "skills" ? AGENT_SKILLS_DIR : CORTEXKIT_CONFIG_DIR);
+}
+
+/** 备份二级：多选类别（目录缺失置灰）→ Ctrl+S 串行执行 → 汇总通知。 */
+export async function showBackupMenu(ctx: ExtensionCommandContext): Promise<void> {
+  const config = loadConfig();
+  const language = config.language;
+  const items: MultiSelectItem[] = BACKUP_KINDS.map((kind) => {
+    const available = kindAvailable(kind);
+    return {
+      id: kind,
+      label: available ? kindLabel(language, kind) : t(language, "categoryMissingDir", { kind: kindLabel(language, kind) }),
+      checked: available,
+      disabled: !available,
+    };
+  });
+  const result = await multiSelect(ctx, t(language, "backupSelectTitle"), items, t(language, "runBackupAction"));
+  if (!result || result.checked.length === 0) return;
+  const kinds = result.checked as BackupKind[];
+  const results = await runBackupKinds(ctx, config, kinds);
+  const rows = results.map((entry) => ({
+    kind: entry.kind,
+    ok: entry.ok,
+    text: entry.file,
+    error: entry.error,
+  }));
+  ctx.ui.notify(
+    t(language, "backupSummary", { results: formatResultRows(language, rows) }),
+    results.every((entry) => entry.ok) ? "info" : "warning",
+  );
+}
+
+// ── 恢复二级 ────────────────────────────────────────────────────────────
+
+function platformFriendlyName(language: SyncLanguage, platform: "win" | "mac" | "linux"): string {
+  return t(language, platform === "win" ? "platformWin" : platform === "mac" ? "platformMac" : "platformLinux");
+}
+
+function formatRestoreTime(ts: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
+}
+
+function formatRestoreRow(language: SyncLanguage, row: RestoreRow, localDevice: string): string {
+  const parts = [
+    row.device,
+    platformFriendlyName(language, row.platform),
+    formatRestoreTime(row.ts),
+    row.tags.map((tag) => kindLabel(language, tag)).join("+"),
+  ];
+  if (row.device === localDevice) parts.push(t(language, "localBadge"));
+  return parts.join("  ");
+}
+
+async function scanRestoreArchives(config: SyncConfig, ctx: ExtensionCommandContext): Promise<string[]> {
+  const names: string[] = [];
+  for (const kind of BACKUP_KINDS) {
+    try {
+      names.push(...await listWebdavDir(webdavDir(kind, config), config, ctx));
+    } catch (error) {
+      console.warn(`[pi-sync] Failed to list ${webdavDir(kind, config)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return names;
+}
+
+async function restoreKindArchive(
+  ctx: ExtensionCommandContext,
+  config: SyncConfig,
+  kind: BackupKind,
+  file: string,
+  setModel?: SetModelFn,
+): Promise<RestoreKindResult> {
+  const local = path.join(os.tmpdir(), path.basename(file));
+  try {
+    await downloadFromWebdavDir(file, webdavDir(kind, config), local, config, ctx);
+    const restored = kind === "pi"
+      ? await extractPiAgentZip(local)
+      : kind === "skills"
+        ? await extractAgentSkillsZip(local)
+        : await extractCortexkitZip(local);
+    if (kind === "pi") await refreshModelCatalog(ctx, setModel);
+    return { kind, ok: true, detail: restored };
+  } catch (error) {
+    return { kind, ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    fs.rmSync(local, { force: true });
+  }
+}
+
+/** 恢复 Pi 备份后刷新模型目录并尝试重绑当前模型；失败只警告，不中断恢复流程。 */
+async function refreshModelCatalog(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
+  try {
+    const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
+    if (refresh.errors.size > 0) console.warn(`[pi-sync] Model catalog refresh completed with ${refresh.errors.size} error(s)`);
+  } catch (error) {
+    console.warn(`[pi-sync] Failed to refresh restored model catalog: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!setModel) return;
+  const current = ctx.model;
+  if (!current) return;
+  const fresh = ctx.modelRegistry.find(current.provider, current.id);
+  if (fresh && fresh !== current) {
+    const bound = await setModel(fresh);
+    if (!bound) console.warn(`[pi-sync] Failed to rebind current model ${current.provider}/${current.id}; auth may be unconfigured.`);
+  } else if (!fresh) {
+    console.warn(`[pi-sync] Current model ${current.provider}/${current.id} is absent from the restored catalog; select a model manually.`);
+  }
+}
+
+/** 恢复二级：扫描合并行 → 设备筛选 → 单选 → 覆盖确认 → 逐类别恢复 → 汇总。 */
+export async function showRestoreMenu(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
+  const config = loadConfig();
+  const language = config.language;
+  const localDevice = config.deviceName;
+  const rows = buildRestoreRows(await scanRestoreArchives(config, ctx));
+  if (rows.length === 0) {
+    ctx.ui.notify(t(language, "restoreNoArchives"), "warning");
+    return;
+  }
+  const row = await selectRestoreRow(ctx, {
+    title: t(language, "restoreSelectTitle"),
+    rows,
+    texts: {
+      filterLabel: t(language, "deviceFilterLabel"),
+      allDevices: t(language, "deviceFilterAll"),
+    },
+    formatRow: (entry) => formatRestoreRow(language, entry, localDevice),
+  });
+  if (!row) return;
+
+  const warnings: string[] = [];
+  if (row.platform !== platformCode()) {
+    warnings.push(t(language, "restoreCrossPlatformWarn", { platform: platformFriendlyName(language, row.platform) }));
+  }
+  if (row.device !== localDevice) {
+    warnings.push(t(language, "restoreOtherDeviceWarn", { device: row.device }));
+  }
+  const fileList = RESTORE_TAG_ORDER
+    .map((tag) => row.files[tag])
+    .filter((file): file is string => Boolean(file))
+    .join("\n");
+  if (!await ctx.ui.confirm(
+    t(language, "restoreConfirmTitle"),
+    t(language, "restoreConfirmBody", { files: fileList, warning: warnings.join("\n") }),
+  )) return;
+
+  const results: RestoreKindResult[] = [];
+  for (const kind of RESTORE_TAG_ORDER) {
+    const file = row.files[kind];
+    if (!file) continue;
+    const result = await restoreKindArchive(ctx, config, kind, file, setModel);
+    results.push(result);
+    if (!result.ok) break;
+  }
+  if (results.some((result) => result.ok)) invalidateSyncState();
+  const summaryRows: KindResultRow[] = results.map((result) => ({
+    kind: result.kind,
+    ok: result.ok,
+    text: result.detail?.join("; "),
+    error: result.error,
+  }));
+  const summary = formatResultRows(language, summaryRows);
+  const failed = results.some((result) => !result.ok);
+  ctx.ui.notify(
+    t(language, "restoreSummary", { results: failed ? `${summary}\n${t(language, "restoreInterrupted")}` : summary }),
+    failed ? "warning" : "info",
+  );
+}
+
+// ── 设置子菜单 ──────────────────────────────────────────────────────────
+
+/** WebDAV 三项连续编辑；任一步取消（Esc）则整体不保存。 */
+async function editWebdavSettings(ctx: ExtensionCommandContext): Promise<void> {
+  const config = loadConfig();
+  const language = config.language;
+  const url = await ctx.ui.input(t(language, "promptWebdavUrl"), config.webdavUrl);
+  if (url === undefined) return;
+  const user = await ctx.ui.input(t(language, "promptWebdavUsername"), config.webdavUser);
+  if (user === undefined) return;
+  const pass = await ctx.ui.input(t(language, "promptWebdavPassword"), config.webdavPass);
+  if (pass === undefined) return;
+  saveConfig({
+    ...config,
+    webdavUrl: url.trim() || config.webdavUrl,
+    webdavUser: user.trim() || config.webdavUser,
+    webdavPass: pass.trim() || config.webdavPass,
+  }, ctx);
+  ctx.ui.notify(t(language, "configSaved"), "info");
+}
+
+async function editExitBackupScope(ctx: ExtensionCommandContext, config: SyncConfig): Promise<void> {
+  const language = config.language;
+  const items: MultiSelectItem[] = BACKUP_KINDS.map((kind) => ({
+    id: kind,
+    label: kindLabel(language, kind),
+    checked: config.exitBackupScope.includes(kind),
+  }));
+  const result = await multiSelect(ctx, t(language, "settingsExitScope", { value: "" }), items);
+  if (!result) return;
+  saveConfig({ ...config, exitBackupScope: result.checked as BackupKind[] }, ctx);
+}
+
+/** 设置子菜单：9 项，修改即时保存（每个编辑项自带取消）。 */
 export async function showConfigureSettings(ctx: ExtensionCommandContext): Promise<void> {
-  const config = cloneConfig(loadConfig());
   let cursor = 0;
   while (true) {
+    const config = loadConfig();
     const language = config.language;
     const items: SelectItem<string>[] = [
-      { id: "url", label: t(language, "webdavUrl", { value: config.webdavUrl || t(language, "notSet") }) },
-      { id: "user", label: t(language, "webdavUsername", { value: config.webdavUser || t(language, "notSet") }) },
-      { id: "password", label: t(language, "webdavPassword", { value: config.webdavPass ? t(language, "passwordSet") : t(language, "notSet") }) },
-      { id: "pi", label: t(language, "piBackup", { value: onOff(language, config.backupProviders) }) },
-      { id: "skills", label: t(language, "skillsBackup", { value: onOff(language, config.backupAgentSkills) }) },
-      { id: "cortexkit", label: t(language, "cortexkitBackup", { value: onOff(language, config.backupCortexkit) }) },
-      { id: "exit", label: t(language, "backupOnExit", { value: onOff(language, config.backupOnExit) }) },
-      { id: "exclude", label: t(language, "piExcludePaths", { value: config.piExcludePaths.join(", ") || t(language, "none") }) },
+      { id: "webdav", label: t(language, "settingsWebdav", { value: config.webdavUrl || t(language, "notSet") }) },
+      { id: "exitBackup", label: t(language, "settingsExitBackup", { value: onOff(language, config.backupOnExit) }) },
       { id: "max", label: t(language, "maxCloudBackups", { value: config.maxBackups === 0 ? t(language, "keepAll") : config.maxBackups }) },
-      { id: "save", label: t(language, "save") },
+      { id: "exitScope", label: t(language, "settingsExitScope", { value: config.exitBackupScope.map((kind) => kindLabel(language, kind)).join(", ") || t(language, "none") }) },
+      { id: "device", label: t(language, "settingsDeviceName", { value: config.deviceName }) },
+      { id: "baseDir", label: t(language, "settingsRemoteBaseDir", { value: config.remoteBaseDir }) },
+      { id: "exclude", label: t(language, "piExcludePaths", { value: config.piExcludePaths.join(", ") || t(language, "none") }) },
+      { id: "language", label: t(language, "switchLanguage") },
       { id: "back", label: t(language, "back") },
     ];
-    const action = await selectAction(ctx, t(language, "configureTitle"), items, cursor);
+    const action = await selectAction(ctx, t(language, "settingsTitle"), items, cursor);
     if (!action || action === "back") return;
     cursor = Math.max(0, items.findIndex((item) => item.id === action));
-    if (action === "save") {
-      saveConfig(config, ctx);
-      ctx.ui.notify(t(language, "configSaved"), "info");
-      return;
-    }
-    if (action === "url") {
-      const value = await ctx.ui.input(t(language, "promptWebdavUrl"), config.webdavUrl);
-      if (value) config.webdavUrl = value.trim();
-    } else if (action === "user") {
-      const value = await ctx.ui.input(t(language, "promptWebdavUsername"), config.webdavUser);
-      if (value) config.webdavUser = value.trim();
-    } else if (action === "password") {
-      const value = await ctx.ui.input(t(language, "promptWebdavPassword"), config.webdavPass);
-      if (value) config.webdavPass = value.trim();
-    } else if (action === "pi") {
-      config.backupProviders = !config.backupProviders;
-    } else if (action === "skills") {
-      config.backupAgentSkills = !config.backupAgentSkills;
-    } else if (action === "cortexkit") {
-      config.backupCortexkit = !config.backupCortexkit;
-    } else if (action === "exit") {
-      config.backupOnExit = !config.backupOnExit;
-    } else if (action === "exclude") {
-      const value = await ctx.ui.input(t(language, "promptExcludePaths"), config.piExcludePaths.join(", "));
-      if (value !== undefined) config.piExcludePaths = normalizePiExcludePaths(value.split(/[\n,]/));
+    if (action === "webdav") {
+      await editWebdavSettings(ctx);
+    } else if (action === "exitBackup") {
+      saveConfig({ ...config, backupOnExit: !config.backupOnExit }, ctx);
     } else if (action === "max") {
       const value = await ctx.ui.input(t(language, "promptMaxBackups"), String(config.maxBackups));
-      const count = value ? Number.parseInt(value, 10) : Number.NaN;
-      if (count >= 0) config.maxBackups = count;
+      if (value === undefined) continue;
+      const count = Number.parseInt(value, 10);
+      if (count >= 0) saveConfig({ ...config, maxBackups: count }, ctx);
+    } else if (action === "exitScope") {
+      await editExitBackupScope(ctx, config);
+    } else if (action === "device") {
+      const value = await ctx.ui.input(t(language, "promptDeviceName"), config.deviceName);
+      if (value === undefined || !value.trim()) continue;
+      saveConfig({ ...config, deviceName: sanitizeDeviceName(value) }, ctx);
+    } else if (action === "baseDir") {
+      const value = await ctx.ui.input(t(language, "promptRemoteBaseDir"), config.remoteBaseDir);
+      if (value === undefined || !value.trim()) continue;
+      const normalized = validateRemoteBaseDirInput(value);
+      if (normalized) saveConfig({ ...config, remoteBaseDir: normalized }, ctx);
+      else ctx.ui.notify(t(language, "remoteBaseDirInvalid"), "warning");
+    } else if (action === "exclude") {
+      const value = await ctx.ui.input(t(language, "promptExcludePaths"), config.piExcludePaths.join(", "));
+      if (value === undefined) continue;
+      saveConfig({ ...config, piExcludePaths: normalizePiExcludePaths(value.split(/[\n,]/)) }, ctx);
+    } else if (action === "language") {
+      saveConfig({ ...config, language: language === "zh" ? "en" : "zh" }, ctx);
     }
   }
 }
 
-function packageMeta(kind: BackupKind): { filename: string; dir: string; prefix: string } {
-  const timestamp = archiveTimestamp();
-  return kind === "pi"
-    ? { filename: `pi_agent_${platformTag()}_${timestamp}.tar.xz`, dir: WEBDAV_PI_BACKUP_DIR, prefix: "pi_agent_" }
-    : kind === "skills"
-      ? { filename: `agent_skills_${timestamp}.tar.xz`, dir: WEBDAV_AGENT_SKILLS_DIR, prefix: "agent_skills_" }
-      : { filename: `cortexkit_${timestamp}.tar.xz`, dir: WEBDAV_CORTEXKIT_DIR, prefix: "cortexkit_" };
-}
-
-export async function uploadBackupPackage(
-  ctx: ExtensionCommandContext,
-  kind: BackupKind,
-  config = loadConfig(),
-  notify = true,
-): Promise<boolean> {
-  const language = config.language;
-  const label = kindLabel(language, kind);
-  const enabled = kind === "pi"
-    ? config.backupProviders
-    : kind === "skills"
-      ? config.backupAgentSkills
-      : config.backupCortexkit;
-  if (!enabled) {
-    if (notify) ctx.ui.notify(t(language, "backupDisabled", { kind: label }), "warning");
-    return false;
-  }
-  const meta = packageMeta(kind);
-  const archive = path.join(os.tmpdir(), meta.filename);
-  try {
-    const contents = kind === "pi"
-      ? await createPiAgentZip(config, archive)
-      : kind === "skills"
-        ? await createAgentSkillsZip(archive)
-        : await createCortexkitZip(archive);
-    await uploadToWebdavDir(archive, meta.dir, meta.filename, config, ctx);
-    const deleted = await pruneOldBackupsInDir(config, ctx, meta.dir, meta.prefix);
-    const pruned = deleted.length ? t(language, "prunedCount", { count: deleted.length }) : "";
-    if (notify) ctx.ui.notify(t(language, "backupUploaded", { filename: meta.filename, contents: contents.join("\n"), pruned }), "info");
-    return true;
-  } catch (error) {
-    if (notify) ctx.ui.notify(t(language, "backupFailed", { kind: label, error: error instanceof Error ? error.message : String(error) }), "error");
-    return false;
-  } finally { fs.rmSync(archive, { force: true }); }
-}
-
-async function showRestorePackage(
-  ctx: ExtensionCommandContext,
-  kind: BackupKind,
-  autoLatest = false,
-  reloadAfter = true,
-  setModel?: SetModelFn,
-): Promise<boolean> {
-  const config = loadConfig();
-  const language = config.language;
-  const label = kindLabel(language, kind);
-  const meta = packageMeta(kind);
-  try {
-    const files = (await listWebdavDir(meta.dir, config, ctx))
-      .filter((name) => name.startsWith(meta.prefix) && name.endsWith(".tar.xz"))
-      .sort()
-      .reverse();
-    if (!files.length) {
-      ctx.ui.notify(t(language, "noArchivesFound", { kind: label }), "warning");
-      return false;
-    }
-    let selected: string | undefined;
-    if (autoLatest) {
-      selected = files[0];
-    } else {
-      const items: SelectItem<string>[] = [
-        ...files.map((file) => ({ id: file, label: file })),
-        { id: "cancel", label: t(language, "cancel") },
-      ];
-      selected = await selectAction(ctx, t(language, "restoreArchive", { kind: label }), items);
-    }
-    if (!selected || selected === "cancel") return false;
-    if ((kind === "skills" || kind === "cortexkit") && !await ctx.ui.confirm(
-      t(language, kind === "skills" ? "replaceSharedSkillsTitle" : "replaceCortexkitTitle"),
-      t(language, kind === "skills" ? "replaceSharedSkillsBody" : "replaceCortexkitBody"),
-    )) return false;
-    const local = path.join(os.tmpdir(), path.basename(selected));
-    try {
-      await downloadFromWebdavDir(selected, meta.dir, local, config, ctx);
-      if (kind === "pi") {
-        const entries = await listArchiveEntries(local);
-        validateArchiveEntries(entries);
-        const plan = getRestorePlan(entries).join("\n");
-        if (!await ctx.ui.confirm(
-          t(language, "confirmPiRestoreTitle"),
-          t(language, "confirmPiRestoreBody", { count: entries.length, plan }),
-        )) return false;
-      }
-      const restored = kind === "pi"
-        ? await extractPiAgentZip(local)
-        : kind === "skills"
-          ? await extractAgentSkillsZip(local)
-          : await extractCortexkitZip(local);
-      if (kind === "pi") {
-        try {
-          const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
-          if (refresh.errors.size > 0) console.warn(`[pi-sync] Model catalog refresh completed with ${refresh.errors.size} error(s)`);
-        } catch (error) {
-          console.warn(`[pi-sync] Failed to refresh restored model catalog: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        if (setModel) {
-          const current = ctx.model;
-          if (current) {
-            const fresh = ctx.modelRegistry.find(current.provider, current.id);
-            if (fresh && fresh !== current) {
-              const bound = await setModel(fresh);
-              if (!bound) console.warn(`[pi-sync] Failed to rebind current model ${current.provider}/${current.id}; auth may be unconfigured.`);
-            } else if (!fresh) {
-              console.warn(`[pi-sync] Current model ${current.provider}/${current.id} is absent from the restored catalog; select a model manually.`);
-            }
-          }
-        }
-      }
-      ctx.ui.notify(t(language, "restoreCompleted", { kind: label, contents: restored.join("\n") }), "info");
-      if (kind === "pi" && reloadAfter && await ctx.ui.confirm(t(language, "reloadRuntimeTitle"), t(language, "reloadRuntimeBody"))) {
-        await ctx.reload();
-      }
-      return true;
-    } finally { fs.rmSync(local, { force: true }); }
-  } catch (error) {
-    ctx.ui.notify(t(language, "restoreFailed", { kind: label, error: error instanceof Error ? error.message : String(error) }), "error");
-    return false;
-  }
-}
-
-export async function executeBackupAll(config: SyncConfig, operations: BackupAllOperations): Promise<BulkResult[]> {
-  const results: BulkResult[] = [];
-  if (config.backupProviders) results.push({ kind: "pi", success: await operations.uploadPi() });
-  if (config.backupAgentSkills) results.push({ kind: "skills", success: await operations.uploadSkills() });
-  if (config.backupCortexkit) results.push({ kind: "cortexkit", success: await operations.uploadCortexkit() });
-  return results;
-}
-
-export async function executeRestoreAll(config: SyncConfig, operations: RestoreAllOperations): Promise<BulkResult[]> {
-  const results: BulkResult[] = [];
-  if (config.backupProviders) results.push({ kind: "pi", success: await operations.restorePi() });
-  if (config.backupAgentSkills) results.push({ kind: "skills", success: await operations.restoreSkills() });
-  if (config.backupCortexkit) results.push({ kind: "cortexkit", success: await operations.restoreCortexkit() });
-  return results;
-}
-
-function formatBulkResults(language: SyncLanguage, results: BulkResult[]): string {
-  return results.map((result) => `${result.success ? "✅" : "❌"} ${kindLabel(language, result.kind)}${result.error ? `: ${result.error}` : ""}`).join("\n");
-}
-
-export async function uploadEnabledBackups(ctx: ExtensionCommandContext, config = loadConfig(), notify = true): Promise<boolean> {
-  const results = await executeBackupAll(config, {
-    uploadPi: () => uploadBackupPackage(ctx, "pi", config, notify),
-    uploadSkills: () => uploadBackupPackage(ctx, "skills", config, notify),
-    uploadCortexkit: () => uploadBackupPackage(ctx, "cortexkit", config, notify),
-  });
-  return results.length > 0 && results.every((result) => result.success);
-}
-
-async function showUploadAll(ctx: ExtensionCommandContext): Promise<void> {
-  const config = loadConfig();
-  const language = config.language;
-  const results = await executeBackupAll(config, {
-    uploadPi: () => uploadBackupPackage(ctx, "pi", config, false),
-    uploadSkills: () => uploadBackupPackage(ctx, "skills", config, false),
-    uploadCortexkit: () => uploadBackupPackage(ctx, "cortexkit", config, false),
-  });
-  ctx.ui.notify(t(language, "allBackupCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
-}
-
-async function showRestoreAll(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
-  const config = loadConfig();
-  const language = config.language;
-  if (!await ctx.ui.confirm(t(language, "confirmRestoreAllTitle"), t(language, "confirmRestoreAllBody"))) return;
-  const results = await executeRestoreAll(config, {
-    restorePi: () => showRestorePackage(ctx, "pi", true, false, setModel),
-    restoreSkills: () => showRestorePackage(ctx, "skills", true, false),
-    restoreCortexkit: () => showRestorePackage(ctx, "cortexkit", true, false),
-  });
-  ctx.ui.notify(t(language, "allRestoreCompleted", { results: formatBulkResults(language, results) || t(language, "none") }), "info");
-  if (results.some((result) => result.success)
-    && await ctx.ui.confirm(t(language, "reloadRuntimeTitle"), t(language, "reloadRuntimeBody"))) {
-    await ctx.reload();
-  }
-}
+// ── 主菜单 ──────────────────────────────────────────────────────────────
 
 export async function handleSyncCommand(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
-  let config = loadConfig();
-  if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) {
+  if (!loadConfig().webdavUrl || !loadConfig().webdavUser || !loadConfig().webdavPass) {
     if (!await showSetupWizard(ctx)) return;
   }
   while (true) {
-    config = loadConfig();
+    const config = loadConfig();
     const language = config.language;
     const action = await selectAction(ctx, t(language, "menuTitle"), buildMainMenuItems(language));
-    if (!action || action === "cancel") return;
-    if (action === "upload-all") await showUploadAll(ctx);
-    else if (action === "restore-all") await showRestoreAll(ctx, setModel);
-    else if (action === "upload-pi") await uploadBackupPackage(ctx, "pi");
-    else if (action === "upload-skills") await uploadBackupPackage(ctx, "skills");
-    else if (action === "upload-cortexkit") await uploadBackupPackage(ctx, "cortexkit");
-    else if (action === "restore-pi") await showRestorePackage(ctx, "pi", false, true, setModel);
-    else if (action === "restore-skills") await showRestorePackage(ctx, "skills");
-    else if (action === "restore-cortexkit") await showRestorePackage(ctx, "cortexkit");
-    else if (action === "configure") await showConfigureSettings(ctx);
-    else if (action === "language") saveConfig({ ...config, language: language === "zh" ? "en" : "zh" }, ctx);
+    if (!action || action === "quit") return;
+    if (action === "backup") await showBackupMenu(ctx);
+    else if (action === "restore") await showRestoreMenu(ctx, setModel);
+    else if (action === "repair") await runRepair(ctx, loadConfig().language);
+    else if (action === "settings") await showConfigureSettings(ctx);
   }
 }
 

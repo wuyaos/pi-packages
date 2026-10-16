@@ -13,7 +13,8 @@
 param(
     [string]$WebdavUrl = $env:PI_WEBDAV_URL,
     [string]$User = $env:PI_WEBDAV_USER,
-    [string]$Pass = $env:PI_WEBDAV_PASS
+    [string]$Pass = $env:PI_WEBDAV_PASS,
+    [string]$RemoteBaseDir = $(if ($env:PI_SYNC_REMOTE_BASE_DIR) { $env:PI_SYNC_REMOTE_BASE_DIR } else { "pibak" })
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,7 +26,9 @@ if (-not $WebdavUrl -or -not $User -or -not $Pass) {
 }
 
 $WebdavUrl = $WebdavUrl.TrimEnd('/')
-$backupUrl = "$WebdavUrl/backup/pi"
+$RemoteBaseDir = $RemoteBaseDir.Trim('/').Trim('\\')
+if (-not $RemoteBaseDir) { $RemoteBaseDir = "pibak" }
+$backupUrl = "$WebdavUrl/$RemoteBaseDir/pi"
 $pair = "${User}:${Pass}"
 $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
 $headers = @{ Authorization = "Basic $auth"; Depth = "1" }
@@ -35,11 +38,11 @@ $resp = Invoke-RestMethod -Uri "$backupUrl/" -Method PROPFIND -Headers $headers 
 $hrefPattern = [regex]'(?i)<(?:[A-Za-z0-9_-]+:)?href>([^<]+)</(?:[A-Za-z0-9_-]+:)?href>'
 $files = $hrefPattern.Matches([string]$resp) |
     ForEach-Object { [Uri]::UnescapeDataString($_.Groups[1].Value) } |
-    Where-Object { $_ -match 'pi_agent_.*\.tar\.xz$' } |
+    Where-Object { $_ -match '-pi_\d{8}-\d{6}\.tar\.xz$' -or $_ -match 'pi_agent_.*\.tar\.xz$' } |
     Sort-Object -Descending
 
 if ($files.Count -eq 0) {
-    Write-Host "No Pi archives found under backup/pi/." -ForegroundColor Red
+    Write-Host "No Pi archives found under $RemoteBaseDir/pi/." -ForegroundColor Red
     exit 1
 }
 

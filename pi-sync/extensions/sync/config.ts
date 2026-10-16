@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ensureDir as ensureSharedDir, readJsonSafe, writeJsonAtomic } from "../_shared/json-io";
 import { normalizeLanguage, type SyncLanguage } from "./i18n";
+import { platformCode, sanitizeDeviceName } from "./archive-name";
 
 export const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 export const AGENT_SKILLS_DIR = path.join(os.homedir(), ".agents", "skills");
@@ -16,6 +17,13 @@ const LEGACY_DEFAULT_PI_EXCLUDE_PATH_SETS = [
   ["npm", "git", "sessions", "state", "vstack"],
   ["npm", "git", "sessions", "state", "tmp", "vstack"],
 ] as const;
+
+/** 远端归档根目录，每类备份位于 `<remoteBaseDir><kind>/`。 */
+export const DEFAULT_REMOTE_BASE_DIR = "pibak/";
+
+export type BackupKind = "pi" | "skills" | "cortexkit";
+
+const BACKUP_KINDS: readonly BackupKind[] = ["pi", "skills", "cortexkit"];
 
 export type ManifestFile = { archive: string; source: string };
 
@@ -30,6 +38,12 @@ export interface SyncConfig {
   piExcludePaths: string[];
   backupOnExit: boolean;
   maxBackups: number;
+  /** 本机设备标识（归档名与远端 prune 归属判断），缺省时按 hostname+平台生成。 */
+  deviceName: string;
+  /** 远端归档根目录，末尾带 /，每段限 [A-Za-z0-9._-]。 */
+  remoteBaseDir: string;
+  /** 退出自动备份的类别范围。 */
+  exitBackupScope: BackupKind[];
 }
 
 export function ensureDir(dir: string): void {
@@ -46,6 +60,59 @@ export function normalizePiExcludePaths(value: unknown): string[] {
     normalized.add(candidate);
   }
   return [...normalized];
+}
+
+/**
+ * 远端根目录校验与归一：逐段限 [A-Za-z0-9._-]，拒绝 ".."、绝对路径与盘符；
+ * 任何非法输入回退默认 "pibak/"。返回值保证以 / 结尾。
+ */
+export function normalizeRemoteBaseDir(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_REMOTE_BASE_DIR;
+  const candidate = value.trim().replace(/\\/g, "/");
+  if (!candidate || candidate.startsWith("/") || /^[a-zA-Z]:/.test(candidate)) return DEFAULT_REMOTE_BASE_DIR;
+  const segments = candidate.replace(/^\/+/, "").split("/").filter(Boolean);
+  if (!segments.length) return DEFAULT_REMOTE_BASE_DIR;
+  for (const segment of segments) {
+    if (segment === "." || segment === ".." || !/^[A-Za-z0-9._-]+$/.test(segment)) {
+      return DEFAULT_REMOTE_BASE_DIR;
+    }
+  }
+  return `${segments.join("/")}/`;
+}
+
+/**
+ * 校验用户输入的归档目录前缀；合法返回归一化值（以 / 结尾），非法返回 null。
+ * 与 normalizeRemoteBaseDir 不同：不回退默认值，由调用方提示后让用户重输。
+ */
+export function validateRemoteBaseDirInput(value: string): string | null {
+  const candidate = value.trim().replace(/\\/g, "/");
+  if (!candidate || candidate.startsWith("/") || /^[A-Za-z]:/.test(candidate)) return null;
+  const segments = candidate.replace(/^\/+/, "").split("/").filter(Boolean);
+  if (!segments.length) return null;
+  for (const segment of segments) {
+    if (segment === "." || segment === ".." || !/^[A-Za-z0-9._-]+$/.test(segment)) return null;
+  }
+  return `${segments.join("/")}/`;
+}
+
+/** 退出备份范围归一：仅接受合法类别，去重；缺省/非法输入回退全部类别。 */
+export function normalizeExitBackupScope(value: unknown): BackupKind[] {
+  const source = Array.isArray(value) ? value : [...BACKUP_KINDS];
+  const normalized = new Set<BackupKind>();
+  for (const raw of source) {
+    if (BACKUP_KINDS.includes(raw as BackupKind)) normalized.add(raw as BackupKind);
+  }
+  return [...normalized];
+}
+
+/** 缺省设备名：hostname 清洗后加平台简码后缀，如 "DESKTOP-JK3-win"。 */
+export function defaultDeviceName(): string {
+  return `${sanitizeDeviceName(os.hostname())}-${platformCode()}`;
+}
+
+/** 远端类别目录：`<remoteBaseDir><kind>/`，替代原 WEBDAV_*_DIR 常量的硬编码用法。 */
+export function webdavDir(kind: BackupKind, config: Pick<SyncConfig, "remoteBaseDir">): string {
+  return `${config.remoteBaseDir}${kind}/`;
 }
 
 function isLegacyDefaultPiExcludePaths(value: unknown): boolean {
@@ -89,6 +156,10 @@ export function loadConfig(): SyncConfig {
       : normalizePiExcludePaths(data.piExcludePaths),
     backupOnExit: data.backupOnExit !== false,
     maxBackups: typeof data.maxBackups === "number" && data.maxBackups >= 0 ? Math.floor(data.maxBackups) : 10,
+    // 缺省在内存中生成；saveConfig 写整对象时物化到配置文件。
+    deviceName: typeof data.deviceName === "string" && data.deviceName.trim() ? data.deviceName.trim() : defaultDeviceName(),
+    remoteBaseDir: normalizeRemoteBaseDir(data.remoteBaseDir),
+    exitBackupScope: normalizeExitBackupScope(data.exitBackupScope),
   };
   configCache = result;
   return result;

@@ -1,93 +1,85 @@
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { AGENT_DIR, AGENT_SKILLS_DIR, CORTEXKIT_CONFIG_DIR, loadConfig, refreshFooterStatusFromConfig, type BackupKind, type SyncConfig } from "./config";
+import { computeFingerprint, computeStateKey, readSyncState, SYNC_STATE_PATH, writeSyncState } from "./fingerprint";
+import { t } from "./i18n";
+import { lockFileSync, unlockFileSync } from "./lock";
+import { runBackupKinds, SYNC_LOCK_PATH, type KindBackupResult } from "./backup";
+import { registerSyncCommand } from "./menus";
 
-import { AGENT_DIR, loadConfig, refreshFooterStatusFromConfig, type SyncConfig } from "./config";
-import { ensureDir } from "../_shared/json-io";
-import { registerSyncCommand, uploadEnabledBackups } from "./menus";
-
-/** 退出自动上传的最小间隔：频繁重启不应耗尽历史归档。 */
-export const EXIT_UPLOAD_MIN_INTERVAL_MS = 30 * 60 * 1000;
-
-const exitUploadMarkerPath = path.join(AGENT_DIR, "state", "pi-sync-last-exit-upload.txt");
-
-/** 判断退出自动上传是否到期。marker 不存在或距上次上传超过 minIntervalMs 时到期。 */
-export function exitUploadDue(markerPath: string, nowMs: number, minIntervalMs = EXIT_UPLOAD_MIN_INTERVAL_MS): boolean {
-  try {
-    const last = Number(fs.readFileSync(markerPath, "utf8").trim());
-    if (!Number.isFinite(last) || last <= 0) return true;
-    return nowMs - last >= minIntervalMs;
-  } catch {
-    return true;
-  }
+export interface ExitBackupDirs {
+  agentDir: string;
+  skillsDir: string;
+  cortexkitDir: string;
 }
 
-export function recordExitUpload(markerPath: string, nowMs: number): void {
-  ensureDir(path.dirname(markerPath));
-  fs.writeFileSync(markerPath, String(nowMs));
-}
-
-let exitUploadInFlight = false;
-
-/** 测试用：重置后台任务标志。 */
-export function resetExitUploadInFlight(): void {
-  exitUploadInFlight = false;
-}
-
-export interface ExitUploadDeps {
-  upload?: (ctx: ExtensionCommandContext, config: SyncConfig, notify?: boolean) => Promise<boolean>;
+export interface ExitBackupDeps {
+  /** 类别备份执行；默认 runBackupKinds（notify 为 quit 场景标记）。 */
+  uploadKinds?: (ctx: ExtensionCommandContext, config: SyncConfig, kinds: BackupKind[], notify: boolean) => Promise<KindBackupResult[]>;
   config?: SyncConfig;
   now?: number;
-  markerPath?: string;
+  lockPath?: string;
+  statePath?: string;
+  dirs?: ExitBackupDirs;
+  /** 直接注入指纹（测试）；缺省按 dirs 现算。 */
+  fingerprint?: string;
 }
 
 /**
- * 退出时备份已启用的 Pi、共享 Skills 与 Magic Context 配置类别。
- * quit：进程即将终止，同步等待上传完成；其他原因转入后台，不阻塞运行时重建。
+ * 退出时备份：lockFileSync 抢整体锁（失败静默跳过）→ 计算状态键与指纹 →
+ * key 不匹配或指纹变化才上传 exitBackupScope 类别 → 全部成功后写 sync-state。
+ * 无变化时通知「无变化，已跳过」。
  */
 export async function handleShutdown(
   event: Pick<SessionShutdownEvent, "reason">,
   ctx: ExtensionContext,
-  deps: ExitUploadDeps = {},
+  deps: ExitBackupDeps = {},
 ): Promise<void> {
   const config = deps.config ?? loadConfig();
   if (!config.backupOnExit) return;
   if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) return;
-  if (!config.backupProviders && !config.backupAgentSkills && !config.backupCortexkit) return;
-  const now = deps.now ?? Date.now();
-  const markerPath = deps.markerPath ?? exitUploadMarkerPath;
-  if (!exitUploadDue(markerPath, now)) return;
+  const kinds = config.exitBackupScope;
+  if (kinds.length === 0) return;
 
-  const upload = deps.upload ?? uploadEnabledBackups;
-  const finish = (uploaded: boolean): void => {
-    if (uploaded) recordExitUpload(markerPath, now);
-  };
-
-  if (event.reason === "quit") {
-    finish(await upload(ctx as unknown as ExtensionCommandContext, config, true));
-    return;
-  }
-
-  if (exitUploadInFlight) return;
-  exitUploadInFlight = true;
-  const controller = new AbortController();
-  const detachedCtx = {
-    signal: controller.signal,
-    ui: {
-      notify: (message: string, type?: "info" | "warning" | "error"): void => {
-        try { ctx.ui.notify(message, type); } catch { /* UI 可能已随重建销毁 */ }
-      },
-    },
-  } as unknown as ExtensionCommandContext;
-  void (async (): Promise<void> => {
-    try {
-      finish(await upload(detachedCtx, config, false));
-    } catch {
-      // 失败不写 marker，下个窗口可重试。
-    } finally {
-      exitUploadInFlight = false;
+  const lock = lockFileSync(deps.lockPath ?? SYNC_LOCK_PATH);
+  if (!lock) return; // 另一个备份进行中：静默跳过
+  const statePath = deps.statePath ?? SYNC_STATE_PATH;
+  try {
+    const dirs = deps.dirs ?? { agentDir: AGENT_DIR, skillsDir: AGENT_SKILLS_DIR, cortexkitDir: CORTEXKIT_CONFIG_DIR };
+    const fingerprint = deps.fingerprint
+      ?? computeFingerprint(dirs.agentDir, dirs.skillsDir, dirs.cortexkitDir, config.piExcludePaths);
+    const key = computeStateKey({
+      webdavUrl: config.webdavUrl,
+      webdavUser: config.webdavUser,
+      deviceName: config.deviceName,
+      remoteBaseDir: config.remoteBaseDir,
+      exitBackupScope: kinds,
+      piExcludePaths: config.piExcludePaths,
+    });
+    const state = readSyncState(statePath);
+    if (state && state.key === key && state.fingerprint === fingerprint) {
+      try {
+        ctx.ui.notify(t(config.language, "exitBackupNoChanges"), "info");
+      } catch {
+        // UI 可能已随运行时重建销毁。
+      }
+      return;
     }
-  })();
+    const upload = deps.uploadKinds ?? ((uploadCtx, uploadConfig, uploadKinds) =>
+      runBackupKinds(uploadCtx as unknown as ExtensionCommandContext, uploadConfig, uploadKinds));
+    const results = await upload(
+      ctx as unknown as ExtensionCommandContext,
+      config,
+      kinds,
+      event.reason === "quit",
+    );
+    if (results.length > 0 && results.every((result) => result.ok)) {
+      const remoteFiles: Partial<Record<BackupKind, string>> = {};
+      for (const result of results) if (result.file) remoteFiles[result.kind] = result.file;
+      writeSyncState({ key, fingerprint, remoteFiles, uploadedAt: deps.now ?? Date.now() }, statePath);
+    }
+  } finally {
+    unlockFileSync(lock);
+  }
 }
 
 export default function registerSyncExtension(pi: ExtensionAPI): void {

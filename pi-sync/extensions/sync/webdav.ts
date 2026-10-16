@@ -4,12 +4,14 @@ import * as path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fetchWithTimeout } from "../_shared/fetch-utils";
-import { resolvePassword, type SyncConfig } from "./config";
+import { resolvePassword, webdavDir, DEFAULT_REMOTE_BASE_DIR, type SyncConfig } from "./config";
+import { parseArchiveName, type ParsedArchiveName } from "./archive-name";
 
 export const WEBDAV_FETCH_TIMEOUT_MS = 120_000;
-export const WEBDAV_PI_BACKUP_DIR = "backup/pi/";
-export const WEBDAV_AGENT_SKILLS_DIR = "backup/skills/";
-export const WEBDAV_CORTEXKIT_DIR = "backup/cortexkit/";
+// 保留常量作为默认 remoteBaseDir 的派生值；新代码一律用 webdavDir(kind, config)。
+export const WEBDAV_PI_BACKUP_DIR = webdavDir("pi", { remoteBaseDir: DEFAULT_REMOTE_BASE_DIR });
+export const WEBDAV_AGENT_SKILLS_DIR = webdavDir("skills", { remoteBaseDir: DEFAULT_REMOTE_BASE_DIR });
+export const WEBDAV_CORTEXKIT_DIR = webdavDir("cortexkit", { remoteBaseDir: DEFAULT_REMOTE_BASE_DIR });
 
 export const ensureTrailingSlash = (url: string): string => url.endsWith("/") ? url : `${url}/`;
 /**
@@ -111,10 +113,19 @@ export async function deleteFromWebdavDir(remoteName: string, remoteDir: string,
   if (!response.ok && response.status !== 404) throw new Error(`WebDAV DELETE HTTP ${response.status}: ${response.statusText}`);
 }
 
-export async function pruneOldBackupsInDir(config: SyncConfig, ctx: ExtensionContext, remoteDir: string, prefix: string): Promise<string[]> {
+/**
+ * 远端旧备份清理：只删严格匹配归档命名且 device 与本机一致（config.deviceName）的文件，
+ * 其余（旧版命名、其他设备、无法解析的名字）一律不动。保留数仍为 maxBackups，按归档时间
+ * 戳新→旧排序。
+ */
+export async function pruneOldBackupsInDir(config: SyncConfig, ctx: ExtensionContext, remoteDir: string): Promise<string[]> {
   if (config.maxBackups <= 0) return [];
-  const files = (await listWebdavDir(remoteDir, config, ctx)).filter((name) => name.startsWith(prefix) && name.endsWith(".tar.xz")).sort().reverse();
+  const files = (await listWebdavDir(remoteDir, config, ctx))
+    .map((name) => ({ name, parsed: parseArchiveName(name) }))
+    .filter((entry): entry is { name: string; parsed: ParsedArchiveName } =>
+      entry.parsed !== null && entry.parsed.device === config.deviceName)
+    .sort((a, b) => b.parsed.ts.getTime() - a.parsed.ts.getTime() || b.name.localeCompare(a.name));
   const deleted = files.slice(config.maxBackups);
-  for (const name of deleted) try { await deleteFromWebdavDir(name, remoteDir, config, ctx); } catch { /* best effort */ }
-  return deleted;
+  for (const entry of deleted) try { await deleteFromWebdavDir(entry.name, remoteDir, config, ctx); } catch { /* best effort */ }
+  return deleted.map((entry) => entry.name);
 }

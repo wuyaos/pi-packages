@@ -29,9 +29,14 @@ const jiti = createJiti(import.meta.url, {
 for (const file of [
   "archive.test.ts",
   "config.test.ts",
+  "engine.test.ts",
   "i18n.test.ts",
   "index.test.ts",
   "menus.test.ts",
+  "multi-select.test.ts",
+  "repair.test.ts",
+  "restore-panel.test.ts",
+  "restore-rows.test.ts",
   "restore.test.ts",
   "webdav.test.ts",
 ]) {
