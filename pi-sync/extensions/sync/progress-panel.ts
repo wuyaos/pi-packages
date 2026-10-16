@@ -87,6 +87,30 @@ export function showProgressPanel(ctx: ExtensionCommandContext, title: string): 
     return { update() {}, finish: async () => {} };
   }
   const state: ProgressPanelState = { status: "", current: "", rows: [] };
+  // 优先用 Widget（非阻塞，不抢键盘焦点，对话可继续）；旧宿主回退 custom 面板。
+  const widgetApi = ctx.ui as ExtensionCommandContext["ui"] & {
+    setWidget?: (key: string, content: unknown, options?: unknown) => void;
+  };
+  if (typeof widgetApi.setWidget === "function") {
+    const key = "pi-sync-progress";
+    let component: ProgressPanelComponent | undefined;
+    let requestRender: (() => void) | undefined;
+    widgetApi.setWidget(key, ((tui: { requestRender(): void }, theme: unknown) => {
+      requestRender = () => tui.requestRender();
+      component = new ProgressPanelComponent(title, state, { requestRender: () => tui.requestRender() }, theme);
+      return component;
+    }) as never);
+    return {
+      update(next) {
+        Object.assign(state, next);
+        component?.invalidate();
+        requestRender?.();
+      },
+      async finish() {
+        try { widgetApi.setWidget!(key, undefined); } catch { /* 宿主可能已销毁 */ }
+      },
+    };
+  }
   let component: ProgressPanelComponent | undefined;
   let tuiRef: { requestRender(): void } | undefined;
   let closeFn: (() => void) | undefined;
