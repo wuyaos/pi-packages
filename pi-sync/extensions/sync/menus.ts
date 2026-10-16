@@ -139,7 +139,7 @@ export async function showBackupMenu(ctx: ExtensionCommandContext): Promise<void
   const kinds = result.checked as BackupKind[];
   // 同一批备份共用一个时间戳，保证恢复列表聚类为一行（同一设备+平台+相同 ts）。
   const batchTs = new Date();
-  // 进度面板：备份期间展示 X/Y、当前类别与已完成文件，避免渲染空窗。
+  // 后台执行：命令立即返回、编辑器解锁，进度用 Widget 通知条展示，完成后汇总通知。
   const panel = showProgressPanel(ctx, t(language, "backupRunningTitle"));
   const total = kinds.length;
   const doneResults: KindBackupResult[] = [];
@@ -151,38 +151,36 @@ export async function showBackupMenu(ctx: ExtensionCommandContext): Promise<void
       }),
       rows: doneResults.map((entry) => ({
         ok: entry.ok,
-        text: t(language, entry.ok ? "resultRowOk" : "resultRowFail", {
-          status: entry.ok ? "✅" : "❌",
-          kind: kindLabel(language, entry.kind),
-          text: entry.ok ? entry.file ?? "" : errorText(language, entry.error),
-        }),
+        text: entry.ok ? entry.file ?? "" : errorText(language, entry.error),
       })),
     });
   };
   updatePanel();
-  let results: KindBackupResult[];
-  try {
-    results = await runBackupKinds(ctx, config, kinds, {
-      batchTs,
-      onProgress: (event) => {
-        doneResults.push(event.result);
-        updatePanel();
-      },
+  void runBackupKinds(ctx, config, kinds, {
+    batchTs,
+    onProgress: (event) => {
+      doneResults.push(event.result);
+      updatePanel();
+    },
+  })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(t(language, "commandError", { error: message }), "error");
+    })
+    .finally(async () => {
+      await panel.finish();
+      if (doneResults.length === 0) return;
+      const rows = doneResults.map((entry) => ({
+        kind: entry.kind,
+        ok: entry.ok,
+        text: entry.file,
+        error: entry.error,
+      }));
+      ctx.ui.notify(
+        t(language, "backupSummary", { results: formatResultRows(language, rows) }),
+        doneResults.every((entry) => entry.ok) ? "info" : "warning",
+      );
     });
-  } finally {
-    // 异常时也关闭面板，错误由命令层统一 notify。
-    await panel.finish();
-  }
-  const rows = results.map((entry) => ({
-    kind: entry.kind,
-    ok: entry.ok,
-    text: entry.file,
-    error: entry.error,
-  }));
-  ctx.ui.notify(
-    t(language, "backupSummary", { results: formatResultRows(language, rows) }),
-    results.every((entry) => entry.ok) ? "info" : "warning",
-  );
 }
 
 // ── 恢复二级 ────────────────────────────────────────────────────────────
