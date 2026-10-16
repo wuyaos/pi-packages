@@ -92,33 +92,5 @@
 		"thinkingXhigh": "poimandresHotRed",
 		"bashMode": "poimandresDesaturatedGreen",
 		"thinkingMax": "poimandresHotRed"
-	},
-	"symbols": {
-		"preset": "nerd",
-		"overrides": {
-			"status.success": "\u25cf",
-			"status.error": "\u2716",
-			"status.warning": "\u25c6",
-			"status.info": "\u25cb",
-			"status.pending": "\u25cc",
-			"nav.cursor": "\u25b8",
-			"nav.selected": "\u25b4",
-			"thinking.minimal": "\u2218",
-			"thinking.low": "\u25cc",
-			"thinking.medium": "\u25cd",
-			"thinking.high": "\u25ce",
-			"thinking.xhigh": "\u25c9",
-			"thinking.max": "\u25cf",
-			"icon.model": "\u25c7",
-			"icon.plan": "\u25c8",
-			"icon.goal": "\u2299",
-			"icon.pause": "\u2016",
-			"icon.loop": "\u21bb",
-			"icon.folder": "\u25b8",
-			"icon.scratchFolder": "\u25cc",
-			"icon.pi": "\u03c0",
-			"format.bullet": "\u25e6",
-			"md.bullet": "\u25e6"
-		}
 	}
 }
