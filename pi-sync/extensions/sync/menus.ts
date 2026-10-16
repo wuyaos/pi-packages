@@ -472,11 +472,13 @@ export function registerSyncCommand(pi: ExtensionAPI): void {
       try {
         await handleSyncCommand(ctx, (model) => pi.setModel(model));
       } catch (error) {
-        // 不静默：错误写入 console，并尽力通知 UI（TUI 可能已重建）。
+        // 不静默：错误写入 console（含堆栈，便于定位），并尽力通知 UI（TUI 可能已重建）。
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[pi-sync] /sync command failed: ${message}`);
+        const stack = error instanceof Error ? error.stack ?? "" : "";
+        console.error(`[pi-sync] /sync command failed: ${message}\n${stack}`);
         try {
-          ctx.ui.notify(t(loadConfig().language, "commandError", { error: message }), "error");
+          const stackLines = (error instanceof Error ? error.stack ?? "" : "").split("\n").slice(1, 4).join("\n").trim();
+          ctx.ui.notify(t(loadConfig().language, "commandError", { error: stackLines ? `${message}\n${stackLines}` : message }), "error");
         } catch {
           // UI 不可用时仅保留 console 错误。
         }
