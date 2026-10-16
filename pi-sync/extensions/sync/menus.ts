@@ -53,6 +53,8 @@ export interface RestoreKindResult {
   ok: boolean;
   detail?: string[];
   error?: string;
+  /** 归档 manifest meta 的源家目录；供跨设备恢复后的 home 映射修复。 */
+  sourceHome?: string;
 }
 
 async function selectAction<T extends string>(
@@ -230,7 +232,7 @@ async function restoreKindArchive(
         ? await extractAgentSkillsZip(local)
         : await extractCortexkitZip(local);
     if (kind === "pi") await refreshModelCatalog(ctx, setModel);
-    return { kind, ok: true, detail: restored };
+    return { kind, ok: true, detail: restored, sourceHome: restored.sourceMeta?.sourceHome };
   } catch (error) {
     return { kind, ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
@@ -345,6 +347,13 @@ export async function showRestoreMenu(ctx: ExtensionCommandContext, setModel?: S
     t(language, "restoreSummary", { results: failed ? `${summary}\n${t(language, "restoreInterrupted")}` : summary }),
     failed ? "warning" : "info",
   );
+  // 带 manifest meta 的归档恢复成功后，提供按源 home 映射的修复面板
+  // （Pi 直打归档无 manifest，修复命令里走保守模式识别）。
+  const sourceHome = results.find((result) => result.ok && result.sourceHome)?.sourceHome;
+  if (sourceHome && sourceHome !== os.homedir()
+    && await ctx.ui.confirm(t(language, "repairTitle"), t(language, "repairAfterRestore"))) {
+    await runRepair(ctx, language, AGENT_DIR, sourceHome);
+  }
 }
 
 // ── 设置子菜单 ──────────────────────────────────────────────────────────

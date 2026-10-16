@@ -49,6 +49,11 @@ const EN = {
   repairRunAction: "[Ctrl+S Apply Fixes]",
   repairSuggestTarget: "clear (use Pi default)",
   repairManualTarget: "edit manually",
+  repairActionAuto: "auto",
+  repairActionSuggest: "suggest",
+  repairActionManual: "manual",
+  repairWslWarn: "WSL path: fix manually",
+  repairAfterRestore: "Run cross-platform repair with the source-home mapping from this archive?",
   repairPromptValue: "Edit value for {key}:",
   repairReport: "Fixed: {fixed} · Skipped: {skipped} · Manual: {manual}",
 
@@ -135,6 +140,11 @@ const ZH: Record<TranslationKey, string> = {
   repairRunAction: "[Ctrl+S 执行修复]",
   repairSuggestTarget: "清空（使用 Pi 默认）",
   repairManualTarget: "需人工修改",
+  repairActionAuto: "自动",
+  repairActionSuggest: "建议",
+  repairActionManual: "手动",
+  repairWslWarn: "WSL 路径：需人工修改",
+  repairAfterRestore: "是否立即运行跨平台修复（使用归档的源 home 映射）？",
   repairPromptValue: "编辑 {key} 的值：",
   repairReport: "已修复 {fixed} · 跳过 {skipped} · 待人工 {manual}",
 

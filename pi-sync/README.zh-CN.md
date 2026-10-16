@@ -137,17 +137,17 @@ Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
 
 **修复**扫描 `settings.json`、`mcp.json`、`model-config.json` 中属于其他操作系统的值：
 
-- Windows 特定：盘符路径（`C:\` / `C:/`）、反斜杠路径分隔符、`*.exe` 二进制、Windows 的 `shellPath`（powershell/pwsh/cmd）
-- POSIX 特定：`/home`、`/Users`、`/root` 开头的绝对路径、POSIX 的 `shellPath`（bash/zsh/sh/fish）
+- Windows 特定：盘符路径（`C:\` / `C:/`）、反斜杠路径分隔符、`*.exe` / `*.cmd` / `*.bat` 二进制、WSL 路径（`\\wsl$\`、`\\wsl.localhost\`）、Windows 的 `shellPath`（powershell/pwsh/cmd）
+- POSIX 特定：`/home`、`/Users`、`/root` 开头的绝对路径、`/mnt/<盘符>/` 路径、POSIX 的 `shellPath`（bash/zsh/sh/fish）
 - 可移植值（`~/…`、`$VAR…`、空）与当前平台的原生值不会误报
 
-每个问题分为三类：
+每个问题会显示动作类型，并分为三类：
 
-- **auto** —— 值位于当前家目录下，改写为可移植的 `~/` 形式（默认勾选）
-- **suggest** —— `shellPath` 清空，回退 Pi 平台默认
-- **manual** —— 无法自动映射，列出原值人工编辑（默认不勾选）
+- **auto** —— 可确定目标 home，改写为可移植的 `~/` 形式（默认勾选）。映射来源按序：当前家目录；归档 manifest `meta` 记录的源家目录（skills/Magic Context 归档携带，跨设备恢复后立即修复时使用）；对异地 home 前缀（`C:\Users\x\`、`/home/x/`、`/Users/x/`）的保守模式识别，且仅当余下部分位于 `.pi/`、`.agents/`、`.config/` 下才升级为 auto
+- **suggest** —— 需确认的修复：`shellPath` 清空回退 Pi 平台默认；`mcp.json` 的 `command` 值（字符串叶子与数组首元素）去除 Windows 包装（`node.exe` → `node`、`npx.cmd` → `npx`、剥离 `cmd /c`）
+- **manual** —— 无法安全自动映射：未知 home 的绝对路径、WSL 路径（`\\wsl$\…`、`/mnt/<盘符>/…`，带 WSL 警示，一律不改写）、Windows 上的 POSIX `command` 值（目标 shell 不确定）
 
-修复原子写回（带 `.bak` 备份），且流程幂等：修复后再次扫描为 0 项。
+修复原子写回（带 `.bak` 备份），且流程幂等：执行建议修复后再次扫描为 0 项。独立运行**修复**（非恢复后触发）时无源 home 信息，回落到保守模式识别。
 
 ## Windows 新机引导
 

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runCommand } from "../_shared/spawn";
+import { platformCode, sanitizeDeviceName, type PlatformCode } from "./archive-name";
 import {
   AGENT_DIR,
   AGENT_SKILLS_DIR,
@@ -91,14 +92,60 @@ export function collectManifest(dir: string, archivePrefix: string, sourcePrefix
   }
 }
 
-export function writeManifest(tempDir: string, agentDir: string, files: ManifestFile[]): void {
+/**
+ * 归档来源信息（manifest.json 顶层 meta 字段）。跨设备恢复后供修复
+ * 面板按源 home 精确映射路径；旧归档无 meta 时为 undefined。
+ */
+export interface ManifestSourceMeta {
+  /** 打包机器的家目录（os.homedir() 原样字符串）。 */
+  sourceHome: string;
+  /** 打包平台简码（win | mac | linux）。 */
+  platform: PlatformCode;
+  /** 打包设备名。 */
+  device: string;
+  /** meta 写入时间（ISO）。 */
+  createdAt: string;
+}
+
+export function writeManifest(tempDir: string, agentDir: string, files: ManifestFile[], deviceName?: string): void {
   fs.writeFileSync(path.join(tempDir, "manifest.json"), JSON.stringify({
     version: 1,
     createdAt: new Date().toISOString(),
     agentDir,
     fileCount: files.length,
     files,
+    meta: {
+      sourceHome: os.homedir(),
+      platform: platformCode(),
+      device: sanitizeDeviceName(deviceName ?? ""),
+      createdAt: new Date().toISOString(),
+    } satisfies ManifestSourceMeta,
   }, null, 2), "utf8");
+}
+
+/**
+ * 从解包目录读取 manifest 顶层 meta；缺失或字段不完整（旧归档）返回
+ * undefined。只信任字符串类型的 sourceHome，不校验路径存在性。
+ */
+export function readManifestSourceMeta(tempDir: string): ManifestSourceMeta | undefined {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(tempDir, "manifest.json"), "utf8"));
+    const meta = (parsed as { meta?: unknown } | null)?.meta;
+    if (!meta || typeof meta !== "object") return undefined;
+    const sourceHome = (meta as { sourceHome?: unknown }).sourceHome;
+    if (typeof sourceHome !== "string" || !sourceHome) return undefined;
+    const platform = (meta as { platform?: unknown }).platform;
+    const device = (meta as { device?: unknown }).device;
+    const createdAt = (meta as { createdAt?: unknown }).createdAt;
+    return {
+      sourceHome,
+      platform: platform === "win" || platform === "mac" || platform === "linux" ? platform : "linux",
+      device: typeof device === "string" ? device : "",
+      createdAt: typeof createdAt === "string" ? createdAt : "",
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export async function listArchiveEntries(archivePath: string): Promise<string[]> {
@@ -202,7 +249,7 @@ export async function createPiAgentZip(
   ];
 }
 
-export async function createAgentSkillsZip(archivePath: string, sourceDir = AGENT_SKILLS_DIR): Promise<string[]> {
+export async function createAgentSkillsZip(archivePath: string, sourceDir = AGENT_SKILLS_DIR, deviceName?: string): Promise<string[]> {
   if (!fs.existsSync(sourceDir)) throw new Error("~/.agents/skills does not exist.");
   const tempDir = path.join(os.tmpdir(), `pi_agent_skills_temp_${Date.now()}`);
   const destDir = path.join(tempDir, "agent-skills");
@@ -216,7 +263,7 @@ export async function createAgentSkillsZip(archivePath: string, sourceDir = AGEN
     );
     collectManifest(destDir, "agent-skills", ".agents/skills", manifest);
     if (manifest.length === 0) throw new Error("No shared agent skill files found.");
-    writeManifest(tempDir, os.homedir(), manifest);
+    writeManifest(tempDir, os.homedir(), manifest, deviceName);
     await packTemporaryArchive(tempDir, archivePath);
     return [`Shared agent skills: ${manifest.length} file(s)`];
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
@@ -227,7 +274,7 @@ export async function createAgentSkillsZip(archivePath: string, sourceDir = AGEN
  * temporary archive, applying the shared noise-name globs (*.log, *.bak,
  * *.tmp, *.swp, sync-state.json, *.bak-*).
  */
-export async function createCortexkitZip(archivePath: string, sourceDir = CORTEXKIT_CONFIG_DIR): Promise<string[]> {
+export async function createCortexkitZip(archivePath: string, sourceDir = CORTEXKIT_CONFIG_DIR, deviceName?: string): Promise<string[]> {
   if (!fs.existsSync(sourceDir)) throw new Error("~/.config/cortexkit does not exist.");
   const tempDir = path.join(os.tmpdir(), `pi_cortexkit_temp_${Date.now()}`);
   const destDir = path.join(tempDir, "cortexkit");
@@ -240,7 +287,7 @@ export async function createCortexkitZip(archivePath: string, sourceDir = CORTEX
     );
     collectManifest(destDir, "cortexkit", ".config/cortexkit", manifest);
     if (manifest.length === 0) throw new Error("No Magic Context config files found.");
-    writeManifest(tempDir, os.homedir(), manifest);
+    writeManifest(tempDir, os.homedir(), manifest, deviceName);
     await packTemporaryArchive(tempDir, archivePath);
     return [`Magic Context config: ${manifest.length} file(s)`];
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }

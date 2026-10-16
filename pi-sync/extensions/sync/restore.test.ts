@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { platformCode } from "./archive-name.ts";
 import { createCortexkitZip, createPiAgentZip } from "./archive.ts";
 import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip } from "./restore.ts";
 
@@ -124,3 +125,34 @@ test("Pi restore rejects a symlink in the destination path", async (t) => {
   assert.ok(!fs.existsSync(path.join(outside, "sync.json")));
 });
 
+
+test("restore results carry manifest source meta (round-trip); Pi archives stay without meta", async (t) => {
+  const root = tempDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  // cortexkit 打包 → 解包：meta 保留（sourceHome/platform/device/createdAt）。
+  const source = path.join(root, "new-config");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "magic-context.jsonc"), "{}\n");
+  const archive = path.join(root, "cortexkit.tar.xz");
+  await createCortexkitZip(archive, source, "devA");
+  const target = path.join(root, "cortexkit");
+  fs.mkdirSync(target);
+  const restored = await extractCortexkitZip(archive, target);
+  assert.ok(restored.sourceMeta, "cortexkit 归档应携带 sourceMeta");
+  assert.equal(restored.sourceMeta.sourceHome, os.homedir());
+  assert.equal(restored.sourceMeta.platform, platformCode());
+  assert.equal(restored.sourceMeta.device, "devA");
+  assert.ok(restored.sourceMeta.createdAt);
+
+  // Pi 归档直打无 manifest：sourceMeta undefined，数组形态不变（向后兼容）。
+  const piSource = path.join(root, "agent");
+  fs.mkdirSync(piSource);
+  fs.writeFileSync(path.join(piSource, "settings.json"), "{}");
+  const piArchive = path.join(root, "pi.tar.xz");
+  await createPiAgentZip({ piExcludePaths: [] }, piArchive, piSource);
+  const piRestored = await extractPiAgentZip(piArchive, path.join(root, "agent-target"));
+  assert.ok(Array.isArray(piRestored));
+  assert.ok(piRestored.some((line) => line.includes("Pi agent")));
+  assert.equal(piRestored.sourceMeta, undefined);
+});

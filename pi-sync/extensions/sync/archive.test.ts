@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
-import { createAgentSkillsZip, createCortexkitZip, createPiAgentZip, listArchiveEntries, validateArchiveEntries, validateArchiveEntryTypes } from "./archive.ts";
+import { createAgentSkillsZip, createCortexkitZip, createPiAgentZip, listArchiveEntries, readManifestSourceMeta, validateArchiveEntries, validateArchiveEntryTypes, writeManifest } from "./archive.ts";
+import { platformCode } from "./archive-name.ts";
 import { DEFAULT_PI_EXCLUDE_PATHS } from "./config.ts";
 
 function tempDir(): string {
@@ -184,4 +185,30 @@ test("cortexkit archive rejects a missing config directory", async (t) => {
     () => createCortexkitZip(path.join(root, "cortexkit.tar.xz"), path.join(root, "missing")),
     /does not exist/,
   );
+});
+
+test("writeManifest records source meta as an independent field without touching files", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-manifest-"));
+  try {
+    writeManifest(tempDir, os.homedir(), [{ archive: "cortexkit/x.jsonc", source: ".config/cortexkit/x.jsonc" }], "devA");
+    const manifest = JSON.parse(fs.readFileSync(path.join(tempDir, "manifest.json"), "utf8"));
+    // files 数组结构不变。
+    assert.deepEqual(manifest.files, [{ archive: "cortexkit/x.jsonc", source: ".config/cortexkit/x.jsonc" }]);
+    assert.equal(manifest.fileCount, 1);
+    assert.equal(manifest.version, 1);
+    // meta 为独立顶层字段。
+    assert.equal(manifest.meta.sourceHome, os.homedir());
+    assert.equal(manifest.meta.platform, platformCode());
+    assert.equal(manifest.meta.device, "devA");
+    assert.ok(manifest.meta.createdAt);
+    // readManifestSourceMeta 读回一致。
+    const meta = readManifestSourceMeta(tempDir);
+    assert.deepEqual(meta, manifest.meta);
+    // 缺失/损坏的 manifest 返回 undefined。
+    assert.equal(readManifestSourceMeta(path.join(tempDir, "missing-dir")), undefined);
+    fs.writeFileSync(path.join(tempDir, "manifest.json"), "{broken");
+    assert.equal(readManifestSourceMeta(tempDir), undefined);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });

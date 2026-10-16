@@ -65,8 +65,8 @@ export async function backupKindToWebdav(
   const archive = path.join(os.tmpdir(), file);
   try {
     if (kind === "pi") await createPiAgentZip(config, archive);
-    else if (kind === "skills") await createAgentSkillsZip(archive);
-    else await createCortexkitZip(archive);
+    else if (kind === "skills") await createAgentSkillsZip(archive, undefined, config.deviceName);
+    else await createCortexkitZip(archive, undefined, config.deviceName);
     await uploadToWebdavDir(archive, webdavDir(kind, config), file, config, ctx);
     await pruneOldBackupsInDir(config, ctx, webdavDir(kind, config));
     return { kind, ok: true, file };

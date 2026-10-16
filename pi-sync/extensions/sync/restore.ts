@@ -2,8 +2,29 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { timestampForBackup } from "../_shared/json-io";
-import { copyRecursiveSync, listArchiveEntries, runTar, validateArchiveEntries, validateArchiveEntryTypes } from "./archive";
+import {
+  copyRecursiveSync,
+  listArchiveEntries,
+  readManifestSourceMeta,
+  runTar,
+  validateArchiveEntries,
+  validateArchiveEntryTypes,
+  type ManifestSourceMeta,
+} from "./archive";
 import { AGENT_DIR, AGENT_SKILLS_DIR, CORTEXKIT_CONFIG_DIR, ensureDir } from "./config";
+
+/**
+ * 恢复结果：detail 行数组，附加 sourceMeta（manifest 来源信息；旧归档或
+ * Pi 直打归档无 manifest 时为 undefined）。向后代兼容：数组形态不变。
+ */
+export type RestoreResult = string[] & { sourceMeta?: ManifestSourceMeta };
+
+/** 把来源 meta 附着到 detail 行数组上（无 meta 时保持 undefined）。 */
+function withSourceMeta(lines: string[], tempDir: string): RestoreResult {
+  const result = lines as RestoreResult;
+  result.sourceMeta = readManifestSourceMeta(tempDir);
+  return result;
+}
 
 async function extractToTemp(archivePath: string, prefix: string): Promise<string> {
   const tempDir = path.join(os.tmpdir(), `${prefix}_${Date.now()}`);
@@ -78,7 +99,7 @@ export async function extractPiAgentZip(archivePath: string, targetDir = AGENT_D
       fileCount += copyExtractedTree(path.join(tempDir, name), path.join(target, name), target);
     }
     if (fileCount === 0) throw new Error("Pi backup archive contained no files.");
-    return [`Pi agent: ${fileCount} file(s) merged`];
+    return withSourceMeta([`Pi agent: ${fileCount} file(s) merged`], tempDir);
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }
 
@@ -128,9 +149,9 @@ export async function extractAgentSkillsZip(archivePath: string, targetDir = AGE
       }
       throw error;
     }
-    return previousMoved
+    return withSourceMeta(previousMoved
       ? [`Shared skills restored; previous directory moved to ${backup}`]
-      : ["Shared skills restored"];
+      : ["Shared skills restored"], tempDir);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -172,9 +193,9 @@ export async function extractCortexkitZip(archivePath: string, targetDir = CORTE
       }
       throw error;
     }
-    return previousMoved
+    return withSourceMeta(previousMoved
       ? [`Magic Context config restored; previous directory moved to ${backup}`]
-      : ["Magic Context config restored"];
+      : ["Magic Context config restored"], tempDir);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
     fs.rmSync(tempDir, { recursive: true, force: true });

@@ -137,17 +137,17 @@ Treat archives as sensitive: Pi backups may contain WebDAV credentials, API keys
 
 **Repair** scans `settings.json`, `mcp.json`, and `model-config.json` for values that belong to another OS:
 
-- Windows-specific: drive-letter paths (`C:\` / `C:/`), backslash path separators, `*.exe` binaries, and Windows `shellPath` values (powershell/pwsh/cmd)
-- POSIX-specific: `/home`, `/Users`, or `/root` absolute paths and POSIX `shellPath` values (bash/zsh/sh/fish)
+- Windows-specific: drive-letter paths (`C:\` / `C:/`), backslash path separators, `*.exe` / `*.cmd` / `*.bat` binaries, WSL paths (`\\wsl$\`, `\\wsl.localhost\`), and Windows `shellPath` values (powershell/pwsh/cmd)
+- POSIX-specific: `/home`, `/Users`, or `/root` absolute paths, `/mnt/<drive>/` paths, and POSIX `shellPath` values (bash/zsh/sh/fish)
 - Portable values (`~/…`, `$VAR…`, empty) and native values for the current platform are never flagged
 
-Each issue is classified as:
+Each issue shows its action type and is classified as:
 
-- **auto** — the value sits under the current home directory and is rewritten to portable `~/` form (checked by default)
-- **suggest** — `shellPath` is cleared so Pi falls back to its platform default
-- **manual** — no automatic mapping exists; the original value is shown for editing (unchecked by default)
+- **auto** — the value can be mapped to a known home and is rewritten to portable `~/` form (checked by default). Mapping sources, in order: the current home directory; the archive's source home (`sourceHome` recorded in the manifest `meta` of skills/Magic Context archives, used when repairing right after a cross-device restore); a conservative pattern match on foreign home prefixes (`C:\Users\x\`, `/home/x/`, `/Users/x/`) that only promotes paths under `.pi/`, `.agents/`, or `.config/`
+- **suggest** — reviewed fixes: `shellPath` is cleared so Pi falls back to its platform default; `mcp.json` `command` values (leaf strings and array first elements) lose their Windows wrapper (`node.exe` → `node`, `npx.cmd` → `npx`, `cmd /c …` unwrapped)
+- **manual** — no safe automatic mapping: unknown-home absolute paths, WSL paths (`\\wsl$\…`, `/mnt/<drive>/…` — flagged with a WSL warning and never rewritten), and POSIX `command` values on Windows (target shell unknown)
 
-Fixes are written back atomically (with a `.bak` backup) and the scan is idempotent: re-running it after a fix reports no issues.
+Fixes are written back atomically (with a `.bak` backup) and the scan is idempotent: re-running it after applying the suggested fixes reports no issues. Standalone **Repair** runs (without a restore) have no source-home info and fall back to the conservative pattern match.
 
 ## New Windows machine
 
