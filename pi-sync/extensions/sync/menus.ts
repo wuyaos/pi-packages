@@ -202,6 +202,8 @@ export function formatRestoreRow(language: SyncLanguage, row: RestoreRow, localD
     row.device,
     platformFriendlyName(language, row.platform),
     formatRestoreTime(row.ts),
+    // 行内显示备份内容（类别标签），让旧的单类别归档可分辨。
+    row.tags.map((tag) => kindLabel(language, tag)).join("+"),
   ];
   if (row.device === localDevice) parts.push(t(language, "localBadge"));
   return parts.join("  ");
