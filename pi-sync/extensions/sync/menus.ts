@@ -137,6 +137,8 @@ export async function showBackupMenu(ctx: ExtensionCommandContext): Promise<void
   const result = await multiSelect(ctx, t(language, "backupSelectTitle"), items, t(language, "runBackupAction"));
   if (!result || result.checked.length === 0) return;
   const kinds = result.checked as BackupKind[];
+  // 同一批备份共用一个时间戳，保证恢复列表聚类为一行（同一设备+平台+相同 ts）。
+  const batchTs = new Date();
   // 进度面板：备份期间展示 X/Y、当前类别与已完成文件，避免渲染空窗。
   const panel = showProgressPanel(ctx, t(language, "backupRunningTitle"));
   const total = kinds.length;
@@ -161,6 +163,7 @@ export async function showBackupMenu(ctx: ExtensionCommandContext): Promise<void
   let results: KindBackupResult[];
   try {
     results = await runBackupKinds(ctx, config, kinds, {
+      batchTs,
       onProgress: (event) => {
         doneResults.push(event.result);
         updatePanel();
@@ -284,12 +287,13 @@ export async function showRestoreMenu(ctx: ExtensionCommandContext, setModel?: S
   });
   if (!row) return;
 
+  // 跨平台/跨设备合并为一行简短提示（置灰不可选，仅提示）。
   const warnings: string[] = [];
-  if (row.platform !== platformCode()) {
-    warnings.push(t(language, "restoreCrossPlatformWarn", { platform: platformFriendlyName(language, row.platform) }));
-  }
-  if (row.device !== localDevice) {
-    warnings.push(t(language, "restoreOtherDeviceWarn", { device: row.device }));
+  if (row.platform !== platformCode() || row.device !== localDevice) {
+    warnings.push(t(language, "restoreSourceBrief", {
+      device: row.device,
+      platform: platformFriendlyName(language, row.platform),
+    }));
   }
   // 第二步：复用盒式多选勾选要恢复的类别（默认全选），Esc 取消、Ctrl+S 执行。
   const items: MultiSelectItem[] = [

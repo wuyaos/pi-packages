@@ -64,8 +64,9 @@ export async function handleShutdown(
       }
       return;
     }
+    const batchTs = new Date();
     const upload = deps.uploadKinds ?? ((uploadCtx, uploadConfig, uploadKinds) =>
-      runBackupKinds(uploadCtx as unknown as ExtensionCommandContext, uploadConfig, uploadKinds));
+      runBackupKinds(uploadCtx as unknown as ExtensionCommandContext, uploadConfig, uploadKinds, { batchTs }));
     const results = await upload(
       ctx as unknown as ExtensionCommandContext,
       config,

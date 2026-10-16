@@ -36,6 +36,8 @@ export interface KindBackupResult {
 }
 
 export interface RunBackupOptions {
+  /** 同批归档共用的固定时间戳；不传则每类别取当前时间。 */
+  batchTs?: Date;
   /** 调用方已持有的整体锁（退出备份先锁后判指纹）；传入后不再逐类别加锁。 */
   lock?: FileLock;
   /** 每类别完成（含失败/锁冲突）后回调一次，供进度面板更新。 */
@@ -61,7 +63,8 @@ export async function backupKindToWebdav(
   config: SyncConfig,
   kind: BackupKind,
 ): Promise<KindBackupResult> {
-  const file = formatArchiveName(config.deviceName, platformCode(), kind, new Date());
+  const batchTs = options.batchTs ?? new Date();
+  const file = formatArchiveName(config.deviceName, platformCode(), kind, batchTs);
   const archive = path.join(os.tmpdir(), file);
   try {
     if (kind === "pi") await createPiAgentZip(config, archive);
