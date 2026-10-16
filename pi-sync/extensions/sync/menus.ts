@@ -8,6 +8,7 @@ import { platformCode, sanitizeDeviceName } from "./archive-name";
 import {
   LOCK_BUSY_ERROR,
   runBackupKinds,
+  type KindBackupResult,
 } from "./backup";
 import {
   AGENT_DIR,
@@ -24,6 +25,7 @@ import {
 import { invalidateSyncState } from "./fingerprint";
 import { t, type SyncLanguage } from "./i18n";
 import { multiSelect, type MultiSelectItem } from "./multi-select";
+import { showProgressPanel } from "./progress-panel";
 import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip } from "./restore";
 import { runRepair } from "./repair";
 import { buildRestoreRows, RESTORE_TAG_ORDER, type RestoreRow } from "./restore-rows";
@@ -133,7 +135,39 @@ export async function showBackupMenu(ctx: ExtensionCommandContext): Promise<void
   const result = await multiSelect(ctx, t(language, "backupSelectTitle"), items, t(language, "runBackupAction"));
   if (!result || result.checked.length === 0) return;
   const kinds = result.checked as BackupKind[];
-  const results = await runBackupKinds(ctx, config, kinds);
+  // 进度面板：备份期间展示 X/Y、当前类别与已完成文件，避免渲染空窗。
+  const panel = showProgressPanel(ctx, t(language, "backupRunningTitle"));
+  const total = kinds.length;
+  const doneResults: KindBackupResult[] = [];
+  const updatePanel = (): void => {
+    panel.update({
+      status: t(language, "progressCompleted", { completed: doneResults.length, total }),
+      current: t(language, "progressCurrent", {
+        value: doneResults.length < total ? kindLabel(language, kinds[doneResults.length]!) : "",
+      }),
+      rows: doneResults.map((entry) => ({
+        ok: entry.ok,
+        text: t(language, entry.ok ? "resultRowOk" : "resultRowFail", {
+          status: entry.ok ? "✅" : "❌",
+          kind: kindLabel(language, entry.kind),
+          text: entry.ok ? entry.file ?? "" : errorText(language, entry.error),
+        }),
+      })),
+    });
+  };
+  updatePanel();
+  let results: KindBackupResult[];
+  try {
+    results = await runBackupKinds(ctx, config, kinds, {
+      onProgress: (event) => {
+        doneResults.push(event.result);
+        updatePanel();
+      },
+    });
+  } finally {
+    // 异常时也关闭面板，错误由命令层统一 notify。
+    await panel.finish();
+  }
   const rows = results.map((entry) => ({
     kind: entry.kind,
     ok: entry.ok,
@@ -157,12 +191,12 @@ function formatRestoreTime(ts: Date): string {
   return `${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
 }
 
-function formatRestoreRow(language: SyncLanguage, row: RestoreRow, localDevice: string): string {
+/** 恢复列表行文案：只含 设备名/平台友好名/时间/本机徽标，类别交给第二步勾选。 */
+export function formatRestoreRow(language: SyncLanguage, row: RestoreRow, localDevice: string): string {
   const parts = [
     row.device,
     platformFriendlyName(language, row.platform),
     formatRestoreTime(row.ts),
-    row.tags.map((tag) => kindLabel(language, tag)).join("+"),
   ];
   if (row.device === localDevice) parts.push(t(language, "localBadge"));
   return parts.join("  ");
@@ -224,7 +258,10 @@ async function refreshModelCatalog(ctx: ExtensionCommandContext, setModel?: SetM
   }
 }
 
-/** 恢复二级：扫描合并行 → 设备筛选 → 单选 → 覆盖确认 → 逐类别恢复 → 汇总。 */
+/**
+ * 恢复二级（两步）：扫描合并行 → 设备筛选 → 单选行 → 多选该行的类别
+ * （默认全选；跨平台/非本机警示作为置灰提示行）→ 逐类别恢复 → 汇总。
+ */
 export async function showRestoreMenu(ctx: ExtensionCommandContext, setModel?: SetModelFn): Promise<void> {
   const config = loadConfig();
   const language = config.language;
@@ -252,22 +289,48 @@ export async function showRestoreMenu(ctx: ExtensionCommandContext, setModel?: S
   if (row.device !== localDevice) {
     warnings.push(t(language, "restoreOtherDeviceWarn", { device: row.device }));
   }
-  const fileList = RESTORE_TAG_ORDER
-    .map((tag) => row.files[tag])
-    .filter((file): file is string => Boolean(file))
-    .join("\n");
-  if (!await ctx.ui.confirm(
-    t(language, "restoreConfirmTitle"),
-    t(language, "restoreConfirmBody", { files: fileList, warning: warnings.join("\n") }),
-  )) return;
+  // 第二步：复用盒式多选勾选要恢复的类别（默认全选），Esc 取消、Ctrl+S 执行。
+  const items: MultiSelectItem[] = [
+    ...warnings.map((warning, index) => ({ id: `warn:${index}`, label: warning, checked: false, disabled: true })),
+    ...RESTORE_TAG_ORDER
+      .filter((tag) => row.files[tag] !== undefined)
+      .map((tag) => ({ id: tag, label: kindLabel(language, tag), checked: true })),
+  ];
+  const picked = await multiSelect(ctx, t(language, "restorePickTitle"), items, t(language, "runRestoreAction"));
+  if (!picked || picked.checked.length === 0) return;
 
+  const pending = RESTORE_TAG_ORDER
+    .filter((tag) => picked.checked.includes(tag))
+    .map((tag) => ({ kind: tag as BackupKind, file: row.files[tag]! }));
+  // 进度面板：逐类别恢复期间展示 X/Y、当前类别与已完成归档。
+  const panel = showProgressPanel(ctx, t(language, "restoreRunningTitle"));
+  const updatePanel = (done: RestoreKindResult[]): void => {
+    panel.update({
+      status: t(language, "progressCompleted", { completed: done.length, total: pending.length }),
+      current: t(language, "progressCurrent", {
+        value: done.length < pending.length ? kindLabel(language, pending[done.length]!.kind) : "",
+      }),
+      rows: done.map((entry) => ({
+        ok: entry.ok,
+        text: t(language, entry.ok ? "resultRowOk" : "resultRowFail", {
+          status: entry.ok ? "✅" : "❌",
+          kind: kindLabel(language, entry.kind),
+          text: entry.ok ? entry.detail?.join("; ") ?? "" : entry.error ?? "",
+        }),
+      })),
+    });
+  };
+  updatePanel([]);
   const results: RestoreKindResult[] = [];
-  for (const kind of RESTORE_TAG_ORDER) {
-    const file = row.files[kind];
-    if (!file) continue;
-    const result = await restoreKindArchive(ctx, config, kind, file, setModel);
-    results.push(result);
-    if (!result.ok) break;
+  try {
+    for (const entry of pending) {
+      const result = await restoreKindArchive(ctx, config, entry.kind, entry.file, setModel);
+      results.push(result);
+      updatePanel(results);
+      if (!result.ok) break;
+    }
+  } finally {
+    await panel.finish();
   }
   if (results.some((result) => result.ok)) invalidateSyncState();
   const summaryRows: KindResultRow[] = results.map((result) => ({
@@ -390,6 +453,19 @@ export function registerSyncCommand(pi: ExtensionAPI): void {
   pi.registerCommand("sync", {
     description: "Back up and restore Pi data via WebDAV",
     getArgumentCompletions: () => null,
-    handler: async (_args, ctx) => handleSyncCommand(ctx, (model) => pi.setModel(model)),
+    handler: async (_args, ctx) => {
+      try {
+        await handleSyncCommand(ctx, (model) => pi.setModel(model));
+      } catch (error) {
+        // 不静默：错误写入 console，并尽力通知 UI（TUI 可能已重建）。
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[pi-sync] /sync command failed: ${message}`);
+        try {
+          ctx.ui.notify(t(loadConfig().language, "commandError", { error: message }), "error");
+        } catch {
+          // UI 不可用时仅保留 console 错误。
+        }
+      }
+    },
   });
 }

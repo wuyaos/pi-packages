@@ -12,10 +12,10 @@ WebDAV archive backup and restore for [Pi](https://github.com/earendil-works/pi-
 ## Features
 
 - Back up `~/.pi/agent` directly without a staging copy
-- Exclude reinstallable or transient trees through a configurable blacklist
+- Exclude reinstallable or transient trees through a configurable blacklist, plus fixed noise-file globs (`*.log`, `*.bak`, `*.tmp`, `*.swp`, `sync-state.json`, `*.bak-*`)
 - Keep `~/.agents/skills` in an independent, optional archive
 - Automatically back up enabled categories when Pi exits; a fingerprint check skips the upload when nothing changed
-- Multi-select categories for one-shot backups, and merged archive rows (per device/platform/timestamp) for one-shot restores with a device filter
+- Multi-select categories for one-shot backups, and merged archive rows (per device/platform/timestamp) for one-shot restores with a device filter and a per-row category multi-select
 - Cross-platform repair scans `settings.json` / `mcp.json` / `model-config.json` for foreign-OS paths and rewrites them to portable `~/` form
 - English and Simplified Chinese `/sync` menus
 - Stream WebDAV uploads/downloads instead of buffering whole archives in memory
@@ -40,7 +40,7 @@ Restart Pi or run `/reload` after installation.
 Run `/sync`. The top-level menu contains five actions:
 
 - **Back Up** — multi-select Pi / Skills / Magic Context (categories whose local directory is missing are disabled), then `Ctrl+S` runs them serially under a file lock
-- **Restore** — scans all three remote directories, merges archives that share device + platform + timestamp into one row, sorts newest first, filters by device (`←`/`→`), and restores the picked row category by category after an overwrite confirmation
+- **Restore** — scans all three remote directories, merges archives that share device + platform + timestamp into one row (device/platform/time/local badge only), sorts newest first, and filters by device (`←`/`→`); pressing Enter opens a second multi-select over that row's categories (all pre-selected, foreign-device/cross-platform notes shown as disabled hint rows), then `Ctrl+S` restores the checked categories serially (pi → skills → cortexkit), stopping after a failure
 - **Repair Cross-Platform Issues** — see [Cross-platform repair](#cross-platform-repair)
 - **Settings** — WebDAV credentials, exit backup switch, archive retention, exit backup categories, device name, archive directory prefix, Pi exclusions, and language; every change is saved immediately (each editor offers its own cancel)
 - **Quit**
@@ -54,29 +54,29 @@ The first run opens a WebDAV setup wizard when the URL, username, or password is
 The Pi archive packs `~/.pi/agent` directly. Its default blacklist is:
 
 ```json
-["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"]
+["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack", "install"]
 ```
 
-This keeps configuration and extension state while excluding installed package sources, temporary extension caches, conversation history, background-task state, and Web UI RPC runtime sockets. `config/sync.json` is included unless explicitly blacklisted.
+This keeps configuration and extension state while excluding installed package sources, temporary extension caches, conversation history, background-task state, Web UI RPC runtime sockets, and the on-disk package install tree. On top of the blacklist, fixed name globs are excluded everywhere: `*.log`, `*.bak`, `*.tmp`, `*.swp`, `sync-state.json`, and `*.bak-*` (transactional backups such as `model-config.json.bak-123`). `config/sync.json` is included unless explicitly blacklisted.
 
 ```text
-pibak/pi/<device>-<platform>-pi_<YYYYMMDD-HHMMSS>.tar.xz
+<remoteBaseDir>pi/<device>-<platform>-pi_<YYYYMMDD-HHMMSS>.tar.xz  (default: pibak/pi/…)
 ```
 
 ### Shared skills backup
 
-`~/.agents/skills` is stored in a separate archive.
+`~/.agents/skills` is stored in a separate archive. `__pycache__/`, `*.pyc`, and the shared noise-file globs are excluded.
 
 ```text
-pibak/skills/<device>-<platform>-skills_<YYYYMMDD-HHMMSS>.tar.xz
+<remoteBaseDir>skills/<device>-<platform>-skills_<YYYYMMDD-HHMMSS>.tar.xz  (default: pibak/skills/…)
 ```
 
 ### Magic Context backup
 
-`~/.config/cortexkit` is stored in a separate archive. Log files (`*.log`) are excluded.
+`~/.config/cortexkit` is stored in a separate archive. Files matching the shared noise-file globs (`*.log`, `*.bak`, `*.tmp`, `*.swp`, `sync-state.json`, `*.bak-*`) are excluded.
 
 ```text
-pibak/cortexkit/<device>-<platform>-cortexkit_<YYYYMMDD-HHMMSS>.tar.xz
+<remoteBaseDir>cortexkit/<device>-<platform>-cortexkit_<YYYYMMDD-HHMMSS>.tar.xz  (default: pibak/cortexkit/…)
 ```
 
 Archive names are `<device>-<platform>-<tag>_<UTC timestamp>.tar.xz`, where `device` is the configured device name, `platform` is `win` / `mac` / `linux`, and the timestamp is UTC so archives sort consistently across machines.
@@ -85,7 +85,7 @@ Archive names are `<device>-<platform>-<tag>_<UTC timestamp>.tar.xz`, where `dev
 
 ```text
 <webdavUrl>/
-└── pibak/            (default remoteBaseDir; configurable)
+└── <remoteBaseDir>/   (full path from the WebDAV app root, with optional leading `/`; default "pibak/", e.g. "sync/pibak/" or "/sync/pibak/")
     ├── pi/
     │   └── <device>-<platform>-pi_<timestamp>.tar.xz
     ├── skills/
@@ -109,7 +109,7 @@ Configuration is stored at `~/.pi/agent/config/sync.json`:
   "backupProviders": true,
   "backupAgentSkills": false,
   "backupCortexkit": false,
-  "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack"],
+  "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack", "install"],
   "backupOnExit": true,
   "maxBackups": 10,
   "deviceName": "DESKTOP-JK3-win",
@@ -118,11 +118,11 @@ Configuration is stored at `~/.pi/agent/config/sync.json`:
 }
 ```
 
-Old configuration keys for removed archive categories are ignored. The password may reference an environment variable (`$PI_WEBDAV_PASS`). When `language` is absent, pi-sync uses `settings.json → piSwitch.language` and falls back to English. `deviceName` defaults to a sanitized hostname plus platform suffix and is used in archive names and remote pruning. `remoteBaseDir` must be a relative path whose segments contain only letters, digits, dot, dash, and underscore. `exitBackupScope` limits which categories the exit backup uploads.
+Old configuration keys for removed archive categories are ignored. The password may reference an environment variable (`$PI_WEBDAV_PASS`). When `language` is absent, pi-sync uses `settings.json → piSwitch.language` and falls back to English. `deviceName` defaults to a sanitized hostname plus platform suffix and is used in archive names and remote pruning. `remoteBaseDir` is the full archive base path starting from the WebDAV application root (the directory `webdavUrl` points to); archives live under `<remoteBaseDir><kind>/`. It may carry a leading `/` (root-relative), its segments may contain only letters, digits, dot, dash, and underscore, and it always ends with `/` — e.g. `"sync/pibak/"` or `"/sync/pibak/"`, which join with `webdavUrl` to `https://dav.example.com/dav/sync/pibak/pi/`. `exitBackupScope` limits which categories the exit backup uploads.
 
 ## Restore behavior and safety
 
-- Restore rows merge every archive that shares device + platform + exact timestamp, so one entry restores Pi + Skills + Magic Context together (in that fixed order); a failure stops the run and reports the completed items.
+- Restore rows merge every archive that shares device + platform + exact timestamp, so one entry covers Pi + Skills + Magic Context together. Restoring is a two-step flow: pick the row, then check the categories to restore (all pre-selected) in a multi-select; the checked categories run serially in the fixed order pi → skills → cortexkit, and a failure stops the run and reports the completed items.
 - Cross-platform and foreign-device rows warn before restoring; after any successful restore the sync fingerprint is invalidated so the next exit backup re-uploads.
 - Every archive path is checked for absolute paths and traversal.
 - Symlinks and non-regular filesystem nodes are rejected before extraction.

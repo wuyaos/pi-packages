@@ -13,7 +13,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { AGENT_DIR, type BackupKind } from "./config";
+import { AGENT_DIR, PI_EXCLUDE_GLOBS, matchExcludeGlob, type BackupKind } from "./config";
 import { writeJsonAtomic } from "../_shared/json-io";
 
 export const SYNC_STATE_PATH = path.join(AGENT_DIR, "sync-state.json");
@@ -28,9 +28,9 @@ const AGENT_FINGERPRINT_FILES = [
   "pi-goal.json",
 ] as const;
 
-/** 指纹扫描跳过的目录/文件名噪声。 */
+/** 指纹扫描跳过的目录/文件名噪声：__pycache__、*.log 及共用通配排除清单。 */
 function isNoiseName(name: string): boolean {
-  return name === "__pycache__" || name.endsWith(".log");
+  return name === "__pycache__" || matchExcludeGlob(name, PI_EXCLUDE_GLOBS);
 }
 
 function isExcludedRelPath(relPath: string, excludePaths: readonly string[]): boolean {
@@ -68,7 +68,8 @@ function walkTree(dir: string, base: string, excludePaths: readonly string[], ma
 
 /**
  * 计算同步指纹：agentDir 的关键配置文件 + skillsDir/cortexkitDir 递归清单
- * （排除 piExcludePaths 相对路径、*.log、__pycache__、符号链接）。
+ * （排除 piExcludePaths 相对路径、__pycache__ 与共用通配排除清单
+ * （*.log、*.bak、*.tmp、*.swp、sync-state.json、*.bak-*）、符号链接）。
  * 目录不存在或文件缺失视为"缺席"，同样参与指纹。
  */
 export function computeFingerprint(

@@ -6,7 +6,9 @@ import {
   AGENT_DIR,
   AGENT_SKILLS_DIR,
   CORTEXKIT_CONFIG_DIR,
+  PI_EXCLUDE_GLOBS,
   ensureDir,
+  matchExcludeGlob,
   normalizePiExcludePaths,
   type ManifestFile,
   type SyncConfig,
@@ -148,14 +150,14 @@ function isExcluded(relativePath: string, exclusions: readonly string[]): boolea
   return exclusions.some((excluded) => relativePath === excluded || relativePath.startsWith(`${excluded}/`));
 }
 
-function validatePiAgentTree(sourceDir: string, exclusions: readonly string[]): number {
+function validatePiAgentTree(sourceDir: string, exclusions: readonly string[], globs: readonly string[]): number {
   const root = lstatRegularOrDirectory(sourceDir);
   if (!root.isDirectory()) throw new Error(`Pi agent path is not a directory: ${sourceDir}`);
   let fileCount = 0;
   const visit = (dir: string, relativeDir: string): void => {
     for (const name of fs.readdirSync(dir)) {
       const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
-      if (isExcluded(relativePath, exclusions)) continue;
+      if (isExcluded(relativePath, exclusions) || matchExcludeGlob(name, globs)) continue;
       const fullPath = path.join(dir, name);
       const stats = lstatRegularOrDirectory(fullPath);
       if (stats.isDirectory()) visit(fullPath, relativePath);
@@ -169,7 +171,10 @@ function validatePiAgentTree(sourceDir: string, exclusions: readonly string[]): 
 /**
  * Pack ~/.pi/agent directly without first copying it to a staging directory.
  * A lightweight filesystem scan rejects links/special nodes before tar runs;
- * excluded install/state trees are skipped during both scan and compression.
+ * excluded install/state trees and noise-name globs (*.log, *.bak, *.tmp,
+ * *.swp, sync-state.json, *.bak-*) are skipped during both scan and
+ * compression. Glob patterns stay unanchored (`--exclude=*.log`) so tar
+ * matches them at any depth.
  */
 export async function createPiAgentZip(
   config: Pick<SyncConfig, "piExcludePaths">,
@@ -182,24 +187,33 @@ export async function createPiAgentZip(
     throw new Error("Pi backup archive must be written outside ~/.pi/agent.");
   }
   const exclusions = normalizePiExcludePaths(config.piExcludePaths);
-  const fileCount = validatePiAgentTree(source, exclusions);
+  const fileCount = validatePiAgentTree(source, exclusions, PI_EXCLUDE_GLOBS);
   if (fileCount === 0) throw new Error("No Pi agent files found to back up.");
-  const excludeArgs = exclusions.map((relativePath) => `--exclude=./${relativePath}`);
+  const excludeArgs = [
+    ...exclusions.map((relativePath) => `--exclude=./${relativePath}`),
+    // 不加 ./ 前缀：unanchored 模式在任意深度匹配文件名。
+    ...PI_EXCLUDE_GLOBS.map((glob) => `--exclude=${glob}`),
+  ];
   await yieldToUI();
   await runTar(["-J", "-c", "-f", output, ...excludeArgs, "-C", source, "."]);
   return [
     `Pi agent: ${fileCount} file(s)`,
-    `Excluded: ${exclusions.length ? exclusions.join(", ") : "none"}`,
+    `Excluded: ${[...exclusions, ...PI_EXCLUDE_GLOBS].join(", ")}`,
   ];
 }
 
-export async function createAgentSkillsZip(archivePath: string): Promise<string[]> {
-  if (!fs.existsSync(AGENT_SKILLS_DIR)) throw new Error("~/.agents/skills does not exist.");
+export async function createAgentSkillsZip(archivePath: string, sourceDir = AGENT_SKILLS_DIR): Promise<string[]> {
+  if (!fs.existsSync(sourceDir)) throw new Error("~/.agents/skills does not exist.");
   const tempDir = path.join(os.tmpdir(), `pi_agent_skills_temp_${Date.now()}`);
   const destDir = path.join(tempDir, "agent-skills");
   const manifest: ManifestFile[] = [];
   try {
-    copyRecursiveSyncFiltered(AGENT_SKILLS_DIR, destDir, (name, isDirectory) => isDirectory ? name !== "__pycache__" : !name.endsWith(".pyc"));
+    copyRecursiveSyncFiltered(
+      sourceDir,
+      destDir,
+      // 与 Pi 归档共用通配排除：目录层拒 __pycache__，文件层拒 *.pyc 与噪声名。
+      (name, isDirectory) => isDirectory ? name !== "__pycache__" : !name.endsWith(".pyc") && !matchExcludeGlob(name, PI_EXCLUDE_GLOBS),
+    );
     collectManifest(destDir, "agent-skills", ".agents/skills", manifest);
     if (manifest.length === 0) throw new Error("No shared agent skill files found.");
     writeManifest(tempDir, os.homedir(), manifest);
@@ -210,7 +224,8 @@ export async function createAgentSkillsZip(archivePath: string): Promise<string[
 
 /**
  * Pack the Magic Context config directory (~/.config/cortexkit) into a
- * temporary archive, excluding log files (*.log).
+ * temporary archive, applying the shared noise-name globs (*.log, *.bak,
+ * *.tmp, *.swp, sync-state.json, *.bak-*).
  */
 export async function createCortexkitZip(archivePath: string, sourceDir = CORTEXKIT_CONFIG_DIR): Promise<string[]> {
   if (!fs.existsSync(sourceDir)) throw new Error("~/.config/cortexkit does not exist.");
@@ -221,7 +236,7 @@ export async function createCortexkitZip(archivePath: string, sourceDir = CORTEX
     copyRecursiveSyncFiltered(
       sourceDir,
       destDir,
-      (name, isDirectory) => isDirectory ? true : !name.endsWith(".log"),
+      (name, isDirectory) => isDirectory ? true : !matchExcludeGlob(name, PI_EXCLUDE_GLOBS),
     );
     collectManifest(destDir, "cortexkit", ".config/cortexkit", manifest);
     if (manifest.length === 0) throw new Error("No Magic Context config files found.");

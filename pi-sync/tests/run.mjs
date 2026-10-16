@@ -34,10 +34,12 @@ for (const file of [
   "index.test.ts",
   "menus.test.ts",
   "multi-select.test.ts",
+  "progress-panel.test.ts",
   "repair.test.ts",
   "restore-panel.test.ts",
   "restore-rows.test.ts",
   "restore.test.ts",
+  "ui-flow.test.ts",
   "webdav.test.ts",
 ]) {
   await jiti.import(join(here, "..", "extensions", "sync", file));

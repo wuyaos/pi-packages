@@ -26,6 +26,7 @@ import {
   writeSyncState,
 } from "./fingerprint.ts";
 import { lockFileSync, unlockFileSync } from "./lock.ts";
+import { runBackupKinds, type BackupProgressEvent } from "./backup.ts";
 import type { SyncConfig } from "./config.ts";
 import { pruneOldBackupsInDir } from "./webdav.ts";
 
@@ -87,14 +88,19 @@ test("sanitizeDeviceName maps invalid characters and falls back on empty input",
 
 // ── S2 配置 ───────────────────────────────────────────────────────────────
 
-test("remote base dir normalizes safe relative paths and falls back on unsafe ones", () => {
+test("remote base dir normalizes safe paths (leading slash allowed) and falls back on unsafe ones", () => {
   assert.equal(normalizeRemoteBaseDir(undefined), DEFAULT_REMOTE_BASE_DIR);
   assert.equal(normalizeRemoteBaseDir("backup"), "backup/");
   assert.equal(normalizeRemoteBaseDir("backup/"), "backup/");
   assert.equal(normalizeRemoteBaseDir("a/b.c-d_e"), "a/b.c-d_e/");
-  const unsafe = ["/abs", "C:/x", "C:\\x", "a/../b", "..", ".", "a b", "a$b", "备份", ""];
+  // R1：前导 /（根相对路径）与空段折叠。
+  assert.equal(normalizeRemoteBaseDir("/sync/pibak/"), "/sync/pibak/");
+  assert.equal(normalizeRemoteBaseDir("/sync/pibak"), "/sync/pibak/");
+  assert.equal(normalizeRemoteBaseDir("a//b"), "a/b/");
+  const unsafe = ["", "/", "C:/x", "C:\\x", "backup\\sub", "a/../b", "../x", "..", ".", "a b", "a$b", "备份"];
   for (const value of unsafe) assert.equal(normalizeRemoteBaseDir(value), DEFAULT_REMOTE_BASE_DIR, `expected fallback: ${value}`);
   assert.equal(webdavDir("pi", { remoteBaseDir: "backup/" }), "backup/pi/");
+  assert.equal(webdavDir("pi", { remoteBaseDir: "/sync/pibak/" }), "/sync/pibak/pi/");
   assert.equal(webdavDir("cortexkit", { remoteBaseDir: "deep/dir/" }), "deep/dir/cortexkit/");
 });
 
@@ -142,6 +148,14 @@ test("fingerprint detects single-file changes and ignores log/pycache noise", ()
     fs.writeFileSync(path.join(skillsDir, "alpha", "debug.log"), "noise");
     fs.mkdirSync(path.join(skillsDir, "__pycache__"));
     fs.writeFileSync(path.join(skillsDir, "__pycache__", "x.pyc"), "noise");
+    assert.equal(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), afterSkills);
+
+    // 共用通配排除：*.bak、*.tmp、*.swp、sync-state.json、*.bak-* 同样不参与指纹。
+    fs.writeFileSync(path.join(skillsDir, "alpha", "a.bak"), "noise");
+    fs.writeFileSync(path.join(skillsDir, "alpha", "a.tmp"), "noise");
+    fs.writeFileSync(path.join(skillsDir, "alpha", "a.swp"), "noise");
+    fs.writeFileSync(path.join(skillsDir, "sync-state.json"), "noise");
+    fs.writeFileSync(path.join(cortexkitDir, "model-config.json.bak-123"), "noise");
     assert.equal(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), afterSkills);
 
     // piExcludePaths 命中的相对路径（含树内前缀）不参与指纹。
@@ -308,5 +322,41 @@ test("prune deletes only strictly parsed archives of the local device", async ()
     assert.deepEqual(server.deleted, []);
   } finally {
     await server.close();
+  }
+});
+
+// ── 备份进度回调 ─────────────────────────────────────────────────────────
+
+test("runBackupKinds reports progress per kind and supports injectable backup fn", async () => {
+  const root = tempDir("pi-sync-progress-");
+  const lockPath = path.join(root, "sync.lock");
+  try {
+    const lock = lockFileSync(lockPath);
+    assert.ok(lock);
+    const config = {
+      deviceName: "devA",
+      remoteBaseDir: "sync/pibak/",
+      maxBackups: 2,
+    } as SyncConfig;
+    const events: BackupProgressEvent[] = [];
+    const results = await runBackupKinds({} as never, config, ["pi", "skills"], {
+      lock,
+      backupKind: async (_ctx, _cfg, kind) =>
+        kind === "pi"
+          ? { kind, ok: true, file: "devA-win-pi_x.tar.xz" }
+          : { kind, ok: false, file: "devA-win-skills_x.tar.xz", error: "http 500" },
+      onProgress: (event) => events.push(event),
+    });
+    unlockFileSync(lock);
+    assert.equal(results.length, 2);
+    assert.deepEqual(events.map((event) => [event.completed, event.total, event.kind]), [
+      [1, 2, "pi"],
+      [2, 2, "skills"],
+    ]);
+    assert.equal(events[0]!.result.ok, true);
+    assert.equal(events[1]!.result.ok, false);
+    assert.equal(events[1]!.result.error, "http 500");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

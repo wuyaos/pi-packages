@@ -38,6 +38,21 @@ export interface KindBackupResult {
 export interface RunBackupOptions {
   /** 调用方已持有的整体锁（退出备份先锁后判指纹）；传入后不再逐类别加锁。 */
   lock?: FileLock;
+  /** 每类别完成（含失败/锁冲突）后回调一次，供进度面板更新。 */
+  onProgress?: (event: BackupProgressEvent) => void;
+  /** @internal 仅供测试注入单类别执行，避免真实打包与网络。 */
+  backupKind?: typeof backupKindToWebdav;
+}
+
+export interface BackupProgressEvent {
+  /** 已完成（含失败）的类别数。 */
+  completed: number;
+  /** 本次备份的类别总数。 */
+  total: number;
+  /** 刚完成的类别。 */
+  kind: BackupKind;
+  /** 该类别的执行结果。 */
+  result: KindBackupResult;
 }
 
 /** 备份单个类别：打包 → 上传 → 远端 prune。抛错一律折叠为失败结果。 */
@@ -70,17 +85,21 @@ export async function runBackupKinds(
   options: RunBackupOptions = {},
 ): Promise<KindBackupResult[]> {
   const results: KindBackupResult[] = [];
+  const backupKind = options.backupKind ?? backupKindToWebdav;
   for (const kind of kinds) {
     const lock = options.lock ?? lockFileSync(SYNC_LOCK_PATH);
     if (!lock) {
       results.push({ kind, ok: false, error: LOCK_BUSY_ERROR });
+      options.onProgress?.({ completed: results.length, total: kinds.length, kind, result: results[results.length - 1]! });
       continue;
     }
     try {
-      results.push(await backupKindToWebdav(ctx, config, kind));
+      const result = await backupKind(ctx, config, kind);
+      results.push(result);
     } finally {
       if (!options.lock) unlockFileSync(lock);
     }
+    options.onProgress?.({ completed: results.length, total: kinds.length, kind, result: results[results.length - 1]! });
   }
   return results;
 }

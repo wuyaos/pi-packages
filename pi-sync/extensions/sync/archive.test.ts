@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
-import { createCortexkitZip, createPiAgentZip, listArchiveEntries, validateArchiveEntries, validateArchiveEntryTypes } from "./archive.ts";
+import { createAgentSkillsZip, createCortexkitZip, createPiAgentZip, listArchiveEntries, validateArchiveEntries, validateArchiveEntryTypes } from "./archive.ts";
+import { DEFAULT_PI_EXCLUDE_PATHS } from "./config.ts";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-archive-"));
@@ -104,6 +105,76 @@ test("cortexkit archive packs config files and excludes log files", async (t) =>
   assert.ok(entries.includes("cortexkit/magic-context.jsonc"));
   assert.ok(entries.includes("cortexkit/sessions/compaction.md"));
   assert.ok(!entries.some((entry) => entry.endsWith(".log")));
+});
+
+test("Pi agent archive excludes the install tree and noise-name globs", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "agent");
+  const archive = path.join(root, "backup.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(source, "install"), { recursive: true });
+  fs.writeFileSync(path.join(source, "install", "x"), "installed");
+  fs.writeFileSync(path.join(source, "settings.json"), "{}");
+  fs.writeFileSync(path.join(source, "a.bak"), "noise");
+  fs.writeFileSync(path.join(source, "a.tmp"), "noise");
+  fs.writeFileSync(path.join(source, "a.log"), "noise");
+  fs.writeFileSync(path.join(source, "a.swp"), "noise");
+  fs.writeFileSync(path.join(source, "sync-state.json"), "state");
+  fs.writeFileSync(path.join(source, "model-config.json.bak-123"), "txn backup");
+
+  await createPiAgentZip({ piExcludePaths: [...DEFAULT_PI_EXCLUDE_PATHS] }, archive, source);
+  const entries = await listArchiveEntries(archive);
+  assert.ok(entries.includes("settings.json"));
+  const noise = ["install", "a.bak", "a.tmp", "a.log", "a.swp", "sync-state.json", "model-config.json.bak-123"];
+  for (const name of noise) {
+    assert.ok(!entries.includes(name), `expected excluded: ${name}`);
+  }
+});
+
+test("skills archive excludes __pycache__, *.pyc, and shared noise-name globs", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "skills");
+  const archive = path.join(root, "skills.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(source, "alpha", "__pycache__"), { recursive: true });
+  fs.writeFileSync(path.join(source, "alpha", "SKILL.md"), "keep");
+  fs.writeFileSync(path.join(source, "alpha", "x.pyc"), "noise");
+  fs.writeFileSync(path.join(source, "alpha", "__pycache__", "y.pyc"), "noise");
+  fs.writeFileSync(path.join(source, "a.log"), "noise");
+  fs.writeFileSync(path.join(source, "a.bak"), "noise");
+  fs.writeFileSync(path.join(source, "a.tmp"), "noise");
+  fs.writeFileSync(path.join(source, "a.swp"), "noise");
+  fs.writeFileSync(path.join(source, "sync-state.json"), "noise");
+  fs.writeFileSync(path.join(source, "SKILL.md.bak-123"), "noise");
+
+  await createAgentSkillsZip(archive, source);
+  const entries = await listArchiveEntries(archive);
+  assert.ok(entries.includes("agent-skills/alpha/SKILL.md"));
+  for (const entry of entries) {
+    assert.ok(!entry.includes("__pycache__") && !entry.endsWith(".pyc") && !entry.includes(".log") && !entry.includes(".bak"), `unexpected entry: ${entry}`);
+  }
+});
+
+test("cortexkit archive excludes shared noise-name globs beyond log files", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "cortexkit");
+  const archive = path.join(root, "cortexkit.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, "magic-context.jsonc"), "{}\n");
+  fs.writeFileSync(path.join(source, "debug.log"), "noise");
+  fs.writeFileSync(path.join(source, "magic-context.jsonc.bak"), "noise");
+  fs.writeFileSync(path.join(source, "compaction.tmp"), "noise");
+  fs.writeFileSync(path.join(source, "session.swp"), "noise");
+  fs.writeFileSync(path.join(source, "magic-context.jsonc.bak-456"), "noise");
+
+  await createCortexkitZip(archive, source);
+  const entries = await listArchiveEntries(archive);
+  assert.ok(entries.includes("cortexkit/magic-context.jsonc"));
+  assert.deepEqual(
+    entries.filter((entry) => !entry.endsWith("manifest.json")),
+    ["cortexkit", "cortexkit/magic-context.jsonc"],
+  );
 });
 
 test("cortexkit archive rejects a missing config directory", async (t) => {
