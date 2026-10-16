@@ -62,9 +62,10 @@ export async function backupKindToWebdav(
   ctx: ExtensionContext,
   config: SyncConfig,
   kind: BackupKind,
+  batchTs?: Date,
 ): Promise<KindBackupResult> {
-  const batchTs = options.batchTs ?? new Date();
-  const file = formatArchiveName(config.deviceName, platformCode(), kind, batchTs);
+  const ts = batchTs ?? new Date();
+  const file = formatArchiveName(config.deviceName, platformCode(), kind, ts);
   const archive = path.join(os.tmpdir(), file);
   try {
     if (kind === "pi") await createPiAgentZip(config, archive);
@@ -97,7 +98,7 @@ export async function runBackupKinds(
       continue;
     }
     try {
-      const result = await backupKind(ctx, config, kind);
+      const result = await backupKind(ctx, config, kind, options.batchTs);
       results.push(result);
     } finally {
       if (!options.lock) unlockFileSync(lock);
