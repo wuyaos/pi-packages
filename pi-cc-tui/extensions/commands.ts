@@ -2,6 +2,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyEditor, restoreEditor } from "./editor.ts";
+import { loadHistory, fullHistory, sessionUserTexts } from "./input-history.ts";
 import { applyStartupHeader, disposeStartupHeader } from "./startup-header.ts";
 import { applyStatusline, restoreDefaultFooter, segmentConfig, telemetryConfig, saveConfig, saveTelemetryConfig, loadConfig, configSummary } from "./statusline.ts";
 import { ConfigMenuComponent, type MenuResult } from "./menu.ts";
@@ -109,7 +110,11 @@ export default function (pi: ExtensionAPI) {
 			// ── apply: 启用全部 TUI 组件 ──
 			if (action === "apply") {
 				applyStartupHeader(pi, ctx);
-				applyEditor(ctx);
+				const sessionDir = ctx.sessionManager.getSessionDir();
+				const persisted = await loadHistory(sessionDir);
+				// apply 不经过 renderInitialMessages 原生回填，当前会话部分需一并灌入
+				const fill = persisted ? fullHistory(persisted, sessionUserTexts(ctx)) : sessionUserTexts(ctx);
+				applyEditor(ctx, fill);
 				applyStatusline(ctx);
 				ctx.ui.notify("已启用 pi-cc-tui (启动头+输入框+状态栏)", "info");
 				return;

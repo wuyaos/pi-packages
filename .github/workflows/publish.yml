@@ -1,7 +1,11 @@
 name: Publish Packages
 
-# 打总 tag 触发, workflow 内串行发布所有"版本号比 npm 上新"的包
-# 触发 tag: release* 或 publish-all*  (例: git tag publish-all && git push --tags)
+# 单包发布推荐使用 `<目录>-v<版本>` tag，例如 `pi-cc-tui-v1.4.0`。
+# workflow 会校验 tag 与 package.json 版本一致，只发布对应 workspace。
+# 批量发布仍支持 `publish-all*` / `release*`：扫描全部非 private pi-* 包，
+# 只发布 npm 上尚不存在的版本。
+#
+# 已存在 npm 的包使用 OIDC Trusted Publishing；首次发布需要 NPM_TOKEN。
 #
 # 每个包自动判断:
 # - npm 上不存在        → 首次发布, 需 NPM_TOKEN secret
@@ -16,6 +20,7 @@ on:
     tags:
       - 'release*'
       - 'publish-all*'
+      - 'pi-*-v*'
 
 permissions:
   id-token: write   # OIDC trusted publishing 必需
@@ -42,18 +47,37 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -e
-          # 列出所有 pi-* workspace 包: name<TAB>version
-          mapfile -t pkgs < <(node -e '
-            const fs = require("fs");
-            for (const d of fs.readdirSync(".")) {
-              if (!d.startsWith("pi-")) continue;
-              const f = d + "/package.json";
-              if (!fs.existsSync(f)) continue;
-              const p = JSON.parse(fs.readFileSync(f, "utf8"));
-              if (p.private) continue;
-              console.log(p.name + "\t" + p.version);
-            }
-          ')
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" =~ ^(pi-[A-Za-z0-9_-]+)-v([0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?)$ ]]; then
+            package_dir="${BASH_REMATCH[1]}"
+            tag_version="${BASH_REMATCH[2]}"
+            package_file="$package_dir/package.json"
+            if [ ! -f "$package_file" ]; then
+              echo "::error::tag $tag points to missing package directory $package_dir"
+              exit 1
+            fi
+            package_name=$(node -p "require('./$package_file').name")
+            package_version=$(node -p "require('./$package_file').version")
+            if [ "$package_version" != "$tag_version" ]; then
+              echo "::error::$package_dir/package.json version $package_version does not match tag version $tag_version"
+              exit 1
+            fi
+            pkgs=("$package_name"$'\t'"$package_version")
+            echo "Single-package release: $package_name@$package_version"
+          else
+            # 批量 tag：列出所有非 private pi-* workspace 包: name<TAB>version
+            mapfile -t pkgs < <(node -e '
+              const fs = require("fs");
+              for (const d of fs.readdirSync(".")) {
+                if (!d.startsWith("pi-")) continue;
+                const f = d + "/package.json";
+                if (!fs.existsSync(f)) continue;
+                const p = JSON.parse(fs.readFileSync(f, "utf8"));
+                if (p.private) continue;
+                console.log(p.name + "\t" + p.version);
+              }
+            ')
+          fi
 
           # 带重试的发布: 处理 OIDC provenance 的 tlog 409 等偶发错误
           # npm publish 非幂等, 但 tlog 失败时包可能已上传成功 → 重试前先查版本

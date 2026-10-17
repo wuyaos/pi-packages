@@ -2,7 +2,6 @@
 
 import {
 	CustomEditor,
-	type ExtensionAPI,
 	type ExtensionContext,
 	type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -31,18 +30,19 @@ class CcTuiEditor extends CustomEditor {
 	}
 }
 
-export function applyEditor(ctx: ExtensionContext): void {
+export function applyEditor(ctx: ExtensionContext, history: string[] = []): void {
 	if (ctx.mode !== "tui") return;
 	ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 		const cursorOpen = () => cursorOpenFromFgAnsi(ctx.ui.theme.getFgAnsi("accent"));
-		return new CcTuiEditor(tui, theme, keybindings, cursorOpen);
+		const editor = new CcTuiEditor(tui, theme, keybindings, cursorOpen);
+		// 旧→新灌入，使 ↑ 先命中最近一条（项目级持久化历史，见 input-history.ts）
+		for (let index = history.length - 1; index >= 0; index--) {
+			editor.addToHistory?.(history[index]);
+		}
+		return editor;
 	});
 }
 
 export function restoreEditor(ctx: ExtensionContext): void {
 	ctx.ui.setEditorComponent(undefined);
-}
-
-export default function (pi: ExtensionAPI) {
-	pi.on("session_start", (_event, ctx) => applyEditor(ctx));
 }

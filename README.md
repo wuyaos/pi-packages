@@ -44,6 +44,42 @@ pi install npm:@wuyaos/pi-zotero
 
 npm 方式可带版本锁定：`pi install npm:@wuyaos/pi-cc-tui@1.0.0`
 
+
+## 发布流程
+
+推荐使用“包目录 + 版本号”单包 tag，避免无意扫描并发布其他包。
+
+```bash
+# 1. 修改 pi-<name>/package.json 的 version，并完成代码检查
+npm run check
+
+# 2. 提交并推送主分支
+# 只 add 本次包和必要的根文件，不要把 node_modules、临时文件带入提交
+git add pi-cc-tui tsconfig.check.json
+git commit -m "feat(pi-cc-tui): persist input history"
+git push origin master
+
+# 3. tag 必须与 package.json 的版本完全一致
+git tag pi-cc-tui-v1.4.0
+git push origin pi-cc-tui-v1.4.0
+```
+
+`pi-cc-tui-v1.4.0` 会触发 `.github/workflows/publish.yml`：解析包目录和版本，校验 `pi-cc-tui/package.json`，然后只执行该 workspace 的 npm 发布。已存在的包使用 GitHub OIDC Trusted Publishing；首次发布需要 `NPM_TOKEN`，发布后应配置 npm Trusted Publisher 并删除长期 token。
+
+旧的 `publish-all*` / `release*` tag 仍可用于有意的批量发布：workflow 会扫描所有非 private 的 `pi-*` 包，仅发布 npm 上尚不存在的版本。不要复用或移动旧 tag；每次发布使用新的版本 tag。
+
+若本机 GitHub SSH 连接超时，优先用已验证的 SOCKS5 代理（本机当前为 `127.0.0.1:7890`）并对 HTTPS remote 使用仓库级 Git 配置：
+
+```bash
+git remote set-url origin https://github.com/wuyaos/pi-packages.git
+git config --local http.proxy ""
+git config --local http.https://github.com.proxy socks5://127.0.0.1:7890
+git ls-remote origin HEAD refs/heads/master
+git push origin master
+git push origin pi-cc-tui-v1.4.0
+```
+
+不要只设置 `http.proxy`：本机 Git 的 HTTPS 通道可能因代理 TLS 转发出现 `schannel: server closed abruptly`；`http.https://github.com.proxy` 使用 SOCKS5 是当前验证成功的配置。代理端口替换为实际值；GitHub Actions 在 runner 上运行，不继承本机代理。
 ### 只加载某个子包（filter）
 
 在 `~/.pi/agent/settings.json` 用 object form：
