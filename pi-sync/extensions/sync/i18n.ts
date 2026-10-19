@@ -39,7 +39,6 @@ const EN = {
   platformWin: "Windows",
   platformLinux: "Linux",
   platformMac: "macOS",
-  restoreSourceBrief: "归档来自 {device}（{platform}），跨设备恢复后如路径异常可用「修复」处理。",
   restoreSourceBrief: "Archive from {device} ({platform}). Run Repair if paths break after cross-device restore.",
   restoreCrossPlatformWarn: "These archives were created on {platform}; embedded paths recorded for the other OS may need Repair afterwards.",
   restoreSummary: "Restore finished:\n{results}",
@@ -133,6 +132,7 @@ const ZH: Record<TranslationKey, string> = {
   platformMac: "macOS",
   restoreCrossPlatformWarn: "归档来自 {platform} 平台，其中另一操作系统的路径事后可能需要用「修复」处理。",
   restoreOtherDeviceWarn: "归档来自设备「{device}」。",
+  restoreSourceBrief: "归档来自 {device}（{platform}），跨设备恢复后如路径异常可用「修复」处理。",
   restoreSummary: "恢复完成：\n{results}",
   restoreInterrupted: "失败后已中断，上方为已完成项。",
 
