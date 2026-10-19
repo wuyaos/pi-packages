@@ -125,6 +125,60 @@ test("Pi restore rejects a symlink in the destination path", async (t) => {
   assert.ok(!fs.existsSync(path.join(outside, "sync.json")));
 });
 
+test("Pi restore skips archive-dir over local-file type conflict with a warning", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "source");
+  const target = path.join(root, "target");
+  const archive = path.join(root, "backup.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(source, "skills", "sub"), { recursive: true });
+  fs.writeFileSync(path.join(source, "skills", "sub", "data.md"), "archived");
+  fs.mkdirSync(path.join(target, "skills"), { recursive: true });
+  fs.writeFileSync(path.join(target, "skills", "sub"), "local-file");
+
+  await createPiAgentZip({ piExcludePaths: [] }, archive, source);
+  const result = await extractPiAgentZip(archive, target);
+  assert.ok(result.some((l) => l.includes("Type conflict, skipped") && /skills[/\\]sub/.test(l)));
+  assert.ok(fs.readFileSync(path.join(target, "skills", "sub"), "utf8") === "local-file");
+  assert.ok(!fs.existsSync(path.join(target, "skills", "sub", "data.md")));
+});
+
+test("Pi restore skips archive-file over local-dir type conflict with a warning", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "source");
+  const target = path.join(root, "target");
+  const archive = path.join(root, "backup.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "marker"), "archived");
+  fs.mkdirSync(path.join(target, "marker"), { recursive: true });
+  fs.writeFileSync(path.join(target, "marker", "keep.txt"), "local-dir");
+
+  await createPiAgentZip({ piExcludePaths: [] }, archive, source);
+  const result = await extractPiAgentZip(archive, target);
+  assert.ok(result.some((l) => l.includes("Type conflict, skipped") && l.includes("marker")));
+  assert.ok(fs.existsSync(path.join(target, "marker", "keep.txt")));
+  assert.ok(!fs.existsSync(path.join(target, "marker", "marker"))); // no file written inside
+});
+
+test("Pi restore with only type conflicts still reports merged count and warnings", async (t) => {
+  const root = tempDir();
+  const source = path.join(root, "source");
+  const target = path.join(root, "target");
+  const archive = path.join(root, "backup.tar.xz");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "marker"), "archived");
+  fs.mkdirSync(path.join(target, "marker"), { recursive: true });
+
+  await createPiAgentZip({ piExcludePaths: [] }, archive, source);
+  const result = await extractPiAgentZip(archive, target);
+  assert.ok(result.some((l) => l.startsWith("Pi agent: 0 file(s) merged")));
+  assert.ok(result.some((l) => l.includes("Type conflict, skipped")));
+});
 
 test("restore results carry manifest source meta (round-trip); Pi archives stay without meta", async (t) => {
   const root = tempDir();

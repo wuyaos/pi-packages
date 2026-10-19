@@ -52,7 +52,12 @@ function assertSafeRestoreParent(root: string, destination: string): void {
   }
 }
 
-function copyExtractedTree(source: string, destination: string, root: string): number {
+function typeConflictWarning(destination: string, root: string): string {
+  const relative = path.relative(root, destination) || destination;
+  return `Type conflict, skipped: ${relative} (archive and local disagree between file and directory; resolve manually if needed)`;
+}
+
+function copyExtractedTree(source: string, destination: string, root: string, warnings: string[]): number {
   const sourceStats = fs.lstatSync(source);
   if (sourceStats.isSymbolicLink() || (!sourceStats.isFile() && !sourceStats.isDirectory())) {
     throw new Error(`Unsafe extracted entry rejected: ${source}`);
@@ -61,22 +66,32 @@ function copyExtractedTree(source: string, destination: string, root: string): n
   if (sourceStats.isDirectory()) {
     if (fs.existsSync(destination)) {
       const destinationStats = fs.lstatSync(destination);
-      if (destinationStats.isSymbolicLink() || !destinationStats.isDirectory()) {
+      if (destinationStats.isSymbolicLink()) {
         throw new Error(`Unsafe restore destination rejected: ${destination}`);
+      }
+      if (!destinationStats.isDirectory()) {
+        // 归档目录 vs 本地普通文件：类型冲突不阻断整体恢复，跳过并记录
+        warnings.push(typeConflictWarning(destination, root));
+        return 0;
       }
     } else {
       fs.mkdirSync(destination, { recursive: true });
     }
     let copied = 0;
     for (const child of fs.readdirSync(source)) {
-      copied += copyExtractedTree(path.join(source, child), path.join(destination, child), root);
+      copied += copyExtractedTree(path.join(source, child), path.join(destination, child), root, warnings);
     }
     return copied;
   }
   if (fs.existsSync(destination)) {
     const destinationStats = fs.lstatSync(destination);
-    if (destinationStats.isSymbolicLink() || !destinationStats.isFile()) {
+    if (destinationStats.isSymbolicLink()) {
       throw new Error(`Unsafe restore destination rejected: ${destination}`);
+    }
+    if (!destinationStats.isFile()) {
+      // 归档文件 vs 本地普通目录：类型冲突不阻断整体恢复，跳过并记录
+      warnings.push(typeConflictWarning(destination, root));
+      return 0;
     }
   }
   ensureDir(path.dirname(destination));
@@ -95,11 +110,12 @@ export async function extractPiAgentZip(archivePath: string, targetDir = AGENT_D
       throw new Error(`Pi agent restore target is not a safe directory: ${target}`);
     }
     let fileCount = 0;
+    const warnings: string[] = [];
     for (const name of fs.readdirSync(tempDir)) {
-      fileCount += copyExtractedTree(path.join(tempDir, name), path.join(target, name), target);
+      fileCount += copyExtractedTree(path.join(tempDir, name), path.join(target, name), target, warnings);
     }
-    if (fileCount === 0) throw new Error("Pi backup archive contained no files.");
-    return withSourceMeta([`Pi agent: ${fileCount} file(s) merged`], tempDir);
+    if (fileCount === 0 && warnings.length === 0) throw new Error("Pi backup archive contained no files.");
+    return withSourceMeta([`Pi agent: ${fileCount} file(s) merged`, ...warnings], tempDir);
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }
 
