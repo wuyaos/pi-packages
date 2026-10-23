@@ -14,8 +14,8 @@
   "files": [
     "pi-cc-tui/extensions/commands.ts",
     "pi-cc-tui/extensions/editor.ts",
-    "pi-cc-tui/extensions/input-history.ts",
     "pi-cc-tui/extensions/index.ts",
+    "pi-cc-tui/extensions/input-history.ts",
     "pi-cc-tui/extensions/menu.ts",
     "pi-cc-tui/extensions/render-utils.ts",
     "pi-cc-tui/extensions/startup-header.ts",
@@ -42,6 +42,7 @@
     "pi-cc-tui/src/ui/scroll.test.ts",
     "pi-cc-tui/src/ui/scroll.ts",
     "pi-cc-tui/src/ui/text.ts",
+    "pi-model-config/src/command.ts",
     "pi-model-roles/src/api.test.ts",
     "pi-model-roles/src/api.ts",
     "pi-notify/extensions/notify.ts",

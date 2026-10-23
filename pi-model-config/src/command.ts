@@ -15,6 +15,7 @@ import { buildDiscoveryCandidates, discoverModelsFromCandidates } from "./discov
 import { createProviderFetch } from "./transport.ts";
 import { probeChatParams, probeTargetsFor, resolveProbeApiKey, runAutoProbeFlow } from "./auto-probe.ts";
 import { formatError, mcError, t, type UiLanguage } from "./i18n.ts";
+import { selectScrolling } from "./scroll-select.ts";
 import {
   showConnectionPanel,
   showPreviewPanel,
@@ -615,7 +616,7 @@ async function chooseBuiltinProvider(ctx: ExtensionCommandContext, language: UiL
   const choices = buildBuiltinProviderChoices(language, getBuiltinProviders());
   const labelToId = new Map(choices.map((choice) => [choice.label, choice.id]));
   const back = t(language, "back");
-  const selected = await ctx.ui.select(t(language, "newProviderTitle"), [...choices.map((choice) => choice.label), back]);
+  const selected = await selectScrolling(ctx, t(language, "newProviderTitle"), [...choices.map((choice) => choice.label), back]);
   if (!selected || selected === back) return undefined;
   const id = labelToId.get(selected);
   return id ? { id, isNew: false } : undefined;
