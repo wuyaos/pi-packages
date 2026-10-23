@@ -17,6 +17,7 @@ import { MODEL_CONFIG_OVERLAY_OPTIONS, overlayViewportRows, renderActionFooter, 
 import type { CandidateModel, ManagedModel, ManagedModelType, ModelMetadataEntry, ProviderDraft, SelectionResult, ThinkingLevelMap, ThinkingMetadataSource } from "./types.ts";
 import { hiddenRemoteKey, identityOf } from "./types.ts";
 import { protocolThinkingMap } from "./thinking-defaults.ts";
+import { isDirectoryCompletable } from "./model-completion.ts";
 import { describeThinking } from "./model-editor.ts";
 
 function modelTypeLabel(language: UiLanguage, type: ManagedModelType): string {
@@ -39,8 +40,8 @@ function cloneManaged(model: ManagedModel): ManagedModel {
   return structuredClone(model);
 }
 
-function stripCandidate(model: CandidateModel): ManagedModel {
-  const { source: _source, mutableType: _mutable, readOnly: _readOnly, readOnlyReason: _reason, contextSource: _contextSource, maxTokensSource: _maxTokensSource, thinkingSource: _thinkingSource, ...managed } = model;
+export function stripCandidate(model: CandidateModel): ManagedModel {
+  const { source: _source, mutableType: _mutable, readOnly: _readOnly, readOnlyReason: _reason, contextSource: _contextSource, maxTokensSource: _maxTokensSource, thinkingSource: _thinkingSource, directoryFields: _directoryFields, directoryMatchMethod: _directoryMethod, ...managed } = model;
   return managed as ManagedModel;
 }
 
@@ -73,13 +74,13 @@ export function candidateFromInstalled(model: AnyModel): CandidateModel {
 }
 
 export function candidateFromManaged(model: ManagedModel, metadata?: ModelMetadataEntry): CandidateModel {
-  return { ...cloneManaged(model), source: "managed", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined) } as CandidateModel;
+  return { ...cloneManaged(model), directoryFields: metadata?.directoryFields, directoryMatchMethod: metadata?.directoryMatchMethod, source: "managed", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined) } as CandidateModel;
 }
 
 /** A models.json row belongs to this provider configuration and is immediately editable.
  * It becomes managed on the next save; only runtime catalog rows remain read-only. */
 export function candidateFromExternal(model: ManagedModel, metadata?: ModelMetadataEntry): CandidateModel {
-  return { ...cloneManaged(model), source: "external", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined) } as CandidateModel;
+  return { ...cloneManaged(model), directoryFields: metadata?.directoryFields, directoryMatchMethod: metadata?.directoryMatchMethod, source: "external", mutableType: false, contextSource: metadata?.contextSource ?? (model.type === "image" ? undefined : "existing"), maxTokensSource: metadata?.maxTokensSource ?? (model.type === "chat" ? "existing" : undefined), thinkingSource: metadata?.thinkingSource ?? (model.type === "chat" && model.thinkingLevelMap ? "existing" : undefined) } as CandidateModel;
 }
 
 export function mergeCandidates(provider: string, installed: CandidateModel[], managed: CandidateModel[], remote: CandidateModel[]): CandidateModel[] {
@@ -104,9 +105,16 @@ export interface ModelPanelState {
   focus: "search" | "list" | "details" | "actions";
   actionIndex: number;
   detailScroll: number;
+  completionStatus?: string;
+  completionMisses?: string[];
+  completionConflicts?: string[];
 }
 
 interface CycleMetadata {
+  contextSource?: CandidateModel["contextSource"];
+  maxTokensSource?: CandidateModel["maxTokensSource"];
+  directoryFields?: string[];
+  directoryMatchMethod?: CandidateModel["directoryMatchMethod"];
   contextWindow?: number;
   maxTokens?: number;
   reasoning?: boolean;
@@ -151,11 +159,14 @@ class ModelSelector implements Component, Focusable {
           contextSource: metadata.contextSource,
           maxTokensSource: metadata.maxTokensSource,
           thinkingSource: metadata.thinkingSource,
+          directoryFields: metadata.directoryFields,
+          directoryMatchMethod: metadata.directoryMatchMethod,
         });
       }
     }
     for (const row of rows) {
       this.cycleMetadata.set(row, {
+        contextSource: row.contextSource, maxTokensSource: row.maxTokensSource, directoryFields: row.directoryFields, directoryMatchMethod: row.directoryMatchMethod,
         ...(row.type !== "image" ? { contextWindow: row.contextWindow } : {}),
         ...(row.type === "chat" ? { maxTokens: row.maxTokens, reasoning: row.reasoning, thinkingLevelMap: row.thinkingLevelMap ? { ...row.thinkingLevelMap } : undefined, thinkingSource: row.thinkingSource } : {}),
       });
@@ -188,7 +199,7 @@ class ModelSelector implements Component, Focusable {
 
   private selectedRows(): CandidateModel[] { return this.rows.filter((row) => !row.readOnly && this.selected.has(this.key(row))); }
   private selectedModels(): ManagedModel[] { return this.selectedRows().map(stripCandidate); }
-  private selectedMetadata(): ModelMetadataEntry[] { return this.selectedRows().map((row) => ({ type: row.type, id: row.id, contextSource: row.contextSource, maxTokensSource: row.maxTokensSource, thinkingSource: row.type === "chat" ? row.thinkingSource : undefined })); }
+  private selectedMetadata(): ModelMetadataEntry[] { return this.selectedRows().map((row) => ({ type: row.type, id: row.id, contextSource: row.contextSource, maxTokensSource: row.maxTokensSource, thinkingSource: row.type === "chat" ? row.thinkingSource : undefined, ...(row.directoryFields ? { directoryFields: row.directoryFields } : {}), ...(row.directoryMatchMethod ? { directoryMatchMethod: row.directoryMatchMethod } : {}) })); }
 
   private refresh(): void {
     const query = this.search.getValue().trim().toLowerCase();
@@ -254,6 +265,7 @@ class ModelSelector implements Component, Focusable {
       cost: row.cost,
       source: row.source,
       mutableType: true,
+      contextSource: metadata.contextSource, maxTokensSource: metadata.maxTokensSource, directoryFields: metadata.directoryFields, directoryMatchMethod: metadata.directoryMatchMethod,
     };
     let next: CandidateModel;
     if (nextType === "classifier") {
@@ -267,6 +279,7 @@ class ModelSelector implements Component, Focusable {
         type: nextType,
         api: this.draft.chatApi,
         reasoning: metadata.reasoning ?? true,
+        thinkingSource: metadata.thinkingSource,
         ...(metadata.thinkingLevelMap ? { thinkingLevelMap: { ...metadata.thinkingLevelMap }, thinkingSource: metadata.thinkingSource }
           : protocolMap ? { thinkingLevelMap: protocolMap, thinkingSource: "protocol" as const } : {}),
         contextWindow: metadata.contextWindow ?? COMPAT_CONTEXT_WINDOW,
@@ -287,9 +300,8 @@ class ModelSelector implements Component, Focusable {
       { id: "deselectFiltered", label: t(this.language, "modelDeselectFiltered"), key: Key.ctrl("d") },
       { id: "cycleType", label: t(this.language, "modelCycleType"), key: Key.ctrl("t") },
       { id: "edit", label: t(this.language, "modelEditParameters"), key: Key.ctrl("e") },
-      { id: "probe", label: t(this.language, "modelProbeContext"), key: Key.ctrl("k") },
-      { id: "probeThinking", label: t(this.language, "modelProbeThinking"), key: Key.ctrl("l") },
-      { id: "fetch", label: t(this.language, "modelFetch"), key: Key.ctrl("r") },
+      { id: "complete", label: t(this.language, "modelComplete"), key: Key.ctrl("k"), enabled: !!this.current() && isDirectoryCompletable(this.current()!) },
+      { id: "completeBatch", label: t(this.language, "modelCompleteBatch"), key: Key.ctrl("l") },
       { id: "hideRemote", label: t(this.language, "modelHideRemote"), key: Key.ctrl("delete"), enabled: this.current()?.source === "remote" },
       { id: "preview", label: t(this.language, "modelPreview"), key: Key.ctrl("s") },
       { id: "back", label: t(this.language, "modelBack"), key: Key.escape },
@@ -305,12 +317,13 @@ class ModelSelector implements Component, Focusable {
       cancelled: action === "back",
       selected: this.selectedModels(),
       metadata: this.selectedMetadata(),
+      ...((action === "complete" || action === "completeBatch") ? { completionTargets: (action === "complete" ? (current ? [current] : []) : this.filtered).filter((row) => isDirectoryCompletable(row)) } : {}),
       ...(current ? { target: { id: current.id, type: current.type, source: current.source, readOnlyReason: current.readOnlyReason } } : {}),
     });
   }
 
   private activate(action: FooterAction | undefined): void {
-    if (!action) return;
+    if (!action || action.enabled === false) return;
     if (action.id === "search") { this.state.focus = "search"; this.request(); return; }
     if (action.id === "selectFiltered") { for (const row of this.filtered) if (!row.readOnly) this.selected.add(this.key(row)); this.request(); return; }
     if (action.id === "deselectFiltered") { for (const row of this.filtered) if (!row.readOnly) this.selected.delete(this.key(row)); this.request(); return; }
@@ -321,11 +334,10 @@ class ModelSelector implements Component, Focusable {
 
   handleInput(data: string): void {
     if (data === "/") { this.state.focus = "search"; this.request(); return; }
-    if (matchesKey(data, Key.ctrl("r"))) { this.finish("fetch"); return; }
+    if (matchesKey(data, Key.ctrl("k"))) { if (this.current()?.type === "chat" && !this.current()?.readOnly) this.finish("complete"); return; }
+    if (matchesKey(data, Key.ctrl("l"))) { this.finish("completeBatch"); return; }
     if (matchesKey(data, Key.ctrl("delete"))) { this.hideCurrentRemote(); return; }
     if (matchesKey(data, Key.ctrl("e"))) { this.finish("edit"); return; }
-    if (matchesKey(data, Key.ctrl("k"))) { this.finish("probe"); return; }
-    if (matchesKey(data, Key.ctrl("l"))) { this.finish("probeThinking"); return; }
     if (matchesKey(data, Key.ctrl("s"))) { this.finish("preview"); return; }
     if (matchesKey(data, Key.escape)) { this.finish("back"); return; }
     if (matchesKey(data, Key.ctrl("t"))) { this.cycleType(); return; }
@@ -388,7 +400,8 @@ class ModelSelector implements Component, Focusable {
     this.state.actionIndex = Math.min(this.state.actionIndex, actions.length - 1);
     const actionFooter = renderActionFooter(actions, this.state.actionIndex, this.state.focus === "actions", innerWidth, this.theme);
     const searchLines = this.search.render(innerWidth);
-    const statusLines = this.status ? [this.theme.fg("warning", this.status)] : [];
+    const completionStatus = this.status || this.state.completionStatus;
+    const statusLines = completionStatus ? wrapTextWithAnsi(this.theme.fg("warning", completionStatus), innerWidth) : [];
     const externalCount = this.rows.filter((row) => row.readOnly).length;
     const countLine = this.theme.fg("muted", t(this.language, "selectorFooter", { filtered: this.filtered.length, total: this.rows.length, selected: this.selected.size, readonly: externalCount }));
     const bodyBudget = Math.max(0, contentBudget - searchLines.length - statusLines.length - actionFooter.length - 1);
@@ -406,19 +419,20 @@ class ModelSelector implements Component, Focusable {
       const check = checked ? this.theme.fg("success", "✓") : " ";
       const source = row.readOnly ? t(this.language, "selectorReadonlyTag") : "";
       const prefix = `${indicator}[${check}] [${modelTypeLabel(this.language, row.type)}] `;
-      const suffix = ` · ${row.name}${source ? ` · ${source}` : ""}`;
+      const suffix = ` · ${row.name}${source ? ` · ${source}` : ""}${this.state.completionMisses?.includes(this.key(row)) ? " · ⌀" : ""}${this.state.completionConflicts?.includes(this.key(row)) ? ` · ${t(this.language, "directoryConflict")}` : ""}`;
       const available = Math.max(1, leftWidth - visibleWidth(prefix) - visibleWidth(suffix));
       const content = `${prefix}${truncateToWidth(row.id, available, "…")}${suffix}`;
       left.push(truncateToWidth(currentRow ? this.theme.fg("accent", this.theme.bold(content)) : content, leftWidth, ""));
     }
     const current = this.current();
+    const directoryLabel = (source: string | undefined) => source === "directory" ? ` · ${t(this.language, "previewCatalogDefaults")}(${current?.directoryMatchMethod === "variant" ? "variant" : "exact"})` : "";
     const detailText = current ? [
       t(this.language, "panelModelName", { value: current.name }),
       t(this.language, "panelModelId", { value: current.id }),
       t(this.language, "panelModelType", { value: modelTypeLabel(this.language, current.type) }),
       t(this.language, "panelModelApi", { value: current.api }),
-      ...(current.type !== "image" ? [current.contextSource === "compat" ? t(this.language, "compatContextDisplay") : t(this.language, "panelModelContext", { value: current.contextWindow })] : []),
-      ...(current.type === "chat" ? [current.maxTokensSource === "compat" ? t(this.language, "compatMaxDisplay") : t(this.language, "panelModelMaxTokens", { value: current.maxTokens }), describeThinking(this.language, current, { thinkingSource: current.thinkingSource })] : []),
+      ...(current.type !== "image" ? [current.contextSource === "compat" ? t(this.language, "compatContextDisplay") : t(this.language, "panelModelContext", { value: current.contextWindow }) + directoryLabel(current.contextSource)] : []),
+      ...(current.type === "chat" ? [current.maxTokensSource === "compat" ? t(this.language, "compatMaxDisplay") : t(this.language, "panelModelMaxTokens", { value: current.maxTokens }) + directoryLabel(current.maxTokensSource), describeThinking(this.language, current, { thinkingSource: current.thinkingSource })] : []),
       t(this.language, "panelModelInput", { value: current.input.join(", ") || t(this.language, "valueUnset") }),
       ...(current.type === "image" ? [t(this.language, "panelModelOutput", { value: current.output.join(", ") || t(this.language, "valueUnset") })] : []),
       t(this.language, "panelModelCost", { input: current.cost.input, output: current.cost.output, cacheRead: current.cost.cacheRead, cacheWrite: current.cost.cacheWrite }),

@@ -43,7 +43,7 @@ export type ProviderPanelResult =
 
 export type ConnectionPanelResult =
   | { action: "field"; fieldId: string }
-  | { action: "models" | "takeover" | "restoreHidden" | "testModels" | "preview" | "back" };
+  | { action: "models" | "fetch" | "completeAll" | "takeover" | "restoreHidden" | "preview" | "back" };
 
 export type PreviewPanelResult = { action: "save" | "back" | "discard" };
 
@@ -439,9 +439,10 @@ export async function showConnectionPanel(
   const actions: FooterAction[] = [
     { id: "edit", label: t(language, "connectionModify"), key: Key.enter },
     { id: "models", label: t(language, "detailConfigureModels"), key: Key.ctrl("m") },
+    { id: "fetch", label: t(language, "connectionFetch"), key: Key.ctrl("r") },
     ...(canTakeover ? [{ id: "takeover", label: t(language, "detailTakeover"), key: Key.ctrl("t") }] : []),
     ...(hiddenRemoteCount > 0 ? [{ id: "restoreHidden", label: t(language, "detailRestoreHidden", { count: hiddenRemoteCount }), key: Key.ctrl("h") }] : []),
-    { id: "testModels", label: t(language, "detailTestModels"), key: Key.ctrl("p") },
+    { id: "completeAll", label: t(language, "connectionCompleteAll"), key: Key.ctrl("p") },
     { id: "preview", label: t(language, "connectionPreview"), key: Key.ctrl("s") },
     { id: "back", label: t(language, "connectionBack"), key: Key.escape },
   ];
@@ -450,7 +451,7 @@ export async function showConnectionPanel(
   if (result.kind === "back" || result.id === "back") return { action: "back" };
   if (result.kind === "item" && result.id) return { action: "field", fieldId: result.id };
   if (result.id === "edit" && state.selectedId) return { action: "field", fieldId: state.selectedId };
-  if (result.id === "models" || result.id === "takeover" || result.id === "restoreHidden" || result.id === "testModels" || result.id === "preview") return { action: result.id };
+  if (result.id === "models" || result.id === "fetch" || result.id === "completeAll" || result.id === "takeover" || result.id === "restoreHidden" || result.id === "preview") return { action: result.id };
   return { action: "back" };
 }
 

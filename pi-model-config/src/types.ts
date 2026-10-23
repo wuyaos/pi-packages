@@ -8,9 +8,13 @@ export type ModelIdentity = `${string}\u0000${ManagedModelType}\u0000${string}`;
 
 export type AuthMode = "models-json" | "reuse-pi" | "anonymous";
 export type DiscoveryAuthMode = AuthMode | "temporary";
-export type ThinkingMetadataSource = "existing" | "remote" | "catalog" | "protocol" | "user" | "probed";
+export type ThinkingMetadataSource = "existing" | "remote" | "catalog" | "directory" | "protocol" | "user"
+  /** @deprecated Retained only for legacy model-config.json round-trip compatibility. */
+  | "probed";
 export type ThinkingLevelMap = Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
-export type ModelMetadataSource = "existing" | "remote" | "catalog" | "user" | "compat" | "probed";
+export type ModelMetadataSource = "existing" | "remote" | "catalog" | "directory" | "user" | "compat"
+  /** @deprecated Retained only for legacy model-config.json round-trip compatibility. */
+  | "probed";
 
 export interface ModelMetadataEntry {
   type: ManagedModelType;
@@ -18,10 +22,15 @@ export interface ModelMetadataEntry {
   contextSource?: ModelMetadataSource;
   maxTokensSource?: ModelMetadataSource;
   verifiedAt?: string;
+  /** @deprecated Retained only for legacy model-config.json round-trip compatibility. */
   probeLower?: number;
+  /** @deprecated Retained only for legacy model-config.json round-trip compatibility. */
   probeUpper?: number;
+  /** @deprecated Retained only for legacy model-config.json round-trip compatibility. */
   probeEstimated?: boolean;
   thinkingSource?: ThinkingMetadataSource;
+  directoryFields?: string[];
+  directoryMatchMethod?: "exact" | "canonical" | "variant";
 }
 
 export type DiscoveryAuthHeader = "auto" | "bearer" | "x-api-key" | "api-key" | "x-goog-api-key" | "anthropic" | "none";
@@ -80,8 +89,6 @@ export interface ProviderConnectionConfig {
 export interface ModelConfigFile {
   $schema?: string;
   version: 1;
-  /** Pre-save minimal parameter probe for newly checked chat models lacking context/max metadata; default true. */
-  autoProbeOnSave?: boolean;
   providers: Record<string, ProviderConnectionConfig>;
   [key: string]: unknown;
 }
@@ -131,13 +138,16 @@ export type CandidateModel = ManagedModel & {
   contextSource?: ModelMetadataSource;
   maxTokensSource?: ModelMetadataSource;
   thinkingSource?: ThinkingMetadataSource;
+  directoryFields?: string[];
+  directoryMatchMethod?: "exact" | "canonical" | "variant";
 };
 
 export interface SelectionResult {
-  action: "preview" | "fetch" | "edit" | "probe" | "probeThinking" | "back" | "language";
+  action: "preview" | "complete" | "completeBatch" | "edit" | "back" | "language";
   cancelled: boolean;
   selected: ManagedModel[];
   metadata: ModelMetadataEntry[];
+  completionTargets?: CandidateModel[];
   target?: Pick<CandidateModel, "id" | "type" | "source" | "readOnlyReason">;
 }
 

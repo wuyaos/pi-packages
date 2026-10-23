@@ -12,8 +12,6 @@ import {
   writeConfigTransaction,
 } from "./config.ts";
 import { buildDiscoveryCandidates, discoverModelsFromCandidates } from "./discovery.ts";
-import { createProviderFetch } from "./transport.ts";
-import { probeChatParams, probeTargetsFor, resolveProbeApiKey, runAutoProbeFlow } from "./auto-probe.ts";
 import { formatError, mcError, t, type UiLanguage } from "./i18n.ts";
 import { selectScrolling } from "./scroll-select.ts";
 import {
@@ -26,7 +24,7 @@ import {
   type OverviewPanelState,
   type PanelItem,
 } from "./panel.ts";
-import { candidateFromExternal, candidateFromInstalled, candidateFromManaged, mergeCandidates, selectModels, type ModelPanelState } from "./selector.ts";
+import { candidateFromExternal, candidateFromInstalled, candidateFromManaged, mergeCandidates, selectModels, stripCandidate, type ModelPanelState } from "./selector.ts";
 import { CHAT_APIS, CLASSIFIER_APIS, IMAGE_APIS, PROXY_CHAT_APIS } from "./transport.ts";
 import { resolveImageBaseUrl } from "./image-apis/common.ts";
 import { SELF_IMAGE_APIS } from "./image-apis/index.ts";
@@ -43,10 +41,10 @@ import type {
 import { hiddenRemoteKey, identityOf, isHiddenRemote, normalizeHiddenRemoteKeys } from "./types.ts";
 import { loadUiLanguage, saveUiLanguage } from "./ui-config.ts";
 import { secretInput, withCancellableLoader } from "./ui.ts";
-import { showModelTestFlow } from "./model-test.ts";
-import { showContextProbeFlow } from "./context-probe.ts";
 import { editModelParameters } from "./model-editor.ts";
-import { acceptedThinkingMap, resolveThinkingMap, showThinkingProbeFlow } from "./thinking-probe.ts";
+import { fetchModelsDirectory } from "./models-directory.ts";
+import { completeDirectoryModel, directorySourceDetails, isDirectoryCompletable, type CompletionSession } from "./model-completion.ts";
+import { createProviderFetch } from "./transport.ts";
 import { defaultChatThinking, protocolThinkingMap } from "./thinking-defaults.ts";
 
 
@@ -253,7 +251,7 @@ function connectionPanelFields(language: UiLanguage, draft: ProviderDraft): Pane
   ];
 }
 
-async function editConnectionPanel(ctx: ExtensionCommandContext, language: UiLanguage, draft: ProviderDraft, state: MenuPanelState, canTakeover: boolean, hiddenRemoteCount: number): Promise<"models" | "takeover" | "restoreHidden" | "testModels" | "preview" | "back"> {
+async function editConnectionPanel(ctx: ExtensionCommandContext, language: UiLanguage, draft: ProviderDraft, state: MenuPanelState, canTakeover: boolean, hiddenRemoteCount: number): Promise<"models" | "fetch" | "completeAll" | "takeover" | "restoreHidden" | "preview" | "back"> {
   while (true) {
     const result = await showConnectionPanel(ctx, language, draft.id, connectionPanelFields(language, draft), state, canTakeover, hiddenRemoteCount);
     if (result.action !== "field") return result.action;
@@ -460,7 +458,7 @@ function buildPreviewDetails(
   oldConfig: ProviderConnectionConfig | undefined,
   oldProvider: ModelsJsonProvider | undefined,
   draft: ProviderDraft,
-  metadata: ReadonlyArray<ModelMetadataEntry> = [],
+  metadata: ModelMetadataEntry[] = [],
 ): { providerDetails: string[]; modelDetails: string[] } {
   const oldMap = new Map(before.map((model) => [identityOf(model, providerId), model]));
   const newMap = new Map(after.map((model) => [identityOf(model, providerId), model]));
@@ -499,14 +497,9 @@ function buildPreviewDetails(
   ].join(" | ");
   const describe = (key: ReturnType<typeof identityOf>) => {
     const model = newMap.get(key) ?? oldMap.get(key)!;
-    return `${modelTypeLabel(language, model.type)}/${model.id}`;
-  };
-  // Newly added rows whose metadata was just probed get an explicit source marker.
-  const describeAdded = (key: ReturnType<typeof identityOf>) => {
-    const model = newMap.get(key)!;
-    const entry = metadata.find((item) => item.type === model.type && item.id === model.id);
-    const probed = entry?.contextSource === "probed" || entry?.maxTokensSource === "probed";
-    return `${describe(key)}${probed ? ` · ${t(language, "previewProbedDefaults")}` : ""}`;
+    const entry = metadata.find((entry) => entry.type === model.type && entry.id === model.id);
+    const directory = entry && (entry.contextSource === "directory" || entry.maxTokensSource === "directory" || entry.thinkingSource === "directory" || entry.directoryFields?.length);
+    return `${modelTypeLabel(language, model.type)}/${model.id}${directory ? ` · ${t(language, "previewCatalogDefaults")}` : ""}`;
   };
   const settingsChanged = oldConnection !== nextConnection;
   const keyWillUpdate = draft.authMode === "models-json" && oldProvider?.apiKey !== draft.apiKeyRaw;
@@ -517,7 +510,7 @@ function buildPreviewDetails(
       ...(keyWillUpdate ? [t(language, "previewKeyUpdated")] : []),
     ],
     modelDetails: [
-      ...(added.length ? [t(language, "previewModelsAdded", { items: added.map(describeAdded).join(", ") })] : []),
+      ...(added.length ? [t(language, "previewModelsAdded", { items: added.map(describe).join(", ") })] : []),
       ...(deleted.length ? [t(language, "previewModelsRemoved", { items: deleted.map(describe).join(", ") })] : []),
       ...(modified.length ? [t(language, "previewModelsModified", { items: modified.map(describe).join(", ") })] : []),
       t(language, "previewModelsUnchanged", { count: unchanged }),
@@ -860,6 +853,8 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
           let selectedDraft = structuredClone(baselineSelected);
           let cachedRemote: CandidateModel[] = [];
           let fetchInFlight = false;
+          const completionSession: CompletionSession = new Map();
+          const completionDrafts = new Map<string, { model: ManagedModel; metadata: ModelMetadataEntry }>();
           let page: "connection" | "model" | "preview" = "connection";
           let previewOrigin: "connection" | "model" = "model";
           const connectionState: MenuPanelState = { focus: "list", actionIndex: 0, detailScroll: 0 };
@@ -893,48 +888,6 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
               });
               if (empty !== "confirm") return false;
             }
-            if (files.config.autoProbeOnSave !== false && draft.enabled) {
-              const wanted = new Set(probeTargetsFor(selectedDraft, selectedMetadata).map((model) => `${model.type}\u0000${model.id}`));
-              const targets = selectedDraft
-                .map((model, index) => ({ model, index, metadataIndex: selectedMetadata.findIndex((entry) => entry.type === model.type && entry.id === model.id) }))
-                .filter(({ model }) => wanted.has(`${model.type}\u0000${model.id}`));
-              if (targets.length) {
-                try {
-                  const piAuth = draft.authMode === "reuse-pi" ? await ctx.modelRegistry.getProviderAuth(target.id) : undefined;
-                  const fetchImpl = draft.proxyUrl ? createProviderFetch(draft.proxyUrl) : globalThis.fetch;
-                  const entries = targets.map(({ model }) => ({
-                    label: model.id,
-                    run: (signal: AbortSignal) => {
-                      const baseUrl = model.type === "chat" ? model.baseUrl ?? draft.baseUrl : draft.baseUrl;
-                      if (!baseUrl) return Promise.resolve(null);
-                      return probeChatParams(model, { fetch: fetchImpl, apiKey: resolveProbeApiKey(draft, piAuth, baseUrl), baseUrl, signal });
-                    },
-                  }));
-                  const outcomes = await runAutoProbeFlow(ctx, language, entries);
-                  for (let index = 0; index < targets.length; index++) {
-                    const { model, metadataIndex } = targets[index]!;
-                    const outcome = outcomes[index]!;
-                    if (model.type !== "chat" || outcome.cancelled || !outcome.result) continue;
-                    const result = outcome.result;
-                    model.maxTokens = result.maxTokens;
-                    model.reasoning = result.reasoning;
-                    if (result.reasoning && result.thinkingLevelMap) model.thinkingLevelMap = { ...result.thinkingLevelMap };
-                    else delete model.thinkingLevelMap;
-                    const metadata = {
-                      ...(metadataIndex >= 0 ? selectedMetadata[metadataIndex] : { type: model.type, id: model.id }),
-                      contextSource: "probed" as const,
-                      maxTokensSource: "probed" as const,
-                      thinkingSource: "probed" as const,
-                      verifiedAt: new Date().toISOString(),
-                    };
-                    if (metadataIndex >= 0) selectedMetadata[metadataIndex] = metadata; else selectedMetadata.push(metadata);
-                  }
-                  if (outcomes.some((outcome) => outcome.cancelled)) ctx.ui.notify(t(language, "autoProbeCancelled"), "info");
-                } catch {
-                  // Probe failures are silent: unprobed models keep compatibility defaults.
-                }
-              }
-            }
             return true;
           };
           const adoptExisting = async (): Promise<boolean> => {
@@ -958,10 +911,124 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
             return true;
           };
 
+          const completeModels = async (models: ManagedModel[], metadata: ModelMetadataEntry[], single: boolean, session: CompletionSession = completionSession) => {
+            const eligible = models.filter((model) => isDirectoryCompletable(model));
+            if (!eligible.length) { ctx.ui.notify(t(language, "directoryIneligible"), "info"); return []; }
+            // Fetch before touching any row: a network failure aborts the entire batch.
+            const loaded = await withCancellableLoader(ctx, t(language, "directoryLoading"), (signal) => {
+              const transport = draft.proxyUrl ? createProviderFetch(draft.proxyUrl) as typeof fetch : globalThis.fetch;
+              return fetchModelsDirectory((input, init) => transport(input, { ...init, signal: AbortSignal.any([signal, init?.signal ?? AbortSignal.timeout(30_000)]) }));
+            });
+            if (loaded.cancelled) return [];
+            if (loaded.error) { ctx.ui.notify(displayError(language, loaded.error), "error"); return []; }
+            const totals = { matched: 0, exact: 0, variant: 0, kept: 0, missed: 0 };
+            const misses: string[] = [], conflicts: string[] = [], details: string[] = [];
+            let undone = false, invalidLimits = false;
+            for (const model of eligible) {
+              let entry = metadata.find((entry) => entry.type === model.type && entry.id === model.id);
+              if (!entry) { entry = { type: model.type, id: model.id }; metadata.push(entry); }
+              const result = await completeDirectoryModel(ctx, language, loaded.value!, { providerId: draft.id, providerName: draft.name, baseUrl: draft.baseUrl }, model, entry, session, single);
+              for (const key of ["matched", "exact", "variant", "kept", "missed"] as const) totals[key] += result[key];
+              const key = identityOf(model, draft.id);
+              if (result.missed) misses.push(key);
+              if (result.conflicts) conflicts.push(key);
+              undone ||= result.undone;
+              invalidLimits ||= result.invalidLimits;
+              const evidence = session.get(`${model.type}\0${model.id}`)?.result;
+              if (single && evidence) details.push(...directorySourceDetails(language, evidence));
+            }
+            modelState.completionMisses = [...new Set([...(modelState.completionMisses ?? []).filter((key) => !eligible.some((row) => identityOf(row, draft.id) === key)), ...misses])];
+            modelState.completionConflicts = [...new Set([...(modelState.completionConflicts ?? []).filter((key) => !eligible.some((row) => identityOf(row, draft.id) === key)), ...conflicts])];
+            modelState.completionStatus = undone ? t(language, "directoryUndone") : t(language, "directorySummary", totals) + (conflicts.length ? " · " + t(language, "directoryConflictHint") : "") + (invalidLimits ? " · " + t(language, "directoryLimitConflict") : "");
+            ctx.ui.notify(modelState.completionStatus, "info");
+            return details;
+          };
+
+          const sessionCandidates = (): CandidateModel[] => {
+            const installed = installedModels(ctx, target.id).map(candidateFromInstalled);
+            const external = externalModels.map((model) => candidateFromExternal(model, externalMetadata.get(model.id)));
+            const remote = cachedRemote.filter((model) => !isHiddenRemote(model, draft.hiddenRemoteIds ?? []));
+            const rows = mergeCandidates(target.id, [...external, ...installed], managedBefore.map((model) => candidateFromManaged(model, persistedMetadata.get(model.type + "\0" + model.id))), remote);
+            for (const selected of selectedDraft) if (!rows.some((row) => identityOf(row, target.id) === identityOf(selected, target.id))) rows.push(candidateFromManaged(selected));
+            for (const row of rows) {
+              if (row.readOnly) continue;
+              const completed = completionDrafts.get(identityOf(row, target.id));
+              if (completed) Object.assign(row, structuredClone(completed.model), structuredClone(completed.metadata));
+              const selected = selectedDraft.find((selected) => identityOf(selected, target.id) === identityOf(row, target.id));
+              if (selected) Object.assign(row, structuredClone(selected), structuredClone(selectedMetadata.find((entry) => identityOf(entry, target.id) === identityOf(row, target.id)) ?? {}));
+            }
+            return rows;
+          };
+          const completeCandidates = async (rows: CandidateModel[], single: boolean) => {
+            const entries: ModelMetadataEntry[] = rows.map((row) => ({
+              ...(selectedMetadata.find((entry) => identityOf(entry, target.id) === identityOf(row, target.id)) ?? {}),
+              type: row.type, id: row.id, contextSource: row.contextSource, maxTokensSource: row.maxTokensSource, thinkingSource: row.thinkingSource,
+              ...(row.directoryFields ? { directoryFields: row.directoryFields } : {}), ...(row.directoryMatchMethod ? { directoryMatchMethod: row.directoryMatchMethod } : {}),
+            }));
+            const models = rows.map(stripCandidate);
+            await completeModels(models, entries, single);
+            for (let i = 0; i < models.length; i++) {
+              const model = models[i]!, metadata = entries[i]!;
+              completionDrafts.set(identityOf(model, target.id), { model: structuredClone(model), metadata: structuredClone(metadata) });
+              const index = selectedDraft.findIndex((row) => identityOf(row, target.id) === identityOf(model, target.id));
+              if (index >= 0) {
+                selectedDraft[index] = model;
+                const metadataIndex = selectedMetadata.findIndex((entry) => identityOf(entry, target.id) === identityOf(model, target.id));
+                if (metadataIndex >= 0) selectedMetadata[metadataIndex] = metadata; else selectedMetadata.push(metadata);
+              }
+            }
+          };
+
           providerSession: while (true) {
             if (page === "connection") {
               const connection = await editConnectionPanel(ctx, language, draft, connectionState, adoptableIds().length > 0, draft.hiddenRemoteIds?.length ?? 0);
               activeSecrets.push(draft.apiKeyRaw, draft.temporaryKey);
+              if (connection === "fetch") {
+                if (fetchInFlight) continue;
+                fetchInFlight = true;
+                try {
+                const fallbackBases = [
+                  ...(oldProvider?.models ?? []).map((model) => typeof model.baseUrl === "string" ? model.baseUrl : undefined),
+                  ...installedModels(ctx, target.id).map((model) => model.baseUrl),
+                ];
+                const discoveryCandidates = buildDiscoveryCandidates(draft, fallbackBases);
+                if (!draft.discoveryUrl) {
+                  const edit = t(language, "discoveryRequiredEdit");
+                  const cancel = t(language, "discoveryRequiredCancel");
+                  if (discoveryCandidates.length) {
+                    const use = t(language, "discoveryUseCandidates", { url: redactUrl(discoveryCandidates[0], language), count: Math.max(0, discoveryCandidates.length - 1) });
+                    const choice = await showConfirmationPanel(ctx, {
+                      title: t(language, "discoveryDerivedTitle"), summary: [use], details: [t(language, "discoveryCandidateSafety")],
+                      defaultActionIndex: 2, cancelActionId: "cancel",
+                      actions: [
+                        { id: "use", label: t(language, "discoveryUseAction"), shortcut: "ctrl+r" },
+                        { id: "edit", label: edit },
+                        { id: "cancel", label: cancel },
+                      ],
+                    });
+                    if (choice !== "use") continue;
+                  } else {
+                    const choice = await showConfirmationPanel(ctx, {
+                      title: t(language, "discoveryRequired"), summary: [t(language, "discoveryNoCandidate")],
+                      defaultActionIndex: 1, cancelActionId: "cancel",
+                      actions: [{ id: "edit", label: edit }, { id: "cancel", label: cancel }],
+                    });
+                    if (choice === "edit") page = "connection";
+                    continue;
+                  }
+                }
+                if (!discoveryCandidates.length) { ctx.ui.notify(t(language, "discoveryRequired"), "warning"); continue; }
+                const auth = draft.authMode === "reuse-pi" ? await ctx.modelRegistry.getProviderAuth(target.id) : undefined;
+                const resolvedModelBase = draft.baseUrl ?? fallbackBases.find((value) => { if (!value) return false; try { validateHttpUrl(value, "Base URL"); return true; } catch { return false; } });
+                const discoveryDraft = resolvedModelBase ? { ...draft, baseUrl: resolvedModelBase } : draft;
+                const result = await withCancellableLoader(ctx, t(language, "fetching", { url: redactUrl(discoveryCandidates[0], language) }), (signal) => discoverModelsFromCandidates(discoveryDraft, discoveryCandidates, auth, signal));
+                if (result.cancelled) { ctx.ui.notify(t(language, "fetchCancelled"), "info"); continue; }
+                if (result.error) { ctx.ui.notify(displayError(language, result.error, [draft.apiKeyRaw, draft.temporaryKey]), "error"); continue; }
+                draft.discoveryUrl = result.value!.url;
+                cachedRemote = [...result.value!.models];
+                continue;
+                } finally { fetchInFlight = false; }
+              }
               if (connection === "models") { page = "model"; continue; }
               if (connection === "takeover") { if (await adoptExisting()) page = "model"; continue; }
               if (connection === "restoreHidden") {
@@ -969,12 +1036,8 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
                 if (restored.action === "apply") draft.hiddenRemoteIds = (draft.hiddenRemoteIds ?? []).filter((key) => !restored.restored.includes(key));
                 continue;
               }
-              if (connection === "testModels") {
-                if (!draft.enabled) { ctx.ui.notify(t(language, "testProviderDisabled"), "warning"); continue; }
-                if (draft.authMode === "temporary" || isDirty()) { ctx.ui.notify(t(language, "testDraftDirty"), "warning"); continue; }
-                const models = installedModels(ctx, target.id);
-                if (!models.length) { ctx.ui.notify(t(language, "testNoModels"), "info"); continue; }
-                await showModelTestFlow(ctx, language, models, [draft.apiKeyRaw, draft.temporaryKey]);
+              if (connection === "completeAll") {
+                await completeCandidates(sessionCandidates().filter((row) => isDirectoryCompletable(row)), false);
                 continue;
               }
               if (connection === "preview") {
@@ -998,14 +1061,14 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
             }
 
             if (page === "model") {
-              const installedRaw = installedModels(ctx, target.id);
-              const installed = installedRaw.map(candidateFromInstalled);
-              const external = externalModels.map((model) => candidateFromExternal(model, externalMetadata.get(model.id)));
-              const visibleRemote = cachedRemote.filter((model) => !isHiddenRemote(model, draft.hiddenRemoteIds ?? []));
-              const candidates = mergeCandidates(target.id, [...external, ...installed], managedBefore.map((model) => candidateFromManaged(model, persistedMetadata.get(`${model.type}\0${model.id}`))), visibleRemote);
+              const candidates = sessionCandidates();
               const selection = await selectModels(ctx, language, target.id, draft, candidates, selectedDraft, modelState, selectedMetadata);
               selectedDraft = selection.selected;
               selectedMetadata = selection.metadata.map((entry) => ({ ...(selectedMetadata.find((old) => old.type === entry.type && old.id === entry.id) ?? {}), ...entry }));
+              if (selection.action === "complete" || selection.action === "completeBatch") {
+                await completeCandidates(selection.completionTargets ?? [], selection.action === "complete");
+                continue;
+              }
               if (selection.action === "back") { page = "connection"; continue; }
               if (selection.action === "edit") {
                 const editTarget = selection.target;
@@ -1014,93 +1077,12 @@ export function registerModelConfigCommand(pi: ExtensionAPI, startupIssues: Star
                 const model = selectedDraft[managedIndex]!;
                 const metadataIndex = selectedMetadata.findIndex((entry) => entry.type === model.type && entry.id === model.id);
                 const metadata = metadataIndex >= 0 ? selectedMetadata[metadataIndex]! : { type: model.type, id: model.id };
-                const edited = await editModelParameters(ctx, language, model, metadata);
+                const editorSession: CompletionSession = new Map();
+                const edited = await editModelParameters(ctx, language, model, metadata, async (current, entry) => {
+                  return completeModels([current], [entry], true, editorSession);
+                });
                 if (edited) { selectedDraft[managedIndex] = edited.model; if (metadataIndex >= 0) selectedMetadata[metadataIndex] = edited.metadata; else selectedMetadata.push(edited.metadata); }
                 continue;
-              }
-              if (selection.action === "probeThinking") {
-                const id = modelState.selectedId;
-                const managedIndex = selectedDraft.findIndex((model) => model.id === id);
-                const runtimeModel = installedRaw.find((model) => model.id === id);
-                const model = managedIndex >= 0 ? selectedDraft[managedIndex] : undefined;
-                if (!model || model.type !== "chat" || !runtimeModel || !draft.enabled || draft.authMode === "temporary" || isDirty()) { ctx.ui.notify(t(language, "thinkingProbeBlocked"), "warning"); continue; }
-                const currentCandidate = candidates.find((candidate) => candidate.id === id && candidate.type === "chat");
-                const resolved = resolveThinkingMap(currentCandidate?.source === "remote" ? (currentCandidate as any).thinkingLevelMap : undefined, (runtimeModel as any).thinkingLevelMap, model.thinkingLevelMap, model.api);
-                if (!resolved.map) { ctx.ui.notify(t(language, "thinkingProbeBlocked"), "warning"); continue; }
-                const probe = await showThinkingProbeFlow(ctx, language, runtimeModel, resolved.map, [draft.apiKeyRaw, draft.temporaryKey]);
-                if (!probe) continue;
-                model.reasoning = probe.accepted.length > 0;
-                model.thinkingLevelMap = acceptedThinkingMap(resolved.map, probe.accepted);
-                const metadataIndex = selectedMetadata.findIndex((entry) => entry.type === model.type && entry.id === model.id);
-                const metadata = { ...(metadataIndex >= 0 ? selectedMetadata[metadataIndex] : { type: model.type, id: model.id }), thinkingSource: "probed" as const, verifiedAt: new Date().toISOString() };
-                if (metadataIndex >= 0) selectedMetadata[metadataIndex] = metadata; else selectedMetadata.push(metadata);
-                continue;
-              }
-              if (selection.action === "probe") {
-                const id = modelState.selectedId;
-                const managedIndex = selectedDraft.findIndex((model) => model.id === id);
-                const runtimeModel = installedRaw.find((model) => model.id === id);
-                if (!id || managedIndex < 0 || !runtimeModel || runtimeModel.type === "image" || !draft.enabled || draft.authMode === "temporary" || isDirty()) {
-                  ctx.ui.notify(t(language, "probeBlocked"), "warning");
-                  continue;
-                }
-                const probe = await showContextProbeFlow(ctx, language, runtimeModel, [draft.apiKeyRaw, draft.temporaryKey]);
-                if (!probe?.lower) continue;
-                const model = selectedDraft[managedIndex]!;
-                if (model.type === "chat" && probe.lower < model.maxTokens) { ctx.ui.notify(t(language, "probeMaxConflict"), "warning"); continue; }
-                if (model.type !== "image") model.contextWindow = probe.lower;
-                const metadataIndex = selectedMetadata.findIndex((entry) => entry.type === model.type && entry.id === model.id);
-                const metadata = { ...(metadataIndex >= 0 ? selectedMetadata[metadataIndex] : { type: model.type, id: model.id }), contextSource: "probed" as const, verifiedAt: probe.verifiedAt, probeLower: probe.lower, probeUpper: probe.upper, probeEstimated: probe.estimated };
-                if (metadataIndex >= 0) selectedMetadata[metadataIndex] = metadata; else selectedMetadata.push(metadata);
-                continue;
-              }
-              if (selection.action === "fetch") {
-                if (fetchInFlight) continue;
-                fetchInFlight = true;
-                try {
-                const fallbackBases = [
-                  ...(oldProvider?.models ?? []).map((model) => typeof model.baseUrl === "string" ? model.baseUrl : undefined),
-                  ...installedRaw.map((model) => model.baseUrl),
-                ];
-                const discoveryCandidates = buildDiscoveryCandidates(draft, fallbackBases);
-                if (!draft.discoveryUrl) {
-                  const edit = t(language, "discoveryRequiredEdit");
-                  const cancel = t(language, "discoveryRequiredCancel");
-                  if (discoveryCandidates.length) {
-                    const use = t(language, "discoveryUseCandidates", { url: redactUrl(discoveryCandidates[0], language), count: Math.max(0, discoveryCandidates.length - 1) });
-                    const choice = await showConfirmationPanel(ctx, {
-                      title: t(language, "discoveryDerivedTitle"), summary: [use], details: [t(language, "discoveryCandidateSafety")],
-                      defaultActionIndex: 2, cancelActionId: "cancel",
-                      actions: [
-                        { id: "use", label: t(language, "discoveryUseAction"), shortcut: "ctrl+r" },
-                        { id: "edit", label: edit },
-                        { id: "cancel", label: cancel },
-                      ],
-                    });
-                    if (choice === "edit") page = "connection";
-                    else if (choice !== "use") continue;
-                  } else {
-                    const choice = await showConfirmationPanel(ctx, {
-                      title: t(language, "discoveryRequired"), summary: [t(language, "discoveryNoCandidate")],
-                      defaultActionIndex: 1, cancelActionId: "cancel",
-                      actions: [{ id: "edit", label: edit }, { id: "cancel", label: cancel }],
-                    });
-                    if (choice === "edit") page = "connection";
-                    continue;
-                  }
-                  if (page === "connection") continue;
-                }
-                if (!discoveryCandidates.length) { ctx.ui.notify(t(language, "discoveryRequired"), "warning"); continue; }
-                const auth = draft.authMode === "reuse-pi" ? await ctx.modelRegistry.getProviderAuth(target.id) : undefined;
-                const resolvedModelBase = draft.baseUrl ?? fallbackBases.find((value) => { if (!value) return false; try { validateHttpUrl(value, "Base URL"); return true; } catch { return false; } });
-                const discoveryDraft = resolvedModelBase ? { ...draft, baseUrl: resolvedModelBase } : draft;
-                const result = await withCancellableLoader(ctx, t(language, "fetching", { url: redactUrl(discoveryCandidates[0], language) }), (signal) => discoverModelsFromCandidates(discoveryDraft, discoveryCandidates, auth, signal));
-                if (result.cancelled) { ctx.ui.notify(t(language, "fetchCancelled"), "info"); continue; }
-                if (result.error) { ctx.ui.notify(displayError(language, result.error, [draft.apiKeyRaw, draft.temporaryKey]), "error"); continue; }
-                draft.discoveryUrl = result.value!.url;
-                cachedRemote = [...result.value!.models];
-                continue;
-                } finally { fetchInFlight = false; }
               }
               if (await preparePreview()) { previewOrigin = "model"; page = "preview"; }
               continue;

@@ -231,7 +231,7 @@ test("model panel uses overlay sizing and responsive 80/48 column layouts", asyn
   assert.equal(overlayOptions.overlay, true);
   assert.equal(overlayOptions.overlayOptions.width, "96%");
   assert.ok(wide.some((line) => line.includes("Model name")));
-  assert.ok(wide.some((line) => line.includes("[Ctrl+R] Fetch remote model list")));
+  assert.ok(wide.some((line) => line.includes("[Ctrl+K] Complete / undo")));
   assert.match(wide.join("\n"), /→ \[ \] \[Chat\]/u);
   assert.ok(wide.every((line) => visibleWidth(line) <= 76));
 
@@ -243,7 +243,7 @@ test("model panel uses overlay sizing and responsive 80/48 column layouts", asyn
   }, 20, 48);
   await selectModels(narrowCtx, "en", "fixture", draft, [row]);
   assert.ok(narrow.some((line) => line.includes("Model name")));
-  assert.ok(narrow.some((line) => line.includes("[Ctrl+R] Fetch remote model list")));
+  assert.ok(narrow.some((line) => line.includes("[Ctrl+K] Complete / undo")));
   assert.ok(narrow.every((line) => visibleWidth(line) <= 48));
   assert.ok(narrow.length <= Math.max(4, Math.floor(20 * 0.9)));
 });
@@ -281,27 +281,39 @@ test("model defaults to list and slash explicitly focuses search", async () => {
   await selectModels(ctx, "en", "fixture", draft, [remoteChat("slash")], undefined, state);
 });
 
-test("model footer shortcuts are global and fetch preserves current selection", async () => {
+test("completion shortcuts are visible and single completion targets the current row", async () => {
+  const ctx = customContext<SelectionResult>((component) => {
+    const rendered = component.render(100).join("\n");
+    assert.match(rendered, /\[Ctrl\+K\]/u);
+    component.handleInput("\x0b");
+    component.handleInput("\x0c");
+    component.handleInput("\x13");
+  });
+  const result = await selectModels(ctx, "en", "fixture", draft, [remoteChat("legacy-shortcuts")]);
+  assert.equal(result.action, "complete");
+});
+
+test("model footer shortcuts are global and completion preserves current selection", async () => {
   const remote = remoteChat("fetch-selected", "Fetch selected");
   const state: ModelPanelState = { search: "fetch", selectedId: "fetch-selected", focus: "details", actionIndex: 0, detailScroll: 0 };
-  const ctx = customContext<SelectionResult>((component) => component.handleInput("\x12")); // Ctrl+R
+  const ctx = customContext<SelectionResult>((component) => component.handleInput("\x0b")); // Ctrl+K
   const result = await selectModels(ctx, "en", "fixture", draft, [remote], [chat("fetch-selected", "Fetch selected")], state);
-  assert.equal(result.action, "fetch");
+  assert.equal(result.action, "complete");
   assert.deepEqual(result.selected.map((model) => model.id), ["fetch-selected"]);
   assert.equal(state.focus, "details");
 });
 
-test("model footer remote action is focusable and Enter executes fetch", async () => {
+test("model footer completion action is focusable and Enter executes completion", async () => {
   const remote = remoteChat("footer-fetch", "Footer fetch");
-  const state: ModelPanelState = { search: "", focus: "actions", actionIndex: 7, detailScroll: 0 };
+  const state: ModelPanelState = { search: "", focus: "actions", actionIndex: 5, detailScroll: 0 };
   let rendered = "";
   const ctx = customContext<SelectionResult>((component) => {
     rendered = component.render(76).join("\n");
     component.handleInput("\r");
   });
   const result = await selectModels(ctx, "en", "fixture", draft, [remote], undefined, state);
-  assert.equal(result.action, "fetch");
-  assert.match(rendered, /→ \[Ctrl\+R\] Fetch remote model list/u);
+  assert.equal(result.action, "complete");
+  assert.match(rendered, /→ \[Ctrl\+K\] Complete \/ undo/u);
 });
 
 test("new chat created by type cycling defaults reasoning and the protocol map", async () => {

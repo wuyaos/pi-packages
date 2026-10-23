@@ -37,8 +37,8 @@ The focused test coverage includes:
 - local HTTP Discovery profiles/candidate ordering, 404/405-only fallback, array/data/models/list/result parsing, string/Codex rows, auto auth headers, cross-origin reuse rejection, redirect containment, 1 MiB streamed-body limits, pagination markers, and HTTP-error redaction;
 - mocked `/model-config` cancellation, local validation recovery, temporary-auth save blocking, discard confirmation, current-model disable protection, and explicit-save paths;
 - disabled-provider legacy empty-catalog registration and third-party rejection;
-- model test concurrency, timeout, global cancellation, chat/classifier defaults, image opt-in confirmation, and in-memory-only results.
 
 - unified ConfirmationPanel contexts, safe defaults, keyboard selection, Esc cancel, and static no-ctx.ui.confirm enforcement.
-- compatibility context metadata persistence, explicit 128000/16384 serialization, image exclusion, owned-runtime missing-field issues, and context probe success/overflow/auth/timeout/cancel behavior.
-- managed model parameter editing (K/M numeric parsing, invariants, modalities, thinking maps, image output, costs), horizontal action navigation, and opt-in thinking-level probe metadata precedence/terminal classification.
+- compatibility context metadata persistence, explicit 128000/16384 serialization, image exclusion, and owned-runtime missing-field issues.
+- managed model parameter editing (K/M numeric parsing, invariants, modalities, thinking maps, image output, costs) and horizontal action navigation.
+- legacy parameter provenance and bounds remain readable and round-trip without initiating real model requests.

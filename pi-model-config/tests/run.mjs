@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
-const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/app/scoop/persist/nodejs24/bin/node_modules/@earendil-works/pi-coding-agent");
+const sdkRoot = resolve(process.env.PI_SDK_ROOT ?? "C:/Users/wff19/.pi/agent/install/releases/1.3.0/node_modules/@earendil-works/pi-coding-agent");
 const sdkPackage = join(sdkRoot, "package.json");
 
 function resolveEnvironmentJiti(sdkRoot, repoRoot) {
@@ -40,6 +40,8 @@ const jiti = createJiti(import.meta.url, {
 });
 
 for (const file of [
+  "models-directory.test.ts",
+  "model-completion.test.ts",
   "i18n-ui-config.test.ts",
   "selector-ui.test.ts",
   "panel-ui.test.ts",
@@ -47,12 +49,8 @@ for (const file of [
   "discovery.test.ts",
   "runtime.test.ts",
   "image-apis.test.ts",
-  "model-test.test.ts",
-  "context-probe.test.ts",
   "model-editor.test.ts",
-  "thinking-probe.test.ts",
   "command.test.ts",
-  "auto-probe.test.ts"
 ]) {
   await jiti.import(join(here, file));
 }

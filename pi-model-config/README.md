@@ -54,25 +54,30 @@ pi install git:github.com/wuyaos/pi-packages
 
 保存采用：独占锁 → 启动快照复核 → 仅为实际变化的文件写入临时文件并 `fsync` → JSON 复核 → 备份 → 写入 `<agent-dir>/.model-config-tx.json` journal → 依次替换 → 删除 journal。journal 记录 txId、两份目标路径、是否变化及备份路径；启动读取配置前若发现 journal，会在遵守既有锁语义的前提下把所有已变化文件恢复到同一旧版本并提示。缺少备份或恢复失败时 journal 保留，错误会明确要求按 journal 内路径手动恢复，绝不继续解析混合世代配置。第二个文件替换失败时也会尝试回滚。锁文件记录 PID 和创建时间：owner 仍存活时绝不抢锁；owner 不存在且 mtime 超过 30 秒时，经独立 recovery lock 二次复核后自动隔离并清理；内容不可读的锁至少保留 10 分钟。无法安全判定时宁可拒绝保存。
 
-`/model-config` 使用显式 `overlay: true` 的盒式页面控制器，页面层级固定为“总览 → 连接/模型 → 预览”。overlay 使用 96% 终端宽度、90% 最大高度并保留 margin。总览默认焦点在服务商列表；按 `/` 才聚焦搜索，普通字符和空格留给 Input。左侧只列 `models.json.providers ∪ model-config.json.providers`，右侧只显示当前选中项摘要；当前行始终有不依赖颜色的 `→ ` 前缀并加粗。搜索框保持 Input/IME 焦点时，Up/Down 仍直接移动左侧当前服务商并联动右侧详情，无需先按 Tab。底部固定为 `[Enter] 进入服务商 / [Ctrl+X] 启用或禁用 / [Ctrl+Del] 删除服务商 / [Ctrl+N] 添加服务商 / [Esc] 关闭 / [F2] 界面语言`，动作绝不插入 provider 列表。总览按 Enter 直接进入当前服务商的连接编辑页，不再经过独立只读详情页。连接底部提供 Enter 修改、Ctrl+M 模型、条件显示的 Ctrl+T 接管、Ctrl+P 批量测试、Ctrl+S 预览和 Esc 返回总览。自定义服务商显示 `Custom`，builtin 显示 `Built-in`；不会把整个自定义服务商标成 external/read-only，也不会在每行重复“已配置（未验证）”。普通 80 列可双栏；窄屏通过方向键/Tab 切换 pane。所有动作栏固定在盒子底部，可换行但始终计入 viewport 高度预算。
+`/model-config` 使用显式 `overlay: true` 的盒式页面控制器，页面层级固定为“总览 → 连接/模型 → 预览”。overlay 使用 96% 终端宽度、90% 最大高度并保留 margin。总览默认焦点在服务商列表；按 `/` 才聚焦搜索，普通字符和空格留给 Input。左侧只列 `models.json.providers ∪ model-config.json.providers`，右侧只显示当前选中项摘要；当前行始终有不依赖颜色的 `→ ` 前缀并加粗。搜索框保持 Input/IME 焦点时，Up/Down 仍直接移动左侧当前服务商并联动右侧详情，无需先按 Tab。底部固定为 `[Enter] 进入服务商 / [Ctrl+X] 启用或禁用 / [Ctrl+Del] 删除服务商 / [Ctrl+N] 添加服务商 / [Esc] 关闭 / [F2] 界面语言`，动作绝不插入 provider 列表。总览按 Enter 直接进入当前服务商的连接编辑页，不再经过独立只读详情页。连接底部提供 Enter 修改、Ctrl+M 模型、条件显示的 Ctrl+T 接管、Ctrl+R 获取远程模型、Ctrl+P 目录补全、Ctrl+S 预览和 Esc 返回总览。自定义服务商显示 `Custom`，builtin 显示 `Built-in`；不会把整个自定义服务商标成 external/read-only，也不会在每行重复“已配置（未验证）”。普通 80 列可双栏；窄屏通过方向键/Tab 切换 pane。所有动作栏固定在盒子底部，可换行但始终计入 viewport 高度预算。
 
 已有 provider、模型和未知元数据会保留。插件用 `(provider, type, id)` 标识模型；取消勾选只移除 `managedChatIds` / `models` 中由本插件管理的条目，不删除其他 provider，也不修改 Pi 内置目录。服务商面板提供真实的 `[T] 接管已有模型 / Manage existing models`：它只接管当前服务商已经写在 `models.json` 中、但尚未列入 `managedChatIds` 的 chat 模型。确认接管只改变内存草稿；最终确认保存后才更新 `managedChatIds`。原始模型对象从 `models.json` 原样复用，因此未知字段和元数据保持不变；取消、返回或放弃不写盘，接管后取消勾选会在最终保存时移除该模型。Pi builtin catalog 和其他 runtime extension 仅存在于运行时的模型仍保持只读，不能把取消勾选伪装成删除。空管理集合有单独二次确认。
 
-## Model parameter editing and thinking-level probe
+## Model parameter editing
 
-The model page exposes [Ctrl+E] Edit model parameters for managed models. It opens an independent full-screen overlay with a left field list and right current value: Enter edits the selected field inline, Ctrl+S requests the shared ConfirmationPanel, and Esc returns without applying. Name, K/M-scaled context/max tokens, chat reasoning and per-level thinkingLevelMap, input/output modalities, and four non-negative cost rates are edited only in the in-memory draft; external/read-only entries must be taken over first. A blank thinking mapping restores the protocol/catalog default, while `-` or `null` disables that level. New, discovered, and newly taken-over chat models default to `reasoning=true`. Known chat APIs (`anthropic-messages`, `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, and `pi-messages`) also receive an API-specific, unverified protocol map; unknown APIs do not receive an invented map. Explicit existing/remote values and runtime catalog values remain authoritative. maxTokens cannot exceed contextWindow. Applying the editor marks relevant metadata as user and still requires Preview plus the final ConfirmationPanel transaction.
+The model page exposes [Ctrl+E] Edit model parameters for managed models. It opens an independent full-screen overlay with a left field list and right current value: Enter edits the selected field inline, Ctrl+S requests the shared ConfirmationPanel, and Esc returns without applying. Name, K/M-scaled context/max tokens, chat reasoning and per-level thinkingLevelMap, input/output modalities, and four non-negative cost rates are edited only in the in-memory draft; models.json entries are directly editable; runtime catalog entries remain read-only. A blank thinking mapping restores the protocol/catalog default, while `-` or `null` disables that level. New, discovered, and newly taken-over chat models default to `reasoning=true`. Known chat APIs (`anthropic-messages`, `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, and `pi-messages`) also receive an API-specific, unverified protocol map; unknown APIs do not receive an invented map. Explicit existing/remote values and runtime catalog values remain authoritative. maxTokens cannot exceed contextWindow. Applying the editor marks relevant metadata as user and still requires Preview plus the final ConfirmationPanel transaction.
 
-[Ctrl+L] Thinking-level probe is opt-in and disabled by default. It requires the same saved/reloaded, enabled, clean, persistent-auth managed runtime model gate as context probing and currently applies to chat models; image is unsupported. Explicit remote mapping wins over runtime catalog, then existing config, then a conservative known-protocol map. Protocol defaults record `thinkingSource=protocol` without `verifiedAt`. The confirmation action and model-page shortcut are both `[Ctrl+L]`. Each explicitly mapped, enabled level is tested serially with a minimal terminal stream request; unmapped or `null` levels are shown as unsupported without a request. Acceptance means only that the server accepted the resolved wire value, not that the model reasoned better. Applying accepted levels changes only the draft thinkingLevelMap and records thinkingSource=probed until final save.
 
 Action bars now use Tab/ShiftTab for regions and Left/Right within actions. Up/Down never changes the focused action. Enter executes the arrow-marked action; narrow layouts wrap without removing actions.
 
-## Context metadata and probing
+## Context metadata and Models.dev completion
 
 The plugin never relies on Pi's silent JSON defaults. When a managed/new chat model lacks context/max output, it explicitly writes Pi compatibility values contextWindow=128000 and maxTokens=16384; classifier writes contextWindow=128000. These are shown as “Pi compatibility default (unverified)” and final confirmation lists every affected model. Image models have no context/max fields.
 
-model-config.json stores modelMetadata entries keyed by type/id with contextSource/maxTokensSource (existing, remote, catalog, user, compat, probed) plus optional verifiedAt/probeLower/probeUpper/probeEstimated. Metadata is plugin-only and is never passed into native ProviderModelConfig. Old provider defaultContextWindow/defaultMaxTokens fields remain readable for compatibility but are hidden and are not applied to new models.
+model-config.json stores modelMetadata entries keyed by type/id with contextSource/maxTokensSource (existing, remote, catalog, directory, user, compat; legacy probed remains readable) plus optional verifiedAt/probeLower/probeUpper/probeEstimated. Metadata is plugin-only and is never passed into native ProviderModelConfig. Old provider defaultContextWindow/defaultMaxTokens fields remain readable for compatibility but are hidden and are not applied to new models.
 
-The model page exposes [Ctrl+K] Probe context capacity for saved/reloaded managed chat/classifier models only. Provider must be enabled, draft clean, auth persistent, and runtime model available; image and unmanaged external models are blocked. The probe serially tries 32K/64K/128K/256K approximate x-space payloads with 30s per-step timeout, uses streamSimple/classify terminal results and provider usage only, and treats only explicit context-overflow errors as an upper bound. Results are not exact: tokenizers, gateway truncation, or compression can invalidate the estimate. “Use safe lower bound” changes only in-memory contextWindow and probed metadata; maxTokens is never auto-adjusted, and final preview/save confirmation is still required.
+目录补全只处理可编辑的 chat 模型，所有结果先留在当前服务商草稿，预览页 Ctrl+S 才提交。连接页 Ctrl+R 获取远程候选列表；模型页不再保留 Ctrl+R。模型页 Ctrl+K 补全当前行，Ctrl+L 补全搜索过滤集；连接页 Ctrl+P 补全该服务商全部可编辑 chat 行（包括已获取但未勾选的候选），不会自动勾选。编辑器 Ctrl+K 补全当前模型并展示逐字段目录来源。
+
+Models.dev 只获取公开 https://models.dev/api.json，使用服务商请求级代理但从不转发 API key 或自定义认证头。目录在内存缓存 1 小时，不做磁盘缓存。匹配先按 provider/id 忽略大小写精确查找，再解析 canonical_model_id；只有两者未命中时才在 provider hint 匹配到的目录服务商内做已知前后缀归一，且必须唯一命中。不会跨 provider 模糊匹配。reasoning 布尔采用官方权重 5、其他权重 1 的至少 60% 非并列共识；官方 effort 只是提示，永不修改 thinkingLevelMap。价格永不补全。
+
+补全只填 null/undefined 或 compat 来源的上下文/输出上限；false、仅 text 输入和自定义名称都视为已有真实值。冲突首次保留；没有待撤销的补全时，再次 Ctrl+K 才逐字段对比“采用目录值/保留”，默认保留。这是唯一覆盖路径。若上次补全确实改过当前行且未提交，再次 Ctrl+K 优先撤销该次改动，随后再按才进入冲突对比；不使用与 Input undo 冲突的 Ctrl+Z。后续手动修改不会被旧撤销快照覆盖。
+
+目录来源作为 modelMetadata 的 directory source、directoryFields 和 directoryMatchMethod 保存，绝不混入原生模型对象。selector 和编辑器显示来源，预览新增/修改行带“目录”标记；maxTokens 对比提示其会改变每次请求的默认输出上限。网络失败/取消不会写任何补全行；批量未匹配项保留并标记 ⌀。
 
 ## Discovery
 
@@ -89,9 +94,9 @@ The model page exposes [Ctrl+K] Probe context capacity for saved/reloaded manage
 - pagination marker 的 0、空串、null、false 不视为下一页；明确或未知的有效分页 marker 仍整体拒绝，不把部分目录当完整结果。
 - 当前已管理模型即使不在远程响应中也会保留并默认勾选；远程空目录不会删除已有模型。远程新增项默认不勾选，同 identity 时已有 managed/external/installed metadata 优先。
 
-连接页左侧字段、右侧解释，当前字段始终显示 `→ `，Enter 使用 Pi 标准 dialog 修改；`Ctrl+S` 预览，Esc 返回当前服务商。模型页默认焦点在模型列表，按 `/` 聚焦顶栏搜索；左侧多选、右侧当前模型参数，当前行明确显示 `→ [✓]` 或 `→ [ ]`；底部固定显示 `[Ctrl+R] 获取远程模型列表`，可 Tab 到动作区后用方向键选择并以 Enter/Space 执行，也可在任意焦点直接按 Ctrl+R。`Ctrl+S` 预览，Esc 返回服务商，Enter 勾选，`Ctrl+A/D` 只作用于过滤集，`Ctrl+T` 切换远程项类型。没有 Discovery URL 时 Ctrl+R 会弹出“进入编辑连接设置 / 取消获取”选择；返回后当前 draft、搜索词和 selection 不丢失。普通字符和空格只进入 Input，全局 Ctrl/F2 快捷键仍优先；模型搜索保持焦点时，标准 CSI、SS3 和 Kitty Up/Down 都会移动当前模型并联动参数详情，且在顶部/底部 clamp，不要求 Tab 到列表。逐行只对非托管模型显示“只读”，右侧区分“尚未接管的 models.json 模型”和“builtin/runtime catalog 模型”两种原因。
+连接页左侧字段、右侧解释，当前字段始终显示 `→ `，Enter 使用 Pi 标准 dialog 修改；`Ctrl+S` 预览，Esc 返回当前服务商。模型页默认焦点在模型列表，按 `/` 聚焦顶栏搜索；左侧多选、右侧当前模型参数，当前行明确显示 `→ [✓]` 或 `→ [ ]`；底部固定显示 `[Ctrl+K] 补全 / 撤销` 和 `[Ctrl+L] 补全筛选模型`，可 Tab 到动作区后用方向键选择并以 Enter/Space 执行，也可在连接页任意焦点直接按 Ctrl+R。`Ctrl+S` 预览，Esc 返回服务商，Enter 勾选，`Ctrl+A/D` 只作用于过滤集，`Ctrl+T` 切换远程项类型。没有 Discovery URL 时 Ctrl+R 会弹出“进入编辑连接设置 / 取消获取”选择；返回后当前 draft、搜索词和 selection 不丢失。普通字符和空格只进入 Input，全局 Ctrl/F2 快捷键仍优先；模型搜索保持焦点时，标准 CSI、SS3 和 Kitty Up/Down 都会移动当前模型并联动参数详情，且在顶部/底部 clamp，不要求 Tab 到列表。逐行只对非托管模型显示“只读”，右侧区分“尚未接管的 models.json 模型”和“builtin/runtime catalog 模型”两种原因。
 
-远程接口缺少上下文窗口或最大输出时，使用 provider 页面中可编辑的默认值；价格默认为 0。协议必须从已支持列表中选择，否则保存会被阻止。这表示“能注册并调用”，不表示服务端兼容性已经过网络探测。
+远程接口缺少上下文窗口或最大输出时，使用明确标注为未验证的 Pi compatibility 默认值；价格默认为 0。协议必须从已支持列表中选择，否则保存会被阻止。这表示“能注册并调用”，不表示服务端兼容性已经过网络探测。
 
 ## 认证
 
@@ -146,18 +151,15 @@ Chat 写入 Pi 标准 `models.json`。Classifier 和 image 通过 Pi 的原生 m
 
 ## 统一确认面板
 
-所有需要确认的插件操作均使用同一个盒式 ConfirmationPanel：宽屏 summary/details 双栏、窄屏上下布局、warning/error theme、固定 `→` action 指示和安全默认项。Tab/Shift+Tab、方向键选择，Enter/Space 执行，Esc 返回 cancel。覆盖最终保存、删除服务商、模型参数应用、dirty leave 三选、preview discard、接管、清空 managed、Discovery 候选、付费测试和 image 二次确认；源码中不再使用 `ctx.ui.confirm()`。总览启停是可逆的直接 transaction，不弹确认面板。
+所有需要确认的插件操作均使用同一个盒式 ConfirmationPanel：宽屏 summary/details 双栏、窄屏上下布局、warning/error theme、固定 `→` action 指示和安全默认项。Tab/Shift+Tab、方向键选择，Enter/Space 执行，Esc 返回 cancel。覆盖最终保存、删除服务商、模型参数应用、dirty leave 三选、preview discard、接管、清空 managed、Discovery 候选和目录字段对比确认；源码中不再使用 `ctx.ui.confirm()`。总览启停是可逆的直接 transaction，不弹确认面板。
 
-## 服务商启用、禁用与批量测试
+## 服务商启用、禁用
 
 - model-config.json 的 provider 支持 enabled（默认 true）。总览 Ctrl+X 直接通过双文件 transaction 写入启停状态，不弹确认面板；禁用不会删除 models.json、model-config.json 模型或 auth。/reload 后，扩展以同名 models: [] overlay 隐藏该 provider 的 chat/classifier/image catalog；重新启用并 /reload 后恢复底层 builtin/models.json/owned provider。
 - 安全禁用只允许 Pi builtin、存在 models.json 配置的 custom provider、或 config.owned provider。未接管的第三方 runtime extension provider 不能同名注册，会被拒绝。
 - 当前会话正在使用目标 provider 模型时禁止禁用；插件不会自动切换模型。其他已打开 Pi session 不会被扫描或强制迁移，需各自切换/重载，这是当前限制。
 - 启停立即落盘但不即时修改当前 registry；仍需 /reload 才生效。
 - `[Ctrl+Del] 删除服务商` 需危险 ConfirmationPanel（默认取消）：会同时移除 models.json provider 条目和 model-config.json provider overlay，不删除 auth.json 凭据；若另一个扩展也管理该 provider，其运行时目录仍可能由该扩展决定。删除 builtin 后 /reload 恢复 Pi 内置目录；当前会话正在使用目标模型、或目标是未接管的第三方 runtime provider 时拒绝。有 `models.json` 条目的自定义 provider 可以删除或直接启停。
-- 服务商详情提供 Ctrl+P 批量测试模型。测试仅使用当前 session registry 已加载的目标 provider 模型；disabled、temporary auth 或 dirty draft 会阻止测试并要求先保存/启用/reload。
-- Chat 使用 streamSimple 并完整消费到 done/error，maxTokens=1；classifier 使用原生 classify bool；image 默认不选，选中后需单独二次确认并调用 generateImages 生成红点。默认并发 2；chat/classifier timeout 15s，image 120s；Esc 全局取消。
-- 结果只存内存，状态区分 success/auth/rate-limit/timeout/unsupported/aborted/error，并显示 latency 与可用 usage。失败不会自动取消勾选、删除模型或修改配置；结果页可重试失败项。
 
 ## Provider 专属代理
 

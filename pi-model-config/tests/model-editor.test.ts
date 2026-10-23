@@ -43,6 +43,11 @@ test("thinking default level and provenance are visible in the full-screen edito
   assert.match(renders[0] ?? "", /\[Enter\] Modify field.*\[Ctrl\+S\] Apply to draft.*\[Esc\] Back/u);
 });
 
+test("legacy thinking provenance stays visible in both languages", () => {
+  assert.match(describeThinking("zh-CN", chat, { thinkingSource: "probed" }), /已探测\(旧\)/u);
+  assert.match(describeThinking("en", chat, { thinkingSource: "probed" }), /probed \(legacy\)/u);
+});
+
 test("full-screen editor changes all managed chat fields in memory and marks user provenance", async () => {
   const options: any[] = [];
   const result = await editModelParameters(context((component) => {

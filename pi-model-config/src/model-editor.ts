@@ -62,6 +62,7 @@ function thinkingSourceLabel(language: UiLanguage, source: ThinkingMetadataSourc
   switch (source) {
     case "existing": return t(language, "thinkingSourceExisting");
     case "remote": return t(language, "thinkingSourceRemote");
+    case "directory": return t(language, "thinkingSourceDirectory");
     case "catalog": return t(language, "thinkingSourceCatalog");
     case "protocol": return t(language, "thinkingSourceProtocol");
     case "user": return t(language, "thinkingSourceUser");
@@ -105,7 +106,7 @@ function editableText(model: ManagedModel, id: EditorFieldId): string {
 }
 
 interface EditorResult {
-  action: "return" | "apply";
+  action: "return" | "apply" | "complete";
   model: ManagedModel;
   metadata: ModelMetadataEntry;
 }
@@ -122,6 +123,7 @@ class ModelParameterEditor implements Component, Focusable {
     private readonly model: ManagedModel,
     private readonly metadata: ModelMetadataEntry,
     private readonly done: (result: EditorResult) => void,
+    private readonly sourceDetails: string[] = [],
   ) {}
 
   get focused(): boolean { return this._focused; }
@@ -153,6 +155,8 @@ class ModelParameterEditor implements Component, Focusable {
   private request(): void { if (this.editing) this.editing.input.focused = this._focused; this.tui.requestRender(); }
 
   private markUser(id: EditorFieldId): void {
+    const field = id === "context" ? "contextWindow" : id.startsWith("input:") ? "input" : id;
+    if (this.metadata.directoryFields) this.metadata.directoryFields = this.metadata.directoryFields.filter((key) => key !== field);
     if (id === "context") this.metadata.contextSource = "user";
     if (id === "maxTokens") this.metadata.maxTokensSource = "user";
     if (id === "reasoning" || id.startsWith("thinking:")) this.metadata.thinkingSource = "user";
@@ -162,6 +166,7 @@ class ModelParameterEditor implements Component, Focusable {
     if (id === "name") {
       if (!raw.trim()) { this.tui.requestRender(); return; }
       this.model.name = raw.trim();
+      this.markUser(id);
     } else if (id === "context" && this.model.type !== "image") {
       const value = parsePositiveScaledInteger(raw);
       if (!value) this.notify("editorPositiveError");
@@ -210,6 +215,7 @@ class ModelParameterEditor implements Component, Focusable {
         next.delete(modality);
       } else next.add(modality);
       this.model.input = [...next];
+      this.markUser(id);
     } else if (id.startsWith("output:") && this.model.type === "image") {
       const modality = id.slice("output:".length) as "text" | "image";
       const next = new Set(this.model.output);
@@ -257,6 +263,7 @@ class ModelParameterEditor implements Component, Focusable {
   }
 
   handleInput(data: string): void {
+    if (matchesKey(data, Key.ctrl("k")) && this.model.type === "chat" && !this.editing) { this.done({ action: "complete", model: structuredClone(this.model), metadata: structuredClone(this.metadata) }); return; }
     if (matchesKey(data, Key.ctrl("s"))) { this.apply(); return; }
     if (matchesKey(data, Key.escape)) {
       if (this.editing) { this.editing = undefined; this.status = ""; this.request(); }
@@ -277,11 +284,12 @@ class ModelParameterEditor implements Component, Focusable {
     const contentBudget = Math.max(2, overlayViewportRows(this.tui) - 2);
     const actions: FooterAction[] = [
       { id: "edit", label: t(this.language, "editorModify"), key: Key.enter },
+      ...(this.model.type === "chat" ? [{ id: "complete", label: t(this.language, "modelComplete"), key: Key.ctrl("k") }] : []),
       { id: "apply", label: t(this.language, "editorApply"), key: Key.ctrl("s") },
       { id: "back", label: t(this.language, "editorReturn"), key: Key.escape },
     ];
     const footer = renderActionFooter(actions, 0, false, inner, this.theme);
-    const heading = [this.theme.fg("muted", describeThinking(this.language, this.model, this.metadata)), this.theme.fg("muted", t(this.language, "editorMapHint"))];
+    const heading = [...this.sourceDetails, this.theme.fg("muted", describeThinking(this.language, this.model, this.metadata)), this.theme.fg("muted", t(this.language, "editorMapHint"))];
     const status = this.status ? [this.theme.fg("error", this.status)] : [];
     const bodyBudget = Math.max(0, contentBudget - heading.length - status.length - footer.length);
     const leftWidth = wide ? Math.max(26, Math.floor((inner - 2) * 0.43)) : inner;
@@ -298,7 +306,10 @@ class ModelParameterEditor implements Component, Focusable {
       const label = `${current ? "→ " : "  "}${field.label}`;
       left.push(current ? this.theme.fg("accent", this.theme.bold(truncateToWidth(label, leftWidth, "…"))) : truncateToWidth(label, leftWidth, "…"));
       if (current && this.editing?.id === field.id) right.push(...this.editing.input.render(rightWidth));
-      else right.push(this.theme.fg(current ? "accent" : "muted", truncateToWidth(field.value || t(this.language, "valueUnset"), rightWidth, "…")));
+      else {
+        const source = field.id === "context" ? this.metadata.contextSource : field.id === "maxTokens" ? this.metadata.maxTokensSource : field.id === "reasoning" ? this.metadata.thinkingSource : this.metadata.directoryFields?.includes(field.id === "input:text" || field.id === "input:image" ? "input" : field.id) ? "directory" : undefined;
+        right.push(this.theme.fg(current ? "accent" : "muted", truncateToWidth((field.value || t(this.language, "valueUnset")) + (source === "directory" ? ` · ${t(this.language, "thinkingSourceDirectory")}(${this.metadata.directoryMatchMethod === "variant" ? "variant" : "exact"})` : ""), rightWidth, "…")));
+      }
     }
     const body = wide ? joinColumns(left, right, leftWidth, rightWidth) : left;
     return renderPanelBox([...heading, ...status, ...body.slice(0, bodyBudget), ...footer].slice(0, contentBudget), safeWidth, t(this.language, "editorTitle", { model: this.model.id }), this.theme);
@@ -307,12 +318,16 @@ class ModelParameterEditor implements Component, Focusable {
   invalidate(): void { this.editing?.input.invalidate(); }
 }
 
-async function showModelParameterEditor(ctx: ExtensionCommandContext, language: UiLanguage, model: ManagedModel, metadata: ModelMetadataEntry): Promise<EditorResult> {
-  return ctx.ui.custom<EditorResult>((tui, theme, _keys, done) => new ModelParameterEditor(tui, theme, language, structuredClone(model), structuredClone(metadata), done), MODEL_CONFIG_OVERLAY_OPTIONS);
+async function showModelParameterEditor(ctx: ExtensionCommandContext, language: UiLanguage, model: ManagedModel, metadata: ModelMetadataEntry, details: string[] = []): Promise<EditorResult> {
+  return ctx.ui.custom<EditorResult>((tui, theme, _keys, done) => new ModelParameterEditor(tui, theme, language, structuredClone(model), structuredClone(metadata), done, details), MODEL_CONFIG_OVERLAY_OPTIONS);
 }
 
-export async function editModelParameters(ctx: ExtensionCommandContext, language: UiLanguage, source: ManagedModel, metadata: ModelMetadataEntry): Promise<{ model: ManagedModel; metadata: ModelMetadataEntry } | undefined> {
-  const result = await showModelParameterEditor(ctx, language, source, metadata);
+export async function editModelParameters(ctx: ExtensionCommandContext, language: UiLanguage, source: ManagedModel, metadata: ModelMetadataEntry, complete?: (model: ManagedModel, metadata: ModelMetadataEntry) => Promise<string[]>): Promise<{ model: ManagedModel; metadata: ModelMetadataEntry } | undefined> {
+  let result = await showModelParameterEditor(ctx, language, source, metadata);
+  while (result.action === "complete") {
+    const details = await complete?.(result.model, result.metadata) ?? [];
+    result = await showModelParameterEditor(ctx, language, result.model, result.metadata, details);
+  }
   if (result.action !== "apply") return undefined;
   const confirm = await showConfirmationPanel(ctx, {
     title: t(language, "editorConfirmTitle"),

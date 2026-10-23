@@ -158,9 +158,18 @@ test("connection fields beyond viewport remain reachable and footer shortcuts ar
     ["details", "\x1b", "back"],
     ["actions", "\r", "preview"],
   ] as const) {
-    const result = await showConnectionPanel(context(12, (component) => component.handleInput(input)), "en", "fixture", fields, menuState({ focus, ...(focus === "actions" ? { actionIndex: 3 } : {}) }));
+    const result = await showConnectionPanel(context(12, (component) => component.handleInput(input)), "en", "fixture", fields, menuState({ focus, ...(focus === "actions" ? { actionIndex: 4 } : {}) }));
     assert.equal(result.action, expected);
   }
+});
+
+test("provider completion shortcut is visible and returns completeAll", async () => {
+  const result = await showConnectionPanel(context(24, (component) => {
+    assert.match(component.render(100).join("\n"), /\[Ctrl\+P\]/u);
+    component.handleInput("\x10");
+    component.handleInput("\x13");
+  }), "en", "fixture", [{ id: "name", label: "Name", details: [] }], menuState());
+  assert.equal(result.action, "completeAll");
 });
 
 test("preview footer shortcuts work globally and Enter only changes category focus", async () => {

@@ -19,3 +19,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+Third-party metadata matching/extraction in src/models-directory.ts:
+
+dsh-model-kit — Copyright (c) 2026 PerseusNana7mi
+pi-web — Copyright (c) 2026 agegr
+
+Both are distributed under the MIT License. The permission and warranty
+notice above applies to these adapted portions as well.

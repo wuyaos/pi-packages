@@ -14,11 +14,6 @@
     "version": {
       "const": 1
     },
-    "autoProbeOnSave": {
-      "description": "Pre-save minimal parameter probe for newly checked chat models lacking context/maxTokens metadata. Default true.",
-      "type": "boolean",
-      "default": true
-    },
     "providers": {
       "type": "object",
       "additionalProperties": {
@@ -238,20 +233,24 @@
           "type": "string"
         },
         "contextSource": {
+          "description": "The probed source is deprecated; retained only for legacy model-config.json round-trip compatibility.",
           "enum": [
             "existing",
             "remote",
             "catalog",
+            "directory",
             "user",
             "compat",
             "probed"
           ]
         },
         "maxTokensSource": {
+          "description": "The probed source is deprecated; retained only for legacy model-config.json round-trip compatibility.",
           "enum": [
             "existing",
             "remote",
             "catalog",
+            "directory",
             "user",
             "compat",
             "probed"
@@ -261,24 +260,52 @@
           "type": "string"
         },
         "probeLower": {
+          "description": "Deprecated: retained only for legacy model-config.json round-trip compatibility.",
+          "deprecated": true,
           "type": "integer",
           "minimum": 1
         },
         "probeUpper": {
+          "description": "Deprecated: retained only for legacy model-config.json round-trip compatibility.",
+          "deprecated": true,
           "type": "integer",
           "minimum": 1
         },
         "probeEstimated": {
+          "description": "Deprecated: retained only for legacy model-config.json round-trip compatibility.",
+          "deprecated": true,
           "type": "boolean"
         },
         "thinkingSource": {
+          "description": "The probed source is deprecated; retained only for legacy model-config.json round-trip compatibility.",
           "enum": [
             "existing",
             "remote",
             "catalog",
+            "directory",
             "protocol",
             "user",
             "probed"
+          ]
+        },
+        "directoryFields": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "name",
+              "contextWindow",
+              "maxTokens",
+              "input",
+              "reasoning"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "directoryMatchMethod": {
+          "enum": [
+            "exact",
+            "canonical",
+            "variant"
           ]
         }
       },

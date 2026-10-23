@@ -60,9 +60,6 @@ export function parseModelConfig(source: ConfigSnapshot): ModelConfigFile {
   if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.providers)) {
     throw mcError("MCFG_E_CONFIG_SHAPE", { file: "model-config.json" });
   }
-  if (parsed.autoProbeOnSave !== undefined && typeof parsed.autoProbeOnSave !== "boolean") {
-    throw mcError("MCFG_E_CONFIG_SHAPE", { file: "model-config.json" });
-  }
   for (const [id, provider] of Object.entries(parsed.providers)) {
     if (!isRecord(provider)) throw mcError("MCFG_E_PROVIDER_SHAPE", { file: "model-config.json", provider: id });
     if (!new Set(["models-json", "reuse-pi", "anonymous"]).has(String(provider.authMode))) {
