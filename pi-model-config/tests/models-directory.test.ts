@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fetchModelsDirectory, matchModelsDirectory, DIRECTORY_TTL_MS } from "../src/models-directory.ts";
+import { fetchModelsDirectory, matchModelsDirectory, normalizeDirectoryVariant, DIRECTORY_TTL_MS } from "../src/models-directory.ts";
 const offline = JSON.parse(readFileSync(new URL("../../.ralph/modelsdev.json", import.meta.url), "utf8"));
 const model = (reasoning?: boolean) => ({ name: "Claude Fable 5", limit: { context: 200000, output: 64000 }, modalities: { input: ["text", "image"] }, reasoning, cost: { input: 99, output: 999 } });
 
@@ -30,14 +30,120 @@ test("directory provider scoped variant strips AWS region/vendor/date/version af
   assert.equal(result.matchMethod, "variant");
   assert.equal(result.fields.contextWindow, 200000);
   assert.equal(result.sources.contextWindow?.[0]?.provider, "amazon-bedrock");
-  assert.equal(matchModelsDirectory(catalog, "claude-fable-5-preview", { providerId: "unknown-gateway" }).matchMethod, "none");
+  const unrouted = matchModelsDirectory(catalog, "claude-fable-5-preview", { providerId: "unknown-gateway" });
+  assert.equal(unrouted.matchMethod, "variant");
+  assert.equal(unrouted.sources.contextWindow?.[0]?.provider, "anthropic");
   (catalog["amazon-bedrock"].models as any)["anthropic.claude-fable-5-latest"] = model(true);
-  assert.equal(matchModelsDirectory(structuredClone(catalog), "claude-fable-5-preview", { providerId: "amazon-bedrock" }).matchMethod, "none");
+  const ambiguous = matchModelsDirectory(structuredClone(catalog), "claude-fable-5-preview", { providerId: "amazon-bedrock" });
+  assert.equal(ambiguous.matchMethod, "variant");
+  assert.equal(ambiguous.sources.contextWindow?.[0]?.provider, "anthropic");
 });
-test("directory routing by display name/baseUrl does not cross contradictory evidence", () => {
+test("directory routing by display name/baseUrl keeps exact hits and uses global fallback for contradictory evidence", () => {
   const catalog = { anthropic: { name: "Anthropic", api: "https://api.anthropic.com", models: { "claude-fable-5": model(true) } }, openai: { api: "https://api.openai.com", models: { "gpt-test": model(false) } } };
   assert.equal(matchModelsDirectory(catalog, "claude-fable-5", { providerId: "custom", baseUrl: "https://api.anthropic.com/v1" }).matchMethod, "exact");
-  assert.equal(matchModelsDirectory(catalog, "claude-fable-5", { providerId: "openai", baseUrl: "https://api.anthropic.com/v1" }).matchMethod, "none");
+  const contradictory = matchModelsDirectory(catalog, "claude-fable-5", { providerId: "openai", baseUrl: "https://api.anthropic.com/v1" });
+  assert.equal(contradictory.matchMethod, "variant");
+  assert.equal(contradictory.sources.contextWindow?.[0]?.provider, "anthropic");
+});
+test("directory offline custom gateway resolves AWS-Claude-Fable-5 to official metadata", () => {
+  const result = matchModelsDirectory(offline, "AWS-Claude-Fable-5", { providerId: "pa-completions" });
+  assert.equal(result.matchMethod, "variant");
+  assert.equal(result.fields.contextWindow, offline.anthropic.models["claude-fable-5"].limit.context);
+  assert.equal(result.fields.maxTokens, offline.anthropic.models["claude-fable-5"].limit.output);
+  for (const field of ["name", "contextWindow", "maxTokens", "input"] as const) {
+    assert.deepEqual(result.sources[field], [{ provider: "anthropic", id: "claude-fable-5", matchMethod: "variant" }]);
+  }
+  assert.equal(result.reasoning, true);
+  assert.equal(result.effortHint?.provider, "anthropic");
+  assert.deepEqual(result.effortHint?.values, ["low", "medium", "high", "xhigh", "max"]);
+  assert.equal(JSON.stringify(result).includes('"cost"'), false);
+});
+test("directory offline unknown models and fuzzy prefixes remain unmatched", () => {
+  for (const id of ["my-fake-model-0718", "AWS-Claude-Fable", "pa-claude-fable-5"]) {
+    assert.deepEqual(matchModelsDirectory(offline, id, { providerId: "pa-completions" }), { matchMethod: "none", fields: {}, sources: {} });
+  }
+});
+test("directory normalization strips known cloud prefixes after vendor dots only", () => {
+  for (const vendor of ["aws", "azure", "bedrock", "gcp", "vertex"]) {
+    for (const separator of ["-", "."]) {
+      assert.equal(normalizeDirectoryVariant(`${vendor}${separator}Claude-Fable-5`), "claude-fable-5");
+    }
+  }
+  assert.equal(normalizeDirectoryVariant("US.anthropic.AWS-Claude-Fable-5-20261023-v1:0"), "claude-fable-5");
+  assert.equal(normalizeDirectoryVariant("custom-claude-fable-5"), "custom-claude-fable-5");
+});
+test("directory routed exact, canonical and unique variant take priority over global official entries", () => {
+  const catalog = {
+    gateway: { models: { "claude-fable-5": { ...model(false), limit: { context: 123000, output: 12000 } } } },
+    alias: { models: { alias: { canonical_model_id: "gateway/claude-fable-5" } } },
+    anthropic: { models: { "claude-fable-5": model(true) } },
+  };
+  for (const [id, providerId, method] of [["claude-fable-5", "gateway", "exact"], ["alias", "alias", "canonical"], ["AWS-Claude-Fable-5-preview", "gateway", "variant"]] as const) {
+    const result = matchModelsDirectory(catalog, id, { providerId });
+    assert.equal(result.matchMethod, method);
+    assert.equal(result.fields.contextWindow, 123000);
+    assert.equal(result.sources.contextWindow?.[0]?.provider, "gateway");
+  }
+});
+test("directory global fallback runs after a routed provider has no matching model", () => {
+  const catalog = { gateway: { models: { unrelated: model(false) } }, anthropic: { models: { "claude-fable-5": model(true) } } };
+  const result = matchModelsDirectory(catalog, "AWS-Claude-Fable-5", { providerId: "gateway" });
+  assert.equal(result.matchMethod, "variant");
+  assert.equal(result.sources.contextWindow?.[0]?.provider, "anthropic");
+});
+test("directory global fallback without an official family uses field consensus at 60 percent", () => {
+  const catalog = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`reseller${i}`, { models: { "my-model": {
+    ...model(i < 3), name: i < 3 ? "Majority" : "Minority",
+    limit: { context: i < 3 ? 200000 : 100000, output: i < 3 ? 64000 : 32000 },
+    modalities: { input: i === 1 ? ["image", "text"] : i < 3 ? ["text", "image"] : ["text"] },
+  } } }]));
+  const result = matchModelsDirectory(catalog, "AWS-my-model-preview", { providerId: "custom" });
+  assert.equal(result.matchMethod, "variant");
+  assert.deepEqual(result.fields, { name: "Majority", contextWindow: 200000, maxTokens: 64000, input: ["text", "image"], reasoning: true });
+  for (const field of ["name", "contextWindow", "maxTokens", "input", "reasoning"] as const) {
+    assert.deepEqual(result.sources[field]?.map((s) => s.provider), ["reseller0", "reseller1", "reseller2"]);
+    assert.ok(result.sources[field]?.every((s) => s.matchMethod === "variant"));
+  }
+  assert.equal(result.effortHint, undefined);
+  assert.equal(JSON.stringify(result).includes('"cost"'), false);
+});
+test("directory global consensus abstains on tied fields and counts missing values in the threshold", () => {
+  const tied = {
+    a: { models: { "my-model": model(true) } },
+    b: { models: { "my-model-latest": { ...model(false), limit: { context: 100000, output: 32000 } } } },
+  };
+  const result = matchModelsDirectory(tied, "my-model-preview", { providerId: "custom" });
+  assert.equal(result.matchMethod, "variant");
+  assert.equal(result.fields.contextWindow, undefined);
+  assert.equal(result.fields.maxTokens, undefined);
+  assert.equal(result.sources.contextWindow, undefined);
+  assert.equal(result.reasoning, undefined);
+  assert.equal(result.fields.name, "Claude Fable 5");
+  const missing = { ...tied, c: { models: { "my-model": {} } }, d: { models: { "my-model": {} } } };
+  const abstained = matchModelsDirectory(missing, "my-model-preview", { providerId: "custom" });
+  assert.deepEqual(abstained.fields, {});
+  assert.deepEqual(abstained.sources, {});
+});
+test("directory global fallback uses a single nonofficial entry without inventing an official provider", () => {
+  const catalog = { reseller: { models: { "gpt-xxx": model(true) } }, anthropic: { models: { "claude-fable-5": model(true) } } };
+  const result = matchModelsDirectory(catalog, "aws-gpt-xxx", { providerId: "custom" });
+  assert.equal(result.matchMethod, "variant");
+  assert.equal(result.fields.contextWindow, 200000);
+  assert.equal(result.sources.contextWindow?.[0]?.provider, "reseller");
+  assert.equal(result.effortHint, undefined);
+});
+test("directory global fallback missing the official family provider uses consensus, not another family", () => {
+  const catalog = {
+    a: { models: { "gpt-xxx": model(true) } },
+    b: { models: { "gpt-xxx-preview": model(true) } },
+    c: { models: { "gpt-xxx": { ...model(false), limit: { context: 100000, output: 32000 } } } },
+    anthropic: { models: { "claude-fable-5": model(true) } },
+  };
+  const result = matchModelsDirectory(catalog, "aws-gpt-xxx", { providerId: "custom" });
+  assert.equal(result.fields.contextWindow, 200000);
+  assert.deepEqual(result.sources.contextWindow?.map((s) => s.provider), ["a", "b"]);
+  assert.equal(result.reasoning, true);
+  assert.equal(result.effortHint, undefined);
 });
 test("directory reasoning consensus: official weight 5, threshold 60%, ties/unknown abstain", () => {
   const catalog: any = { anthropic: { models: { "claude-fable-5": model(true) } } };

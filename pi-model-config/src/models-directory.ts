@@ -42,10 +42,11 @@ export async function fetchModelsDirectory(fetchImpl: typeof fetch = globalThis.
   try { return await pending; } finally { pending = undefined; }
 }
 
-/** Only known affixes; fuzzy/global variant matching is deliberately forbidden. */
+/** Only known affixes; fuzzy prefix matching is deliberately forbidden. */
 export function normalizeDirectoryVariant(value: string): string {
   return lower(value).replace(/^(?:us|eu|apac)\./u, "")
     .replace(/^(?:anthropic|amazon|meta|mistral|cohere|google|openai|deepseek|qwen)\./u, "")
+    .replace(/^(?:aws|azure|bedrock|gcp|vertex)[-.]/u, "")
     .replace(/(?:-v\d+:\d+|-latest|-preview|-\d{8})$/gu, "")
     .replace(/(?:-v\d+:\d+|-latest|-preview|-\d{8})$/gu, "");
 }
@@ -72,6 +73,20 @@ function officialFor(id: string): string[] {
   return officialFamilies.find(([pattern]) => pattern.test(bare))?.[1] ?? [];
 }
 
+function directoryFields(raw: Row): DirectoryResult["fields"] {
+  const fields: DirectoryResult["fields"] = {};
+  if (typeof raw.name === "string" && raw.name.trim()) fields.name = Array.from(raw.name.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").trim()).slice(0, 256).join("");
+  const limit = object(raw.limit);
+  if (positive(limit.context)) fields.contextWindow = limit.context;
+  if (positive(limit.output)) fields.maxTokens = limit.output;
+  const input = object(raw.modalities).input;
+  if (Array.isArray(input)) {
+    const supported = [...new Set(input.filter((v): v is "text" | "image" => v === "text" || v === "image"))];
+    if (supported.length) fields.input = supported;
+  }
+  return fields;
+}
+
 export function matchModelsDirectory(directory: DirectoryData, id: string, hint: ProviderHint): DirectoryResult {
   const providers = Object.entries(directory).map(([provider, raw]) => ({ provider, row: object(raw) }));
   const names = [hint.providerId, hint.providerName ?? ""].filter(Boolean).map(providerKey);
@@ -81,7 +96,7 @@ export function matchModelsDirectory(directory: DirectoryData, id: string, hint:
     const expected = typeof row.api === "string" ? host(row.api) : "";
     return expected && (hostname === expected || hostname.endsWith(`.${expected}`));
   }) : [];
-  // Contradictory endpoint/name evidence must not select another provider's variants.
+  // Contradictory endpoint/name evidence must not route to another provider's variants.
   const routed = byHost.length ? byName.length ? byHost.filter((p) => byName.includes(p)) : byHost : byName;
   const entries = directoryEntries(directory);
   const query = lower(id);
@@ -98,24 +113,53 @@ export function matchModelsDirectory(directory: DirectoryData, id: string, hint:
     matches = entries.filter((e) => routed.some((p) => p.provider === e.provider) && normalizeDirectoryVariant(e.id) === normalizeDirectoryVariant(id));
     if (matches.length === 1) { chosen = matches[0]; method = "variant"; }
   }
+  let variantEvidence: Entry[] | undefined;
+  let consensusFields = false;
+  if (!chosen) {
+    // Custom gateways need an exact normalized identity lookup beyond routed providers.
+    const bare = normalizeDirectoryVariant(id);
+    const candidates = entries.filter((e) => normalizeDirectoryVariant(e.id) === bare);
+    if (candidates.length) {
+      const official = officialFor(bare);
+      const officialEntry = candidates.find((e) => official.includes(e.provider));
+      chosen = officialEntry ?? candidates[0];
+      method = "variant";
+      variantEvidence = candidates;
+      consensusFields = !officialEntry && candidates.length >= 2;
+    }
+  }
   if (!chosen) return { matchMethod: "none", fields: {}, sources: {} };
   const source: DirectorySource = { provider: chosen.provider, id: chosen.id, matchMethod: method as DirectorySource["matchMethod"] };
   const result: DirectoryResult = { matchMethod: method, fields: {}, sources: {} };
   const raw = chosen.raw;
-  if (typeof raw.name === "string" && raw.name.trim()) { result.fields.name = Array.from(raw.name.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").trim()).slice(0, 256).join(""); result.sources.name = [source]; }
-  const limit = object(raw.limit);
-  if (positive(limit.context)) { result.fields.contextWindow = limit.context; result.sources.contextWindow = [source]; }
-  if (positive(limit.output)) { result.fields.maxTokens = limit.output; result.sources.maxTokens = [source]; }
-  const input = object(raw.modalities).input;
-  if (Array.isArray(input)) {
-    const supported = [...new Set(input.filter((v): v is "text" | "image" => v === "text" || v === "image"))];
-    if (supported.length) { result.fields.input = supported; result.sources.input = [source]; }
-  }
-  // Consensus uses exact/canonical identity evidence, not a second global variant search.
+  result.fields = consensusFields ? {} : directoryFields(raw);
+  for (const field of Object.keys(result.fields) as Array<keyof DirectoryResult["fields"]>) result.sources[field] = [source];
+  // Routed hits retain exact/canonical evidence; global fallback uses its normalized candidates.
   const canonicalIdentity = `${lower(chosen.provider)}/${lower(chosen.id)}`;
-  const evidence = entries.filter((e) => lower(e.id) === lower(chosen.id) || lower(String(e.raw.canonical_model_id ?? "")) === canonicalIdentity);
+  const evidence = variantEvidence ?? entries.filter((e) => lower(e.id) === lower(chosen.id) || lower(String(e.raw.canonical_model_id ?? "")) === canonicalIdentity);
   const unique = [...new Map(evidence.map((e) => [e.provider, e])).values()];
   const official = officialFor(chosen.id);
+  if (consensusFields) {
+    const total = unique.reduce((sum, e) => sum + (official.includes(e.provider) ? 5 : 1), 0);
+    const values = unique.map((e) => ({ entry: e, fields: directoryFields(e.raw) }));
+    for (const field of ["name", "contextWindow", "maxTokens", "input"] as const) {
+      const votes = new Map<string, { value: NonNullable<DirectoryResult["fields"][typeof field]>; weight: number; entries: Entry[] }>();
+      for (const { entry, fields } of values) {
+        const value = fields[field];
+        if (value === undefined) continue;
+        const key = JSON.stringify(Array.isArray(value) ? [...value].sort() : value);
+        const vote = votes.get(key) ?? { value, weight: 0, entries: [] };
+        vote.weight += official.includes(entry.provider) ? 5 : 1;
+        vote.entries.push(entry);
+        votes.set(key, vote);
+      }
+      const [winner, runnerUp] = [...votes.values()].sort((a, b) => b.weight - a.weight);
+      if (winner && winner.weight / total >= 0.6 && winner.weight !== runnerUp?.weight) {
+        Object.assign(result.fields, { [field]: winner.value });
+        result.sources[field] = winner.entries.map((e) => ({ provider: e.provider, id: e.id, matchMethod: source.matchMethod }));
+      }
+    }
+  }
   let yes = 0, no = 0, total = 0;
   for (const e of unique) {
     const weight = official.includes(e.provider) ? 5 : 1;
