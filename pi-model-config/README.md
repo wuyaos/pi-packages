@@ -180,23 +180,13 @@ Chat 写入 Pi 标准 `models.json`。Classifier 和 image 通过 Pi 的原生 m
 
 插件是与 Pi 同权限运行的扩展，可以读取模型配置和认证。只从可信来源安装；优先使用 `$ENV` 或 Pi auth，避免长期 literal。
 
-## 保存时自动探测参数（auto probe on save）
+## Models.dev 目录补全
 
-保存流程进入预览前（`Ctrl+S` 之后、preview 展示之前），插件会对草稿中 metadata 仍标记为 `compat`（即缺少 contextWindow/maxTokens 元数据的）chat 模型逐个串行发送一个最小探测请求：`POST {baseUrl}/chat/completions`，body 为 `{ model, messages: [{ role: "user", content: "用中文写一段约300字的描写" }], max_tokens: 100000 }`，单请求 15 秒超时。每个请求都是真实调用，可能计费；探测期间显示统一盒式进度面板（已完成 X/Y），Esc 可取消剩余请求，已完成的探测结果保留。
+补全由快捷键显式触发：模型列表中 `Ctrl+K` 补全当前模型，`Ctrl+L` 补全筛选出的模型；连接页 `Ctrl+P` 补全当前服务商的可编辑 chat 模型，`Ctrl+R` 仍用于获取远程模型列表。保存前不会自动发送模型探测请求。
 
-推断规则：`finish_reason=length` 且 `usage.completion_tokens_details.reasoning_tokens > 0`（或 `message.reasoning_content` 存在）→ `maxTokens = max(2 × reasoning_tokens, 16384)`，并标 `reasoning=true` + 协议默认 thinkingLevelMap；`finish_reason=length` 无 reasoning → `maxTokens = max(completion_tokens, 16384)`（保守取当前截断点）；`finish_reason=stop` → `maxTokens = 32768`；HTTP 错误、超时、取消或不可信响应 → 该模型静默沿用 128K/16K 兼容默认值。contextWindow 无法由探测可靠测出，保留现有值或 128000 默认，但 metadata 也会标记为 `probed` 表示本轮已探测确认。探测成功回填草稿并标 `maxTokensSource/contextSource/thinkingSource="probed"`；最终落盘仍需 preview 确认，preview 的「模型配置」分类会为新增条目显示「参数已自动探测（实测）」来源标记。
+目录请求只读取 Models.dev 的公开元数据，使用当前服务商的代理但不携带其密钥或自定义认证头。结果缓存一小时；网络失败会中止本批补全，不修改草稿。
 
-凭据与 URL 安全复用 discovery 的规则：URL 必须通过 `validateHttpUrl`（仅 HTTP(S)、禁止嵌入凭据或密钥查询参数）；`$ENV`/`$$` 字面量按 discovery 同样方式解析；reuse-pi 的 Pi 凭据仅在与模型地址同 origin 时才随探测请求转发。provider 专属代理同样适用于探测请求。探测密钥通过 `Authorization: Bearer` 头发送且不会出现在任何错误提示中。
-
-该功能默认开启；在 `model-config.json` 顶层设置 `"autoProbeOnSave": false` 可整体关闭：
-
-```json
-{
-  "version": 1,
-  "autoProbeOnSave": false,
-  "providers": {}
-}
-```
+补全只填空缺或仍等于兼容占位默认值（128000/16384 且来源为 `compat`）的字段；已有名称、明确的 token 上限、`false` 和 text-only 输入均保留。冲突可再次 `Ctrl+K` 逐字段比较并显式采用；尚未改动补全结果时，再次触发会先撤销该次补全。价格和 `thinkingLevelMap` 永不回填，reasoning effort 仅作为来源提示。补全仅修改草稿，仍需预览后保存。
 
 ## 从 jev-use 迁移到原生 classifier
 

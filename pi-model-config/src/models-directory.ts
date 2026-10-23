@@ -118,10 +118,19 @@ export function matchModelsDirectory(directory: DirectoryData, id: string, hint:
   if (!chosen) {
     // Custom gateways need an exact normalized identity lookup beyond routed providers.
     const bare = normalizeDirectoryVariant(id);
-    const candidates = entries.filter((e) => normalizeDirectoryVariant(e.id) === bare);
+    const grouped = new Map<string, Entry[]>();
+    for (const entry of entries) {
+      if (normalizeDirectoryVariant(entry.id) !== bare) continue;
+      const group = grouped.get(entry.provider) ?? [];
+      group.push(entry);
+      grouped.set(entry.provider, group);
+    }
+    // A provider with multiple normalized identities abstains entirely, including reasoning votes.
+    const candidates = [...grouped.values()].filter((group) => group.length === 1).map(([entry]) => entry!)
+      .sort((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
     if (candidates.length) {
       const official = officialFor(bare);
-      const officialEntry = candidates.find((e) => official.includes(e.provider));
+      const officialEntry = official.map((provider) => candidates.find((e) => e.provider === provider)).find((entry) => entry !== undefined);
       chosen = officialEntry ?? candidates[0];
       method = "variant";
       variantEvidence = candidates;

@@ -1,0 +1,152 @@
+{
+  "openai": {
+    "name": "OpenAI",
+    "models": {
+      "gpt-5.1": {
+        "id": "gpt-5.1",
+        "name": "GPT-5.1",
+        "limit": {
+          "context": 400000,
+          "input": 272000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "cost": {
+          "input": 1.25,
+          "output": 10,
+          "cache_read": 0.125
+        }
+      }
+    }
+  },
+  "anthropic": {
+    "name": "Anthropic",
+    "models": {
+      "claude-fable-5": {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "cost": {
+          "input": 10,
+          "output": 50,
+          "cache_read": 1,
+          "cache_write": 12.5
+        }
+      }
+    }
+  },
+  "alibaba": {
+    "name": "Alibaba",
+    "api": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "models": {
+      "qwen3.6-35b-a3b": {
+        "id": "qwen3.6-35b-a3b",
+        "name": "Qwen3.6 35B-A3B",
+        "limit": {
+          "context": 262144,
+          "output": 65536
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "budget_tokens"
+          }
+        ],
+        "cost": {
+          "input": 0.375,
+          "output": 2.25
+        }
+      }
+    }
+  },
+  "hetzner": {
+    "name": "Hetzner",
+    "api": "https://inference.hetzner.com/api/v1",
+    "models": {
+      "Qwen/Qwen3.6-35B-A3B-FP8": {
+        "id": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "name": "Qwen3.6 35B A3B FP8",
+        "canonical_model_id": "alibaba/qwen3.6-35b-a3b",
+        "limit": {
+          "context": 262144,
+          "output": 262144
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "reasoning": true,
+        "reasoning_options": [],
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      }
+    }
+  }
+}

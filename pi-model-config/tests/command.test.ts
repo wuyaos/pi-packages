@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL , fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ManagedChatModel } from "../src/types.ts";
 import { buildDiscoveryCandidates } from "../src/discovery.ts";
@@ -457,7 +457,7 @@ test("preview save keeps legacy metadata and compatibility defaults without mode
     assert.equal(savedCompat.contextWindow, 128000);
     assert.equal(savedCompat.maxTokens, 16384);
     assert.equal(requests, 0);
-    const schema = JSON.parse(readFileSync(join(process.cwd(), "pi-model-config", "model-config.schema.json"), "utf8"));
+    const schema = JSON.parse(readFileSync(new URL("../model-config.schema.json", import.meta.url), "utf8"));
     const properties = schema.$defs.modelMetadata.properties;
     for (const key of ["contextSource", "maxTokensSource", "thinkingSource"]) {
       assert.ok(properties[key].enum.includes("probed"));
@@ -474,18 +474,18 @@ test("preview save keeps legacy metadata and compatibility defaults without mode
 });
 
 test("plugin source contains no ctx.ui.confirm calls", () => {
-  const root = join(process.cwd(), "pi-model-config", "src");
+  const root = fileURLToPath(new URL("../src/", import.meta.url));
   const files = ["command.ts", "panel.ts"];
   for (const file of files) assert.doesNotMatch(readFileSync(join(root, file), "utf8"), /ctx\.ui\.confirm\s*\(/u);
 });
 
 // Drive the registered command and its real TUI components against isolated transaction files.
-for (const scenario of ["network-failure", "cancel", "complete-save", "undo", "fetch-complete-all"] as const) {
+for (const scenario of ["network-failure", "cancel", "complete-save", "undo", "fetch-complete-all", "external-edit"] as const) {
   test(`directory command round-trip: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-model-config-directory-"));
     const originalFetch = globalThis.fetch;
     let requests = 0;
-    const model = { id: "gpt-5.1", name: "Configured name", api: "openai-completions", reasoning: false, thinkingLevelMap: { minimal: "minimal", high: "custom-high" }, input: ["text"], cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } };
+    const model = { ...(scenario === "external-edit" ? { contextWindow: 500000, maxTokens: 77777 } : {}), id: "gpt-5.1", name: "Configured name", api: "openai-completions", reasoning: false, thinkingLevelMap: { minimal: "minimal", high: "custom-high" }, input: ["text"], cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } };
     const metadata = { type: "chat", id: model.id, contextSource: "compat", maxTokensSource: "compat", thinkingSource: "existing", verifiedAt: "legacy-date", probeLower: 64000 };
     try {
       const modelsPath = join(dir, "models.json"), configPath = join(dir, "model-config.json");
@@ -498,7 +498,7 @@ for (const scenario of ["network-failure", "cancel", "complete-save", "undo", "f
         if (scenario === "network-failure") throw new Error("offline");
         if (scenario === "cancel") return new Promise((_resolve, reject) => { init.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }); });
         assert.equal(init?.headers?.authorization, undefined);
-        if (String(url) === "https://models.dev/api.json") return new Response(readFileSync(join(process.cwd(), ".ralph/modelsdev.json"), "utf8"));
+        if (String(url) === "https://models.dev/api.json") return new Response(readFileSync(new URL("./fixtures/models-directory.json", import.meta.url), "utf8"));
         assert.equal(String(url), "https://api.openai.com/v1/models");
         return new Response(JSON.stringify({ data: [{ id: "gpt-5.1" }, { id: "gpt-5.1-chat-latest" }, { id: "no-catalog-match" }] }));
       }) as typeof fetch;
@@ -534,10 +534,10 @@ for (const scenario of ["network-failure", "cancel", "complete-save", "undo", "f
                   assert.match(rendered, /Selected 1/);
                   component.handleInput("\x13");
                 } else if (selectorVisits === 1 || scenario === "undo" && selectorVisits === 2) component.handleInput("\x0b");
-                else { assert.match(rendered, scenario === "undo" ? /Undid this model/ : /directory\(exact\)/); component.handleInput("\x13"); }
+                else { assert.match(rendered, scenario === "undo" ? /Undid this model/ : scenario === "external-edit" ? /conflict/i : /directory\(exact\)/); component.handleInput("\x13"); }
               } else if (rendered.includes("Preview Changes")) {
                 component.handleInput("\x1b[B"); preview = component.render(120).join("\n");
-                if (scenario !== "undo") assert.match(preview, /gpt-5.1 · directory/);
+                if (scenario !== "undo" && scenario !== "external-edit") assert.match(preview, /gpt-5.1 · directory/);
                 saved = true; component.handleInput("\x13");
               } else if (rendered.includes("Fetching")) {
                 // Discovery loader.
@@ -555,12 +555,12 @@ for (const scenario of ["network-failure", "cancel", "complete-save", "undo", "f
           assert.equal(saved, true, JSON.stringify(notices.rows));
           const savedModel = JSON.parse(readFileSync(modelsPath, "utf8")).providers.openai.models[0];
           const savedMetadata = JSON.parse(readFileSync(configPath, "utf8")).providers.openai.modelMetadata.find((entry: any) => entry.id === model.id);
-          assert.equal(savedModel.contextWindow, scenario === "undo" ? 128000 : 400000);
-          assert.equal(savedModel.maxTokens, scenario === "undo" ? 16384 : 128000);
+          assert.equal(savedModel.contextWindow, scenario === "external-edit" ? 500000 : scenario === "undo" ? 128000 : 400000);
+          assert.equal(savedModel.maxTokens, scenario === "external-edit" ? 77777 : scenario === "undo" ? 16384 : 128000);
           assert.equal(savedModel.name, model.name);
           assert.deepEqual(savedModel.cost, model.cost);
           assert.deepEqual(savedModel.thinkingLevelMap, model.thinkingLevelMap);
-          assert.equal(savedMetadata.contextSource, scenario === "undo" ? "compat" : "directory");
+          assert.equal(savedMetadata.contextSource, scenario === "undo" || scenario === "external-edit" ? "compat" : "directory");
           assert.equal(savedMetadata.verifiedAt, "legacy-date");
           assert.equal(savedMetadata.probeLower, 64000);
           assert.equal(JSON.parse(readFileSync(modelsPath, "utf8")).providers.openai.models.length, 1);
@@ -570,3 +570,67 @@ for (const scenario of ["network-failure", "cancel", "complete-save", "undo", "f
     } finally { globalThis.fetch = originalFetch; rmSync(dir, { recursive: true, force: true }); }
   });
 }
+
+test("directory command undo stays isolated across providers and after save/reentry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-model-config-directory-isolation-"));
+  const originalFetch = globalThis.fetch;
+  const base = { id: "gpt-5.1", name: "Configured name", api: "openai-completions", reasoning: false, input: ["text"] };
+  const compat = { type: "chat", id: base.id, contextSource: "compat", maxTokensSource: "compat" };
+  const completed = { ...compat, contextSource: "directory", maxTokensSource: "directory", directoryFields: ["contextWindow", "maxTokens"], directoryMatchMethod: "variant" };
+  try {
+    const modelsPath = join(dir, "models.json"), configPath = join(dir, "model-config.json");
+    writeFileSync(modelsPath, JSON.stringify({ providers: {
+      alpha: { baseUrl: "https://alpha.example.test/v1", models: [base] },
+      beta: { baseUrl: "https://beta.example.test/v1", models: [{ ...base, contextWindow: 400000, maxTokens: 128000 }] },
+    } }));
+    writeFileSync(configPath, JSON.stringify({ version: 1, providers: Object.fromEntries(["alpha", "beta"].map((id) => [id, {
+      owned: true, authMode: "anonymous", managedChatIds: [base.id], modelMetadata: [id === "alpha" ? compat : completed],
+    }])) }));
+    writeFileSync(join(dir, "model-config-ui.json"), JSON.stringify({ version: 1, language: "en" }));
+    globalThis.fetch = (async () => new Response(readFileSync(new URL("./fixtures/models-directory.json", import.meta.url), "utf8"))) as typeof fetch;
+    await withAgentDir(dir, async () => {
+      const command = await loadCommand(), notices = notifications();
+      let overviewVisits = 0, selectorVisits = 0, saves = 0, views = 0;
+      const ui = { ...notices, custom: (factory: any) => new Promise((resolve, reject) => {
+        let component: any;
+        const done = (value: any) => { component?.dispose?.(); resolve(value); };
+        try {
+          component = factory({ requestRender() {}, terminal: { rows: 30, columns: 120 } }, { fg: (_c: string, v: string) => v, bold: (v: string) => v }, {}, done);
+          const rendered = component.render(120).join("\n");
+          assert.ok(++views < 30, rendered);
+          if (rendered.includes("Models and Providers")) {
+            overviewVisits++; selectorVisits = 0;
+            if (overviewVisits === 4) component.handleInput("\x1b");
+            else {
+              if (overviewVisits === 2) component.handleInput("\x1b[B");
+              if (overviewVisits === 3) component.handleInput("\x1b[A");
+              component.handleInput("\r");
+            }
+          } else if (rendered.includes("Provider connection settings")) {
+            assert.match(rendered, new RegExp(overviewVisits === 2 ? "beta" : "alpha"));
+            component.handleInput("\t"); component.handleInput("\t"); component.handleInput("\x1b[C"); component.handleInput("\r");
+          } else if (rendered.includes("Configure Models")) {
+            if (++selectorVisits === 1) component.handleInput("\x0b");
+            else {
+              assert.doesNotMatch(rendered, /Undid this model/);
+              assert.match(rendered, /directory\(variant\)/);
+              component.handleInput("\x13");
+            }
+          } else if (rendered.includes("Preview Changes")) { saves++; component.handleInput("\x13"); }
+          else if (!rendered.includes("Fetching Models.dev")) throw new Error(rendered);
+        } catch (error) { component?.dispose?.(); reject(error); }
+      }) };
+      await command.handler("", context(ui));
+      assert.equal(saves, 3, JSON.stringify(notices.rows));
+      assert.equal(overviewVisits, 4);
+      assert.ok(notices.rows.every((notice) => !/Undid this model/.test(notice.message)));
+    });
+    const savedModels = JSON.parse(readFileSync(modelsPath, "utf8"));
+    const savedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    for (const id of ["alpha", "beta"]) {
+      assert.equal(savedModels.providers[id].models[0].contextWindow, 400000);
+      assert.equal(savedModels.providers[id].models[0].maxTokens, 128000);
+      assert.equal(savedConfig.providers[id].modelMetadata[0].contextSource, "directory");
+    }
+  } finally { globalThis.fetch = originalFetch; rmSync(dir, { recursive: true, force: true }); }
+});

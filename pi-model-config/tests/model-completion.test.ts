@@ -50,6 +50,33 @@ test("batch completion never overrides conflicts even after repeated batches; ke
   assert.equal(comparisons, 5);
   assert.deepEqual(model, before);
 });
+test("completion treats external token edits with stale compat provenance as conflicts", async () => {
+  const model = { ...chat(), contextWindow: 500000, maxTokens: 77777 };
+  const metadata: ModelMetadataEntry = { type: "chat", id: model.id, contextSource: "compat", maxTokensSource: "compat" };
+  const plan = planDirectoryCompletion(model, metadata, matchModelsDirectory(directory, model.id, hint));
+  assert.deepEqual(plan.changes, []);
+  assert.ok(plan.conflicts.includes("contextWindow"));
+  assert.ok(plan.conflicts.includes("maxTokens"));
+  const before = structuredClone(model), session: CompletionSession = new Map();
+  for (let i = 0; i < 2; i++) {
+    const result = await completeDirectoryModel(context(), "en", directory, hint, model, metadata, session, false);
+    assert.equal(result.conflicts, true);
+    assert.deepEqual(model, before);
+  }
+  const compared: string[] = [];
+  await completeDirectoryModel(context((component) => { compared.push(component.render(120).join("\n")); component.handleInput("\x1b"); }), "en", directory, hint, model, metadata, session, true);
+  assert.ok(compared.some((view) => view.includes("500000") && view.includes("200000")));
+  assert.ok(compared.some((view) => view.includes("77777") && view.includes("32000")));
+  assert.deepEqual(model, before);
+});
+test("completion only treats compat token placeholders as missing, independently per field", () => {
+  const model = chat(), result = matchModelsDirectory(directory, model.id, hint);
+  const metadata: ModelMetadataEntry = { type: "chat", id: model.id, contextSource: "compat", maxTokensSource: "compat" };
+  for (const [contextWindow, maxTokens, changes] of [[500000, 16384, ["maxTokens"]], [128000, 77777, ["contextWindow"]]] as const) {
+    const plan = planDirectoryCompletion({ ...model, contextWindow, maxTokens }, metadata, result);
+    assert.deepEqual(plan.changes, changes);
+  }
+});
 test("completion does not overwrite subsequent manual edits on undo, and rejects inconsistent token pairs", async () => {
   const model = chat(), metadata: ModelMetadataEntry = { type: "chat", id: model.id, contextSource: "compat", maxTokensSource: "compat" }, session: CompletionSession = new Map();
   await completeDirectoryModel(context(), "en", directory, hint, model, metadata, session, true);

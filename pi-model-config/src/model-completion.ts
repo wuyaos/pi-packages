@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { t, type UiLanguage } from "./i18n.ts";
+import { COMPAT_CONTEXT_WINDOW, COMPAT_MAX_TOKENS } from "./discovery.ts";
 import { showConfirmationPanel } from "./panel.ts";
 import { matchModelsDirectory, type DirectoryData, type DirectoryResult, type ProviderHint } from "./models-directory.ts";
 import type { ManagedChatModel, ManagedModel, ModelMetadataEntry } from "./types.ts";
@@ -20,9 +21,10 @@ export function planDirectoryCompletion(model: ManagedModel, metadata: ModelMeta
     const suggested = result.fields[field];
     if (suggested === undefined) continue;
     const current = model[field];
+    // Persisted provenance can outlive an external models.json edit: only placeholders are missing.
     const missing = current === null || current === undefined ||
-      field === "contextWindow" && metadata.contextSource === "compat" ||
-      field === "maxTokens" && metadata.maxTokensSource === "compat";
+      field === "contextWindow" && metadata.contextSource === "compat" && current === COMPAT_CONTEXT_WINDOW ||
+      field === "maxTokens" && metadata.maxTokensSource === "compat" && current === COMPAT_MAX_TOKENS;
     if (missing) changes.push(field);
     else if (!equal(current, suggested)) conflicts.push(field);
   }
