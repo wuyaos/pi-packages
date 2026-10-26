@@ -15,13 +15,13 @@ export interface RestoreRow {
   platform: PlatformCode;
   /** 合并行的时间（组内所有归档文件名时间戳一致，UTC）。 */
   ts: Date;
-  /** 合并的类别，固定顺序 pi → skills → cortexkit。 */
+  /** 合并的类别，固定顺序 pi → skills。 */
   tags: ArchiveTag[];
   /** 类别 → 远端文件名。 */
   files: Partial<Record<ArchiveTag, string>>;
 }
 
-export const RESTORE_TAG_ORDER: readonly ArchiveTag[] = ["pi", "skills", "cortexkit"];
+export const RESTORE_TAG_ORDER: readonly ArchiveTag[] = ["pi", "skills"];
 
 const tagOrder = (tag: ArchiveTag): number => RESTORE_TAG_ORDER.indexOf(tag);
 

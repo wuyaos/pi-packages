@@ -8,13 +8,12 @@ import {
   validateArchiveEntries,
   validateArchiveEntryTypes,
 } from "../extensions/sync/archive.ts";
-import { loadConfig } from "../extensions/sync/config.ts";
+import { DEFAULT_REMOTE_BASE_DIR, loadConfig, webdavDir } from "../extensions/sync/config.ts";
 import {
   deleteFromWebdavDir,
   downloadFromWebdavDir,
   listWebdavDir,
   uploadToWebdavDir,
-  WEBDAV_PI_BACKUP_DIR,
 } from "../extensions/sync/webdav.ts";
 
 const WRITE_CONFIRMATION = "1";
@@ -25,6 +24,7 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig();
+  const smokeDir = webdavDir("pi", { remoteBaseDir: config.remoteBaseDir || DEFAULT_REMOTE_BASE_DIR });
   if (!config.webdavUrl || !config.webdavUser || !config.webdavPass) throw new Error("WebDAV configuration is incomplete");
 
   const runId = `${Date.now()}-${process.pid}`;
@@ -44,15 +44,15 @@ async function main(): Promise<void> {
         throw new Error(`Pi archive unexpectedly includes excluded path: ${excluded}`);
       }
     }
-    await uploadToWebdavDir(localPath, WEBDAV_PI_BACKUP_DIR, name, config, ctx);
-    if (!(await listWebdavDir(WEBDAV_PI_BACKUP_DIR, config, ctx)).includes(name)) throw new Error("Uploaded smoke archive was not listed remotely");
-    await downloadFromWebdavDir(name, WEBDAV_PI_BACKUP_DIR, downloadPath, config, ctx);
+    await uploadToWebdavDir(localPath, smokeDir, name, config, ctx);
+    if (!(await listWebdavDir(smokeDir, config, ctx)).includes(name)) throw new Error("Uploaded smoke archive was not listed remotely");
+    await downloadFromWebdavDir(name, smokeDir, downloadPath, config, ctx);
     if (fs.statSync(localPath).size !== fs.statSync(downloadPath).size) throw new Error("Downloaded archive size differs");
     console.log(JSON.stringify({ result: "passed", bytes: fs.statSync(localPath).size, entries: entries.length, reported }));
   } finally {
     try {
-      await deleteFromWebdavDir(name, WEBDAV_PI_BACKUP_DIR, config, ctx);
-      if ((await listWebdavDir(WEBDAV_PI_BACKUP_DIR, config, ctx)).includes(name)) throw new Error("Smoke archive was not deleted");
+      await deleteFromWebdavDir(name, smokeDir, config, ctx);
+      if ((await listWebdavDir(smokeDir, config, ctx)).includes(name)) throw new Error("Smoke archive was not deleted");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

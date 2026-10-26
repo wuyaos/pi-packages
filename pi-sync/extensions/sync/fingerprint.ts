@@ -1,7 +1,7 @@
 /**
  * 同步指纹与状态（引擎层）。
  *
- * - computeFingerprint：对 Pi agent 关键配置 + 共享 Skills + Cortexkit 配置收集
+ * - computeFingerprint：对 Pi agent 关键配置 + 共享 Skills 收集
  *   { relPath: "mtimeMs:size" } 清单，稳定序列化后取 sha256。
  * - sync-state.json 状态文件记录 { key, fingerprint, remoteFiles, uploadedAt }；
  *   key 绑定 WebDAV 连接 + 设备 + 目录 + 备份范围，key 变化即视为全新状态。
@@ -67,7 +67,7 @@ function walkTree(dir: string, base: string, excludePaths: readonly string[], ma
 }
 
 /**
- * 计算同步指纹：agentDir 的关键配置文件 + skillsDir/cortexkitDir 递归清单
+ * 计算同步指纹：agentDir 的关键配置文件 + skillsDir 递归清单
  * （排除 piExcludePaths 相对路径、__pycache__ 与共用通配排除清单
  * （*.log、*.bak、*.tmp、*.swp、sync-state.json、*.bak-*）、符号链接）。
  * 目录不存在或文件缺失视为"缺席"，同样参与指纹。
@@ -75,7 +75,6 @@ function walkTree(dir: string, base: string, excludePaths: readonly string[], ma
 export function computeFingerprint(
   agentDir: string,
   skillsDir: string,
-  cortexkitDir: string,
   excludePaths: readonly string[] = [],
 ): string {
   const manifest: Manifest = {};
@@ -89,7 +88,6 @@ export function computeFingerprint(
     }
   }
   if (fs.existsSync(skillsDir)) walkTree(skillsDir, "skills", excludePaths, manifest);
-  if (fs.existsSync(cortexkitDir)) walkTree(cortexkitDir, "cortexkit", excludePaths, manifest);
   // replacer 数组按给定顺序序列化键，等价于按键名稳定排序。
   const serialized = JSON.stringify(manifest, Object.keys(manifest).sort());
   return createHash("sha256").update(serialized, "utf8").digest("hex");

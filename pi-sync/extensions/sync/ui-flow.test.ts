@@ -17,13 +17,12 @@ const zhConfig: SyncConfig = {
   language: "zh",
   backupProviders: true,
   backupAgentSkills: true,
-  backupCortexkit: false,
   piExcludePaths: [],
   backupOnExit: true,
   maxBackups: 10,
   deviceName: "dev",
   remoteBaseDir: "sync/pibak/",
-  exitBackupScope: ["pi", "skills", "cortexkit"],
+  exitBackupScope: ["pi", "skills"],
 };
 
 type Step = readonly string[];

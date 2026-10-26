@@ -11,7 +11,7 @@ import {
   validateArchiveEntryTypes,
   type ManifestSourceMeta,
 } from "./archive";
-import { AGENT_DIR, AGENT_SKILLS_DIR, CORTEXKIT_CONFIG_DIR, ensureDir } from "./config";
+import { AGENT_DIR, AGENT_SKILLS_DIR, ensureDir } from "./config";
 
 /**
  * 恢复结果：detail 行数组，附加 sourceMeta（manifest 来源信息；旧归档或
@@ -126,9 +126,6 @@ export function getRestorePlan(entries: string[]): string[] {
   if (entries.some((entry) => entry === "agent-skills" || entry.startsWith("agent-skills/"))) {
     return ["Shared skills will replace ~/.agents/skills after the current directory is moved to a timestamped backup."];
   }
-  if (entries.some((entry) => entry === "cortexkit" || entry.startsWith("cortexkit/"))) {
-    return ["Magic Context config will replace ~/.config/cortexkit after the current directory is moved to a timestamped backup."];
-  }
   return ["Archive files will be merged into their destination."];
 }
 
@@ -174,47 +171,4 @@ export async function extractAgentSkillsZip(archivePath: string, targetDir = AGE
   }
 }
 
-/**
- * Replace ~/.config/cortexkit with the archive contents, mirroring
- * extractAgentSkillsZip: stage a complete copy first, then atomically swap
- * directories, keeping a timestamped backup of the previous directory.
- */
-export async function extractCortexkitZip(archivePath: string, targetDir = CORTEXKIT_CONFIG_DIR): Promise<string[]> {
-  const tempDir = await extractToTemp(archivePath, "pi_cortexkit_extract");
-  const target = path.resolve(targetDir);
-  const parent = path.dirname(target);
-  const name = path.basename(target);
-  const staging = path.join(parent, `.${name}-restore-${process.pid}-${Date.now()}`);
-  const backup = path.join(parent, `${name}-backup-${timestampForBackup()}`);
-  let previousMoved = false;
-  try {
-    const source = path.join(tempDir, "cortexkit");
-    if (!fs.existsSync(source)) throw new Error("Archive does not contain cortexkit/.");
-    ensureDir(parent);
-    copyRecursiveSync(source, staging);
-    if (fs.existsSync(target)) {
-      if (fs.existsSync(backup)) throw new Error(`Cortexkit backup destination already exists: ${backup}`);
-      fs.renameSync(target, backup);
-      previousMoved = true;
-    }
-    try {
-      fs.renameSync(staging, target);
-    } catch (error) {
-      if (previousMoved && !fs.existsSync(target) && fs.existsSync(backup)) {
-        try {
-          fs.renameSync(backup, target);
-        } catch (rollbackError) {
-          console.error(`[pi-sync] Failed to roll back Magic Context config restore: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
-        }
-      }
-      throw error;
-    }
-    return withSourceMeta(previousMoved
-      ? [`Magic Context config restored; previous directory moved to ${backup}`]
-      : ["Magic Context config restored"], tempDir);
-  } finally {
-    fs.rmSync(staging, { recursive: true, force: true });
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 

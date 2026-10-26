@@ -46,7 +46,7 @@ test("normalizeConfig fills defaults and ignores removed legacy fields", () => {
   } as unknown as Partial<SyncConfig>);
   assert.equal(config.remoteBaseDir, "pibak/", "缺省回退默认根目录");
   assert.equal(config.deviceName, defaultDeviceName(), "deviceName 缺省自动生成");
-  assert.deepEqual(config.exitBackupScope, ["pi", "skills", "cortexkit"], "scope 缺省为全部类别");
+  assert.deepEqual(config.exitBackupScope, ["pi", "skills"], "scope 缺省为全部类别");
   assert.equal(config.backupProviders, false, "保留字段仍生效");
   assert.equal(config.maxBackups, 7);
 });
@@ -55,5 +55,4 @@ test("webdavDir joins the migrated remoteBaseDir with the kind segment", () => {
   const migrated = { remoteBaseDir: "sync/pibak/" } as Pick<SyncConfig, "remoteBaseDir">;
   assert.equal(webdavDir("pi", migrated), "sync/pibak/pi/");
   assert.equal(webdavDir("skills", migrated), "sync/pibak/skills/");
-  assert.equal(webdavDir("cortexkit", migrated), "sync/pibak/cortexkit/");
 });

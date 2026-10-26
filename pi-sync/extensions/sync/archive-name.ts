@@ -4,7 +4,7 @@
  * 统一命名格式：`<device>-<platform>-<tag>_<YYYYMMDD-HHMMSS>.tar.xz`
  * - device：经 sanitizeDeviceName 清洗，仅 [A-Za-z0-9-]
  * - platform 简码：win | mac | linux（WSL 归 linux）
- * - tag：pi | skills | cortexkit
+ * - tag：pi | skills
  * - 时间戳一律 UTC，保证跨设备排序一致
  *
  * Import: import { … } from "./archive-name"
@@ -13,7 +13,7 @@
 import * as os from "node:os";
 
 export type PlatformCode = "win" | "mac" | "linux";
-export type ArchiveTag = "pi" | "skills" | "cortexkit";
+export type ArchiveTag = "pi" | "skills";
 
 export interface ParsedArchiveName {
   device: string;
@@ -26,7 +26,7 @@ export interface ParsedArchiveName {
 export const ARCHIVE_SUFFIX = ".tar.xz";
 
 /** 严格匹配归档名；device 段与 sanitizeDeviceName 的输出字符集一致。 */
-const ARCHIVE_NAME_RE = /^([A-Za-z0-9-]+)-(win|mac|linux)-(pi|skills|cortexkit)_(\d{8}-\d{6})\.tar\.xz$/;
+const ARCHIVE_NAME_RE = /^([A-Za-z0-9-]+)-(win|mac|linux)-(pi|skills)_(\d{8}-\d{6})\.tar\.xz$/;
 
 /** 当前运行平台的简码。win32→win，darwin→mac，其余（含 WSL 下的 linux）→linux。 */
 export function platformCode(): PlatformCode {

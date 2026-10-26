@@ -101,13 +101,12 @@ test("remote base dir normalizes safe paths (leading slash allowed) and falls ba
   for (const value of unsafe) assert.equal(normalizeRemoteBaseDir(value), DEFAULT_REMOTE_BASE_DIR, `expected fallback: ${value}`);
   assert.equal(webdavDir("pi", { remoteBaseDir: "backup/" }), "backup/pi/");
   assert.equal(webdavDir("pi", { remoteBaseDir: "/sync/pibak/" }), "/sync/pibak/pi/");
-  assert.equal(webdavDir("cortexkit", { remoteBaseDir: "deep/dir/" }), "deep/dir/cortexkit/");
 });
 
 test("exit backup scope keeps only valid kinds and defaults to all", () => {
-  assert.deepEqual(normalizeExitBackupScope(undefined), ["pi", "skills", "cortexkit"]);
+  assert.deepEqual(normalizeExitBackupScope(undefined), ["pi", "skills"]);
   assert.deepEqual(normalizeExitBackupScope(["pi", "pi", "bogus", "skills"]), ["pi", "skills"]);
-  assert.deepEqual(normalizeExitBackupScope("nope"), ["pi", "skills", "cortexkit"]);
+  assert.deepEqual(normalizeExitBackupScope("nope"), ["pi", "skills"]);
 });
 
 test("default device name is sanitized hostname with platform suffix", () => {
@@ -122,46 +121,42 @@ test("fingerprint detects single-file changes and ignores log/pycache noise", ()
   try {
     const agentDir = path.join(root, "agent");
     const skillsDir = path.join(root, "skills");
-    const cortexkitDir = path.join(root, "cortexkit");
     fs.mkdirSync(agentDir, { recursive: true });
     fs.mkdirSync(path.join(skillsDir, "alpha"), { recursive: true });
-    fs.mkdirSync(path.join(cortexkitDir), { recursive: true });
     fs.writeFileSync(path.join(agentDir, "settings.json"), "{}");
     fs.writeFileSync(path.join(agentDir, "mcp.json"), "{}");
     fs.writeFileSync(path.join(skillsDir, "alpha", "SKILL.md"), "v1");
-    fs.writeFileSync(path.join(cortexkitDir, "config.json"), "{}");
 
-    const baseline = computeFingerprint(agentDir, skillsDir, cortexkitDir, []);
-    assert.equal(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), baseline);
+    const baseline = computeFingerprint(agentDir, skillsDir, []);
+    assert.equal(computeFingerprint(agentDir, skillsDir, []), baseline);
 
     // 改单个 agent 顶层配置（追加改变 size）→ 指纹变化。
     fs.writeFileSync(path.join(agentDir, "settings.json"), '{"a":1}');
-    assert.notEqual(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), baseline);
-    const afterConfig = computeFingerprint(agentDir, skillsDir, cortexkitDir, []);
+    assert.notEqual(computeFingerprint(agentDir, skillsDir, []), baseline);
+    const afterConfig = computeFingerprint(agentDir, skillsDir, []);
 
     // 改 skills 内文件 → 指纹变化。
     fs.writeFileSync(path.join(skillsDir, "alpha", "SKILL.md"), "v2-longer");
-    assert.notEqual(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), afterConfig);
-    const afterSkills = computeFingerprint(agentDir, skillsDir, cortexkitDir, []);
+    assert.notEqual(computeFingerprint(agentDir, skillsDir, []), afterConfig);
+    const afterSkills = computeFingerprint(agentDir, skillsDir, []);
 
     // *.log 与 __pycache__ 噪声不参与指纹。
     fs.writeFileSync(path.join(skillsDir, "alpha", "debug.log"), "noise");
     fs.mkdirSync(path.join(skillsDir, "__pycache__"));
     fs.writeFileSync(path.join(skillsDir, "__pycache__", "x.pyc"), "noise");
-    assert.equal(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), afterSkills);
+    assert.equal(computeFingerprint(agentDir, skillsDir, []), afterSkills);
 
     // 共用通配排除：*.bak、*.tmp、*.swp、sync-state.json、*.bak-* 同样不参与指纹。
     fs.writeFileSync(path.join(skillsDir, "alpha", "a.bak"), "noise");
     fs.writeFileSync(path.join(skillsDir, "alpha", "a.tmp"), "noise");
     fs.writeFileSync(path.join(skillsDir, "alpha", "a.swp"), "noise");
     fs.writeFileSync(path.join(skillsDir, "sync-state.json"), "noise");
-    fs.writeFileSync(path.join(cortexkitDir, "model-config.json.bak-123"), "noise");
-    assert.equal(computeFingerprint(agentDir, skillsDir, cortexkitDir, []), afterSkills);
+    assert.equal(computeFingerprint(agentDir, skillsDir, []), afterSkills);
 
     // piExcludePaths 命中的相对路径（含树内前缀）不参与指纹。
     fs.mkdirSync(path.join(skillsDir, "node_modules"));
     fs.writeFileSync(path.join(skillsDir, "node_modules", "pkg.js"), "excluded");
-    assert.equal(computeFingerprint(agentDir, skillsDir, cortexkitDir, ["skills/node_modules"]), afterSkills);
+    assert.equal(computeFingerprint(agentDir, skillsDir, ["skills/node_modules"]), afterSkills);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

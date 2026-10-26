@@ -4,14 +4,10 @@ import * as path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fetchWithTimeout } from "../_shared/fetch-utils";
-import { resolvePassword, webdavDir, DEFAULT_REMOTE_BASE_DIR, type SyncConfig } from "./config";
+import { resolvePassword, type SyncConfig } from "./config";
 import { parseArchiveName, type ParsedArchiveName } from "./archive-name";
 
 export const WEBDAV_FETCH_TIMEOUT_MS = 120_000;
-// 保留常量作为默认 remoteBaseDir 的派生值；新代码一律用 webdavDir(kind, config)。
-export const WEBDAV_PI_BACKUP_DIR = webdavDir("pi", { remoteBaseDir: DEFAULT_REMOTE_BASE_DIR });
-export const WEBDAV_AGENT_SKILLS_DIR = webdavDir("skills", { remoteBaseDir: DEFAULT_REMOTE_BASE_DIR });
-export const WEBDAV_CORTEXKIT_DIR = webdavDir("cortexkit", { remoteBaseDir: DEFAULT_REMOTE_BASE_DIR });
 
 export const ensureTrailingSlash = (url: string): string => url.endsWith("/") ? url : `${url}/`;
 /**

@@ -15,7 +15,7 @@ test("multi-select toggles with space and skips disabled items", () => {
   const items: MultiSelectItem[] = [
     { id: "pi", label: "Pi", checked: true },
     { id: "skills", label: "Skills", checked: true },
-    { id: "cortexkit", label: "Magic Context (missing)", disabled: true },
+    { id: "other", label: "Other (missing)", disabled: true },
   ];
   const { component, results } = setup(items);
   assert.deepEqual(component.checkedIds(), ["pi", "skills"]);

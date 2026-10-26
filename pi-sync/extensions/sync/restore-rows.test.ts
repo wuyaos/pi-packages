@@ -9,10 +9,9 @@ test("restore rows merge same device+platform+timestamp tags into one line", () 
   const rows = buildRestoreRows([
     `devA-win-pi_20250102-030405.tar.xz`,
     `devA-win-skills_20250102-030405.tar.xz`,
-    `devA-win-cortexkit_20250102-030405.tar.xz`,
   ]);
   assert.equal(rows.length, 1);
-  assert.deepEqual(rows[0]!.tags, ["pi", "skills", "cortexkit"]);
+  assert.deepEqual(rows[0]!.tags, ["pi", "skills"]);
   assert.equal(rows[0]!.files.pi, "devA-win-pi_20250102-030405.tar.xz");
   assert.equal(rows[0]!.device, "devA");
   assert.equal(rows[0]!.platform, "win");

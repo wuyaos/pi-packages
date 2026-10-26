@@ -76,7 +76,6 @@ const EN = {
   none: "(none)",
   piKind: "Pi",
   skillsKind: "Skills",
-  cortexkitKind: "Magic Context",
 
   setupRequired: "WebDAV is not configured. Please set it up now.",
   promptWebdavUrl: "WebDAV URL:",
@@ -168,7 +167,6 @@ const ZH: Record<TranslationKey, string> = {
   none: "（无）",
   piKind: "Pi",
   skillsKind: "Skills",
-  cortexkitKind: "Magic Context 配置",
 
   setupRequired: "尚未配置 WebDAV，请先完成设置。",
   promptWebdavUrl: "WebDAV 地址：",

@@ -39,8 +39,8 @@ Restart Pi or run `/reload` after installation.
 
 Run `/sync`. The top-level menu contains five actions:
 
-- **Back Up** — multi-select Pi / Skills / Magic Context (categories whose local directory is missing are disabled), then `Ctrl+S` runs them serially under a file lock
-- **Restore** — scans all three remote directories, merges archives that share device + platform + timestamp into one row (device/platform/time/local badge only), sorts newest first, and filters by device (`←`/`→`); pressing Enter opens a second multi-select over that row's categories (all pre-selected, foreign-device/cross-platform notes shown as disabled hint rows), then `Ctrl+S` restores the checked categories serially (pi → skills → cortexkit), stopping after a failure
+- **Back Up** — multi-select Pi / Skills (categories whose local directory is missing are disabled), then `Ctrl+S` runs them serially under a file lock
+- **Restore** — scans the per-category remote directories, merges archives that share device + platform + timestamp into one row (device/platform/time/local badge only), sorts newest first, and filters by device (`←`/`→`); pressing Enter opens a second multi-select over that row's categories (all pre-selected, foreign-device/cross-platform notes shown as disabled hint rows), then `Ctrl+S` restores the checked categories serially (pi → skills), stopping after a failure
 - **Repair Cross-Platform Issues** — see [Cross-platform repair](#cross-platform-repair)
 - **Settings** — WebDAV credentials, exit backup switch, archive retention, exit backup categories, device name, archive directory prefix, Pi exclusions, and language; every change is saved immediately (each editor offers its own cancel)
 - **Quit**
@@ -71,14 +71,6 @@ This keeps configuration and extension state while excluding installed package s
 <remoteBaseDir>skills/<device>-<platform>-skills_<YYYYMMDD-HHMMSS>.tar.xz  (default: pibak/skills/…)
 ```
 
-### Magic Context backup
-
-`~/.config/cortexkit` is stored in a separate archive. Files matching the shared noise-file globs (`*.log`, `*.bak`, `*.tmp`, `*.swp`, `sync-state.json`, `*.bak-*`) are excluded.
-
-```text
-<remoteBaseDir>cortexkit/<device>-<platform>-cortexkit_<YYYYMMDD-HHMMSS>.tar.xz  (default: pibak/cortexkit/…)
-```
-
 Archive names are `<device>-<platform>-<tag>_<UTC timestamp>.tar.xz`, where `device` is the configured device name, `platform` is `win` / `mac` / `linux`, and the timestamp is UTC so archives sort consistently across machines.
 
 ## WebDAV layout
@@ -88,10 +80,8 @@ Archive names are `<device>-<platform>-<tag>_<UTC timestamp>.tar.xz`, where `dev
 └── <remoteBaseDir>/   (full path from the WebDAV app root, with optional leading `/`; default "pibak/", e.g. "sync/pibak/" or "/sync/pibak/")
     ├── pi/
     │   └── <device>-<platform>-pi_<timestamp>.tar.xz
-    ├── skills/
-    │   └── <device>-<platform>-skills_<timestamp>.tar.xz
-    └── cortexkit/
-        └── <device>-<platform>-cortexkit_<timestamp>.tar.xz
+    └── skills/
+        └── <device>-<platform>-skills_<timestamp>.tar.xz
 ```
 
 `maxBackups` is enforced independently in each backup directory. `0` keeps every archive.
@@ -108,13 +98,12 @@ Configuration is stored at `~/.pi/agent/config/sync.json`:
   "language": "en",
   "backupProviders": true,
   "backupAgentSkills": false,
-  "backupCortexkit": false,
   "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack", "install"],
   "backupOnExit": true,
   "maxBackups": 10,
   "deviceName": "DESKTOP-JK3-win",
   "remoteBaseDir": "pibak/",
-  "exitBackupScope": ["pi", "skills", "cortexkit"]
+  "exitBackupScope": ["pi", "skills"]
 }
 ```
 
@@ -122,7 +111,7 @@ Old configuration keys for removed archive categories are ignored. The password 
 
 ## Restore behavior and safety
 
-- Restore rows merge every archive that shares device + platform + exact timestamp, so one entry covers Pi + Skills + Magic Context together. Restoring is a two-step flow: pick the row, then check the categories to restore (all pre-selected) in a multi-select; the checked categories run serially in the fixed order pi → skills → cortexkit, and a failure stops the run and reports the completed items.
+- Restore rows merge every archive that shares device + platform + exact timestamp, so one entry covers Pi + Skills together. Restoring is a two-step flow: pick the row, then check the categories to restore (all pre-selected) in a multi-select; the checked categories run serially in the fixed order pi → skills, and a failure stops the run and reports the completed items.
 - Cross-platform and foreign-device rows warn before restoring; after any successful restore the sync fingerprint is invalidated so the next exit backup re-uploads.
 - Every archive path is checked for absolute paths and traversal.
 - Symlinks and non-regular filesystem nodes are rejected before extraction.
@@ -143,7 +132,7 @@ Treat archives as sensitive: Pi backups may contain WebDAV credentials, API keys
 
 Each issue shows its action type and is classified as:
 
-- **auto** — the value can be mapped to a known home and is rewritten to portable `~/` form (checked by default). Mapping sources, in order: the current home directory; the archive's source home (`sourceHome` recorded in the manifest `meta` of skills/Magic Context archives, used when repairing right after a cross-device restore); a conservative pattern match on foreign home prefixes (`C:\Users\x\`, `/home/x/`, `/Users/x/`) that only promotes paths under `.pi/`, `.agents/`, or `.config/`
+- **auto** — the value can be mapped to a known home and is rewritten to portable `~/` form (checked by default). Mapping sources, in order: the current home directory; the archive's source home (`sourceHome` recorded in the manifest `meta` of skills archives, used when repairing right after a cross-device restore); a conservative pattern match on foreign home prefixes (`C:\Users\x\`, `/home/x/`, `/Users/x/`) that only promotes paths under `.pi/`, `.agents/`, or `.config/`
 - **suggest** — reviewed fixes: `shellPath` is cleared so Pi falls back to its platform default; `mcp.json` `command` values (leaf strings and array first elements) lose their Windows wrapper (`node.exe` → `node`, `npx.cmd` → `npx`, `cmd /c …` unwrapped)
 - **manual** — no safe automatic mapping: unknown-home absolute paths, WSL paths (`\\wsl$\…`, `/mnt/<drive>/…` — flagged with a WSL warning and never rewritten), and POSIX `command` values on Windows (target shell unknown)
 
@@ -190,7 +179,7 @@ The dedicated runner uses the installed Pi SDK's `jiti`, creates only test tempo
 
 - Rework the `/sync` menu into Back Up / Restore / Repair / Settings / Quit; the language switch moved into Settings.
 - Unified archive naming `<device>-<platform>-<tag>_<UTC timestamp>.tar.xz` under a configurable `remoteBaseDir` (default `pibak/`), with per-category WebDAV directories and device-scoped pruning.
-- Back Up is a multi-select over Pi / Skills / Magic Context executed serially under a file lock; Restore merges archives by device + platform + timestamp with a device filter.
+- Back Up is a multi-select over Pi / Skills executed serially under a file lock; Restore merges archives by device + platform + timestamp with a device filter.
 - Added cross-platform repair for foreign-OS paths in Pi configuration files.
 - Exit backup now skips the upload when the sync fingerprint is unchanged and honors `exitBackupScope`.
 

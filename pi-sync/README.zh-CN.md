@@ -39,8 +39,8 @@ pi install git:github.com/wuyaos/pi-packages
 
 运行 `/sync`，一级菜单五项：
 
-- **备份** —— 多选 Pi / Skills / Magic Context（本地目录缺失的类别置灰不可选），`Ctrl+S` 串行执行（文件锁互斥）
-- **恢复** —— 扫描三类远端目录，把同设备+同平台+同时间戳的归档合并为一行（只显示 设备/平台/时间/本机徽标），按时间倒序，`←`/`→` 切换设备筛选；回车进入第二步多选该行的类别（默认全选，跨平台/非本机提示作为置灰行展示），`Ctrl+S` 后按 pi → skills → cortexkit 顺序串行恢复所选类别，失败即中断
+- **备份** —— 多选 Pi / Skills（本地目录缺失的类别置灰不可选），`Ctrl+S` 串行执行（文件锁互斥）
+- **恢复** —— 扫描各类别远端目录，把同设备+同平台+同时间戳的归档合并为一行（只显示 设备/平台/时间/本机徽标），按时间倒序，`←`/`→` 切换设备筛选；回车进入第二步多选该行的类别（默认全选，跨平台/非本机提示作为置灰行展示），`Ctrl+S` 后按 pi → skills 顺序串行恢复所选类别，失败即中断
 - **修复跨平台问题** —— 见[跨平台修复](#跨平台修复)
 - **设置** —— WebDAV 凭据、退出备份开关、存档保留数、退出备份类别、设备名、归档目录前缀、Pi 排除项、语言；修改即时保存（每个编辑项自带取消）
 - **退出**
@@ -71,14 +71,6 @@ Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
 <remoteBaseDir>skills/<device>-<platform>-skills_<YYYYMMDD-HHMMSS>.tar.xz  （默认 pibak/skills/…）
 ```
 
-### Magic Context 备份
-
-`~/.config/cortexkit` 使用独立归档。排除命中共用通配清单的文件（`*.log`、`*.bak`、`*.tmp`、`*.swp`、`sync-state.json`、`*.bak-*`）。
-
-```text
-<remoteBaseDir>cortexkit/<device>-<platform>-cortexkit_<YYYYMMDD-HHMMSS>.tar.xz  （默认 pibak/cortexkit/…）
-```
-
 归档命名统一为 `<device>-<platform>-<tag>_<UTC 时间戳>.tar.xz`：`device` 为配置的设备名，`platform` 为 `win` / `mac` / `linux`，时间戳一律 UTC，保证跨设备排序一致。
 
 ## WebDAV 目录结构
@@ -88,10 +80,8 @@ Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
 └── <remoteBaseDir>/   （自 WebDAV 应用根起的完整路径，可带前导 `/`；默认 "pibak/"，如 "sync/pibak/" 或 "/sync/pibak/"）
     ├── pi/
     │   └── <device>-<platform>-pi_<时间戳>.tar.xz
-    ├── skills/
-    │   └── <device>-<platform>-skills_<时间戳>.tar.xz
-    └── cortexkit/
-        └── <device>-<platform>-cortexkit_<时间戳>.tar.xz
+    └── skills/
+        └── <device>-<platform>-skills_<时间戳>.tar.xz
 ```
 
 `maxBackups` 在每个备份目录内独立生效；设为 `0` 表示全部保留。
@@ -108,13 +98,12 @@ Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
   "language": "zh",
   "backupProviders": true,
   "backupAgentSkills": false,
-  "backupCortexkit": false,
   "piExcludePaths": ["npm", "git", "sessions", "state", "tmp", "webui-rpc-supervisor", "vstack", "install"],
   "backupOnExit": true,
   "maxBackups": 10,
   "deviceName": "DESKTOP-JK3-win",
   "remoteBaseDir": "pibak/",
-  "exitBackupScope": ["pi", "skills", "cortexkit"]
+  "exitBackupScope": ["pi", "skills"]
 }
 ```
 
@@ -122,7 +111,7 @@ Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
 
 ## 恢复行为与安全
 
-- 恢复行合并同设备+同平台+精确相同时间戳的全部归档，一行可同时覆盖 Pi + Skills + Magic Context。恢复为两步：先选行，再在多选面板勾选要恢复的类别（默认全选）；所选类别按固定顺序 pi → skills → cortexkit 串行恢复，失败即中断并汇报已完成项。
+- 恢复行合并同设备+同平台+精确相同时间戳的全部归档，一行可同时覆盖 Pi + Skills。恢复为两步：先选行，再在多选面板勾选要恢复的类别（默认全选）；所选类别按固定顺序 pi → skills 串行恢复，失败即中断并汇报已完成项。
 - 跨平台与非本机设备的行在恢复前会给出警示；任一类别恢复成功后同步指纹失效，下一次退出备份会重新上传。
 - 检查归档中的绝对路径和目录穿越。
 - 解压前拒绝符号链接和非普通文件节点。
@@ -143,7 +132,7 @@ Pi 归档直接打包 `~/.pi/agent`。默认黑名单：
 
 每个问题会显示动作类型，并分为三类：
 
-- **auto** —— 可确定目标 home，改写为可移植的 `~/` 形式（默认勾选）。映射来源按序：当前家目录；归档 manifest `meta` 记录的源家目录（skills/Magic Context 归档携带，跨设备恢复后立即修复时使用）；对异地 home 前缀（`C:\Users\x\`、`/home/x/`、`/Users/x/`）的保守模式识别，且仅当余下部分位于 `.pi/`、`.agents/`、`.config/` 下才升级为 auto
+- **auto** —— 可确定目标 home，改写为可移植的 `~/` 形式（默认勾选）。映射来源按序：当前家目录；归档 manifest `meta` 记录的源家目录（skills 归档携带，跨设备恢复后立即修复时使用）；对异地 home 前缀（`C:\Users\x\`、`/home/x/`、`/Users/x/`）的保守模式识别，且仅当余下部分位于 `.pi/`、`.agents/`、`.config/` 下才升级为 auto
 - **suggest** —— 需确认的修复：`shellPath` 清空回退 Pi 平台默认；`mcp.json` 的 `command` 值（字符串叶子与数组首元素）去除 Windows 包装（`node.exe` → `node`、`npx.cmd` → `npx`、剥离 `cmd /c`）
 - **manual** —— 无法安全自动映射：未知 home 的绝对路径、WSL 路径（`\\wsl$\…`、`/mnt/<盘符>/…`，带 WSL 警示，一律不改写）、Windows 上的 POSIX `command` 值（目标 shell 不确定）
 

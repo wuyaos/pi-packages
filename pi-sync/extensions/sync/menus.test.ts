@@ -18,7 +18,7 @@ test("restore rows include category labels after time; local badge last", () => 
     device: "devA",
     platform: "win" as const,
     ts,
-    tags: ["pi", "skills"] as ("pi" | "skills" | "cortexkit")[],
+    tags: ["pi", "skills"] as ("pi" | "skills")[],
     files: { pi: "devA-win-pi_x.tar.xz", skills: "devA-win-skills_x.tar.xz" },
   };
   const local = formatRestoreRow("zh", row, "devA");

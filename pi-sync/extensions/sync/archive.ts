@@ -6,7 +6,6 @@ import { platformCode, sanitizeDeviceName, type PlatformCode } from "./archive-n
 import {
   AGENT_DIR,
   AGENT_SKILLS_DIR,
-  CORTEXKIT_CONFIG_DIR,
   PI_EXCLUDE_GLOBS,
   ensureDir,
   matchExcludeGlob,
@@ -266,30 +265,6 @@ export async function createAgentSkillsZip(archivePath: string, sourceDir = AGEN
     writeManifest(tempDir, os.homedir(), manifest, deviceName);
     await packTemporaryArchive(tempDir, archivePath);
     return [`Shared agent skills: ${manifest.length} file(s)`];
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
-}
-
-/**
- * Pack the Magic Context config directory (~/.config/cortexkit) into a
- * temporary archive, applying the shared noise-name globs (*.log, *.bak,
- * *.tmp, *.swp, sync-state.json, *.bak-*).
- */
-export async function createCortexkitZip(archivePath: string, sourceDir = CORTEXKIT_CONFIG_DIR, deviceName?: string): Promise<string[]> {
-  if (!fs.existsSync(sourceDir)) throw new Error("~/.config/cortexkit does not exist.");
-  const tempDir = path.join(os.tmpdir(), `pi_cortexkit_temp_${Date.now()}`);
-  const destDir = path.join(tempDir, "cortexkit");
-  const manifest: ManifestFile[] = [];
-  try {
-    copyRecursiveSyncFiltered(
-      sourceDir,
-      destDir,
-      (name, isDirectory) => isDirectory ? true : !matchExcludeGlob(name, PI_EXCLUDE_GLOBS),
-    );
-    collectManifest(destDir, "cortexkit", ".config/cortexkit", manifest);
-    if (manifest.length === 0) throw new Error("No Magic Context config files found.");
-    writeManifest(tempDir, os.homedir(), manifest, deviceName);
-    await packTemporaryArchive(tempDir, archivePath);
-    return [`Magic Context config: ${manifest.length} file(s)`];
   } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
 }
 

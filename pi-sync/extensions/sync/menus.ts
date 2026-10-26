@@ -13,7 +13,7 @@ import {
 import {
   AGENT_DIR,
   AGENT_SKILLS_DIR,
-  CORTEXKIT_CONFIG_DIR,
+  BACKUP_KINDS,
   loadConfig,
   normalizePiExcludePaths,
   saveConfig,
@@ -26,7 +26,7 @@ import { invalidateSyncState } from "./fingerprint";
 import { t, type SyncLanguage } from "./i18n";
 import { multiSelect, type MultiSelectItem } from "./multi-select";
 import { showProgressPanel } from "./progress-panel";
-import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip } from "./restore";
+import { extractAgentSkillsZip, extractPiAgentZip } from "./restore";
 import { runRepair } from "./repair";
 import { buildRestoreRows, RESTORE_TAG_ORDER, type RestoreRow } from "./restore-rows";
 import { selectRestoreRow } from "./restore-panel";
@@ -38,7 +38,6 @@ export type SetModelFn = (model: Model<any>) => Promise<boolean>;
 export type MainAction =
   | "backup" | "restore" | "repair" | "settings" | "quit";
 
-const BACKUP_KINDS: readonly BackupKind[] = ["pi", "skills", "cortexkit"];
 
 export interface KindResultRow {
   kind: BackupKind;
@@ -72,7 +71,7 @@ function onOff(language: SyncLanguage, value: boolean): string {
 }
 
 function kindLabel(language: SyncLanguage, kind: BackupKind): string {
-  return t(language, kind === "pi" ? "piKind" : kind === "skills" ? "skillsKind" : "cortexkitKind");
+  return t(language, kind === "pi" ? "piKind" : "skillsKind");
 }
 
 export function buildMainMenuItems(language: SyncLanguage): SelectItem<MainAction>[] {
@@ -118,7 +117,7 @@ function formatResultRows(
 // ── 备份二级 ────────────────────────────────────────────────────────────
 
 function kindAvailable(kind: BackupKind): boolean {
-  return fs.existsSync(kind === "pi" ? AGENT_DIR : kind === "skills" ? AGENT_SKILLS_DIR : CORTEXKIT_CONFIG_DIR);
+  return fs.existsSync(kind === "pi" ? AGENT_DIR : AGENT_SKILLS_DIR);
 }
 
 /** 备份二级：多选类别（目录缺失置灰）→ Ctrl+S 串行执行 → 汇总通知。 */
@@ -231,9 +230,7 @@ async function restoreKindArchive(
     await downloadFromWebdavDir(file, webdavDir(kind, config), local, config, ctx);
     const restored = kind === "pi"
       ? await extractPiAgentZip(local)
-      : kind === "skills"
-        ? await extractAgentSkillsZip(local)
-        : await extractCortexkitZip(local);
+      : await extractAgentSkillsZip(local);
     if (kind === "pi") await refreshModelCatalog(ctx, setModel);
     return { kind, ok: true, detail: restored, sourceHome: restored.sourceMeta?.sourceHome };
   } catch (error) {

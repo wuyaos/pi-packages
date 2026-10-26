@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
-import { AGENT_DIR, AGENT_SKILLS_DIR, CORTEXKIT_CONFIG_DIR, loadConfig, refreshFooterStatusFromConfig, type BackupKind, type SyncConfig } from "./config";
+import { AGENT_DIR, AGENT_SKILLS_DIR, loadConfig, refreshFooterStatusFromConfig, type BackupKind, type SyncConfig } from "./config";
 import { computeFingerprint, computeStateKey, readSyncState, SYNC_STATE_PATH, writeSyncState } from "./fingerprint";
 import { t } from "./i18n";
 import { lockFileSync, unlockFileSync } from "./lock";
@@ -9,7 +9,6 @@ import { registerSyncCommand } from "./menus";
 export interface ExitBackupDirs {
   agentDir: string;
   skillsDir: string;
-  cortexkitDir: string;
 }
 
 export interface ExitBackupDeps {
@@ -44,9 +43,9 @@ export async function handleShutdown(
   if (!lock) return; // 另一个备份进行中：静默跳过
   const statePath = deps.statePath ?? SYNC_STATE_PATH;
   try {
-    const dirs = deps.dirs ?? { agentDir: AGENT_DIR, skillsDir: AGENT_SKILLS_DIR, cortexkitDir: CORTEXKIT_CONFIG_DIR };
+    const dirs = deps.dirs ?? { agentDir: AGENT_DIR, skillsDir: AGENT_SKILLS_DIR };
     const fingerprint = deps.fingerprint
-      ?? computeFingerprint(dirs.agentDir, dirs.skillsDir, dirs.cortexkitDir, config.piExcludePaths);
+      ?? computeFingerprint(dirs.agentDir, dirs.skillsDir, config.piExcludePaths);
     const key = computeStateKey({
       webdavUrl: config.webdavUrl,
       webdavUser: config.webdavUser,

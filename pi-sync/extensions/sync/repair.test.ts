@@ -273,7 +273,7 @@ test("scan uses sourceHome for auto mapping regardless of current platform", () 
 test("fallbackHomePortable only promotes .pi/.agents/.config rests", () => {
   // win → linux。
   assert.equal(fallbackHomePortable("C:\\Users\\bob\\.pi\\agent\\settings.json", "win"), "~/.pi/agent/settings.json");
-  assert.equal(fallbackHomePortable("C:/Users/bob/.config/cortexkit/x.jsonc", "win"), "~/.config/cortexkit/x.jsonc");
+  assert.equal(fallbackHomePortable("C:/Users/bob/.config/myapp/x.jsonc", "win"), "~/.config/myapp/x.jsonc");
   assert.equal(fallbackHomePortable("C:\\Users\\bob\\Documents\\report.docx", "win"), null, "非配置目录前缀不给 auto");
   assert.equal(fallbackHomePortable("C:\\Git\\repo\\file", "win"), null, "非用户 home 前缀不匹配");
   // linux → win。

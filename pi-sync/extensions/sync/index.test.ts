@@ -27,7 +27,6 @@ function config(overrides: Partial<SyncConfig> = {}): SyncConfig {
     language: "en",
     backupProviders: true,
     backupAgentSkills: true,
-    backupCortexkit: false,
     piExcludePaths: [],
     backupOnExit: true,
     maxBackups: 10,

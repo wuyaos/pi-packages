@@ -5,8 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { platformCode } from "./archive-name.ts";
-import { createCortexkitZip, createPiAgentZip } from "./archive.ts";
-import { extractAgentSkillsZip, extractCortexkitZip, extractPiAgentZip } from "./restore.ts";
+import { createAgentSkillsZip, createPiAgentZip } from "./archive.ts";
+import { extractAgentSkillsZip, extractPiAgentZip } from "./restore.ts";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sync-restore-"));
@@ -71,39 +71,6 @@ test("Skills restore stages a complete copy before atomically replacing the curr
   assert.equal(backups.length, 1);
   assert.equal(fs.readFileSync(path.join(root, backups[0]!, "old.md"), "utf8"), "old");
   assert.ok(!fs.readdirSync(root).some((name) => name.startsWith(".skills-restore-")));
-});
-
-test("Cortexkit restore extracts to the target directory and keeps a timestamped backup", async (t) => {
-  const root = tempDir();
-  const payload = path.join(root, "payload");
-  const target = path.join(root, "cortexkit");
-  const archive = path.join(root, "cortexkit.tar.xz");
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-
-  fs.mkdirSync(path.join(root, "new-config"), { recursive: true });
-  fs.writeFileSync(path.join(root, "new-config", "magic-context.jsonc"), "{}\n");
-  await createCortexkitZip(archive, path.join(root, "new-config"));
-
-  fs.mkdirSync(target);
-  fs.writeFileSync(path.join(target, "old.jsonc"), "old");
-  await extractCortexkitZip(archive, target);
-
-  assert.equal(fs.readFileSync(path.join(target, "magic-context.jsonc"), "utf8"), "{}\n");
-  const backups = fs.readdirSync(root).filter((name) => name.startsWith("cortexkit-backup-"));
-  assert.equal(backups.length, 1);
-  assert.equal(fs.readFileSync(path.join(root, backups[0]!, "old.jsonc"), "utf8"), "old");
-  assert.ok(!fs.readdirSync(root).some((name) => name.startsWith(".cortexkit-restore-")));
-});
-
-test("Cortexkit restore rejects an archive without a cortexkit/ directory", async (t) => {
-  const root = tempDir();
-  const payload = path.join(root, "payload");
-  const archive = path.join(root, "bad.tar.xz");
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.mkdirSync(payload);
-  fs.writeFileSync(path.join(payload, "stray.txt"), "x");
-  execFileSync("tar", ["-J", "-c", "-f", archive, "-C", payload, "."]);
-  await assert.rejects(() => extractCortexkitZip(archive, path.join(root, "target")), /does not contain cortexkit\//);
 });
 
 test("Pi restore rejects a symlink in the destination path", async (t) => {
@@ -184,16 +151,16 @@ test("restore results carry manifest source meta (round-trip); Pi archives stay 
   const root = tempDir();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  // cortexkit 打包 → 解包：meta 保留（sourceHome/platform/device/createdAt）。
-  const source = path.join(root, "new-config");
-  fs.mkdirSync(source, { recursive: true });
-  fs.writeFileSync(path.join(source, "magic-context.jsonc"), "{}\n");
-  const archive = path.join(root, "cortexkit.tar.xz");
-  await createCortexkitZip(archive, source, "devA");
-  const target = path.join(root, "cortexkit");
+  // skills 打包 → 解包：meta 保留（sourceHome/platform/device/createdAt）。
+  const source = path.join(root, "new-skills");
+  fs.mkdirSync(path.join(source, "alpha"), { recursive: true });
+  fs.writeFileSync(path.join(source, "alpha", "SKILL.md"), "v1");
+  const archive = path.join(root, "skills.tar.xz");
+  await createAgentSkillsZip(archive, source, "devA");
+  const target = path.join(root, "skills");
   fs.mkdirSync(target);
-  const restored = await extractCortexkitZip(archive, target);
-  assert.ok(restored.sourceMeta, "cortexkit 归档应携带 sourceMeta");
+  const restored = await extractAgentSkillsZip(archive, target);
+  assert.ok(restored.sourceMeta, "skills 归档应携带 sourceMeta");
   assert.equal(restored.sourceMeta.sourceHome, os.homedir());
   assert.equal(restored.sourceMeta.platform, platformCode());
   assert.equal(restored.sourceMeta.device, "devA");

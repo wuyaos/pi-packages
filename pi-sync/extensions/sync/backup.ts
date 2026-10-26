@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { formatArchiveName, platformCode } from "./archive-name";
-import { createAgentSkillsZip, createCortexkitZip, createPiAgentZip } from "./archive";
+import { createAgentSkillsZip, createPiAgentZip } from "./archive";
 import { AGENT_DIR, webdavDir, type BackupKind, type SyncConfig } from "./config";
 import { lockFileSync, unlockFileSync, type FileLock } from "./lock";
 import { pruneOldBackupsInDir, uploadToWebdavDir } from "./webdav";
@@ -70,7 +70,6 @@ export async function backupKindToWebdav(
   try {
     if (kind === "pi") await createPiAgentZip(config, archive);
     else if (kind === "skills") await createAgentSkillsZip(archive, undefined, config.deviceName);
-    else await createCortexkitZip(archive, undefined, config.deviceName);
     await uploadToWebdavDir(archive, webdavDir(kind, config), file, config, ctx);
     await pruneOldBackupsInDir(config, ctx, webdavDir(kind, config));
     return { kind, ok: true, file };
