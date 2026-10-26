@@ -21,3 +21,6 @@ pi-sync/REFACTOR_SPEC.md
 .pi-loop.json.lock
 
 .mindfs/
+
+# pi 本地会话/插件目录
+.pi/
