@@ -15,6 +15,7 @@
 | [@wuyaos/pi-advisor](https://www.npmjs.com/package/@wuyaos/pi-advisor) | `npm:@wuyaos/pi-advisor` | 顾问模型 — 第二个模型审查每轮输出，注入建议/警告 |
 | [@wuyaos/pi-i18n](https://www.npmjs.com/package/@wuyaos/pi-i18n) | `npm:@wuyaos/pi-i18n` | pi `/` 菜单汉化 — autocomplete 中文显示 + 命令翻译模板 |
 | [@wuyaos/pi-zotero](https://www.npmjs.com/package/@wuyaos/pi-zotero) | `npm:@wuyaos/pi-zotero` | Zotero 10 Local API：检索、集合、CSL、引用审计、动态 Word 域与门控写操作 |
+| [pi-bg-fusion](pi-bg-fusion/README.md) | 本地包 `pi-bg-fusion` | 持久后台 shell 任务、120 秒自动转后台、Ctrl+B 与 Windows 进程树管理 |
 
 > SSH 工具见独立仓库 [@wuyaos/pi-octssh](https://github.com/wuyaos/pi-octssh)：`pi install git:github.com/wuyaos/pi-octssh`
 
@@ -44,6 +45,11 @@ pi install npm:@wuyaos/pi-zotero
 
 npm 方式可带版本锁定：`pi install npm:@wuyaos/pi-cc-tui@1.0.0`
 
+`pi-bg-fusion` 目前仅本地安装，不在根 Git 包扩展清单中。从本仓库根目录运行：
+
+```sh
+pi install ./pi-bg-fusion
+```
 
 ## 发布流程
 

@@ -1,0 +1,269 @@
+# pi-bg-fusion
+
+`pi-bg-fusion` is a Pi extension for durable background shell tasks, automatic foreground handoff, logs, and status inspection.
+
+## Quick Answer
+
+Use `pi-bg-fusion` when long-running commands should move from foreground to a durable background task without restarting. It supports automatic handoff after 120 seconds by default (configurable with `PI_BG_FUSION_AUTO_BACKGROUND_SECONDS`) or per call with `handoff_after_seconds`; Ctrl+B provides manual handoff in Pi TUI. Native `timeout` still terminates the command when its deadline expires.
+
+
+On normal TUI quit with running tasks, the extension asks whether to keep or stop them, with per-task choices. Non-interactive print mode cannot prompt and keeps them running.
+
+
+Running output wake is supported through `wake_patterns` (regular expressions). It uses incremental `logGeneration` plus absolute byte offsets, the shared callback batcher, a 60-second default cooldown, ten wakes per task, and a 30-per-session-hour budget. The cross-process budget is stored in `%TEMP%/pi-bg/wake-budget.json`.
+Use `wake_patterns` on `bg_task_spawn` / `bg_task_watch` (or the matching `bg_task` action), with `callback` omitted or `true`. `callback:false` disables wake scanning; the foreground `bash` schema does not accept wake parameters.
+Windows shell selection is: explicit `PI_BG_FUSION_SHELL` or settings override, then the current Pi shell/process-chain bash, then Git for Windows, then the first non-WSL `bash.exe` on `PATH`. Background logs are stored under `%TEMP%/pi-bg`.
+
+
+
+## Screenshots
+
+<p><img src="https://raw.githubusercontent.com/1aboveio/pi-better-harness/main/docs/images/package-gallery/pi-better-background-tasks.png" alt="Upstream pi-better-background-tasks rendered in Pi" width="49%" /><img src="https://raw.githubusercontent.com/1aboveio/pi-better-harness/main/docs/images/package-gallery/overview/pi-better-background-tasks.png" alt="pi-better-background-tasks package overview" width="49%" /></p>
+
+## Core Features
+
+- Start long-running commands without blocking the current turn.
+- Watch commands until success, failure, or timeout.
+- Keep task metadata and logs available across reloads.
+- Retain completed task artifacts for seven days, then remove them during rate-limited maintenance.
+- Show active work in Pi's background-work navigator.
+- Flag running tasks with no observable output or completed poll as stalled.
+- Confine local task writes to the project directory when `pi-better-sandbox` is enabled.
+
+## Write Sandbox
+
+When [`pi-better-sandbox`](https://github.com/1aboveio/pi-better-harness/tree/main/packages/pi-better-sandbox#readme)
+is installed and enabled, every **local** task captures
+the effective foreground policy at launch and runs under the platform's write
+sandbox: reads and network stay unrestricted, writes are confined to the
+canonical project directory, and denied paths stay denied.
+
+The policy is captured once, when the task starts. The foreground sandbox is
+inactive by default, so local tasks ordinarily launch unconfined. A later
+`/sandbox on`, `/sandbox off`, `/sandbox default on|off`, or a deny-rule change
+reaches tasks launched after it; a task
+already running — including a watcher resumed in a later Pi session — keeps the
+policy it started with.
+
+If the foreground sandbox reports `unavailable` or `failed`, a local launch is
+refused with an explanation instead of running unconfined. `/sandbox off` is the
+deliberate way to run local tasks unsandboxed.
+
+A task follows Main's permission profile. With Main's Outside project = Write, the
+task writes across home and temp but can remove files outside the project only in
+temp, hidden home directories, and worktree folders (see
+[pi-better-sandbox](https://github.com/1aboveio/pi-better-harness/tree/main/packages/pi-better-sandbox#readme)).
+On macOS, a task launched with Outside project = Write or Write & delete starts an
+APFS local snapshot (`tmutil localsnapshot`) in the background as a recovery aid.
+A failed snapshot is noted in the task log and never blocks the task.
+
+Structured remote SSH tasks are unaffected: the foreground sandbox describes this
+machine, and remote work keeps its existing remote semantics. Without
+`pi-better-sandbox` installed, local tasks behave exactly as they always have.
+
+Reads and network access are never restricted; only writes are. Pi's own
+process, `pi.exec` calls, and unrelated third-party extension code stay outside
+the guarantee, and confinement is per surface: a confined process on another
+first-party surface can still write this one's task registry. Installing
+[`pi-better-harness`](https://github.com/1aboveio/pi-better-harness/tree/main/packages/pi-better-harness#readme)
+installs the sandbox extension, but leaves foreground tools and local background
+tasks inactive until a human opts in.
+
+## Remote SSH
+
+For short synchronous remote commands that should return output in the current
+turn, install `pi-better-ssh` and use `remote_bash`. Use background tasks for
+long-running or durable remote jobs and asynchronous health watches.
+
+Prefer structured `ssh` fields over hand-written `ssh` command lines. A remote
+spawn uses a durable tmux session by default, while a remote watch opens one
+direct SSH poll per interval and does not require tmux. The package keeps the
+same local metadata, logs, terminal statuses, callbacks, and `/reload` recovery
+for both.
+
+```json
+{
+  "name": "remote build",
+  "command": "npm run build",
+  "ssh": { "host": "build.example", "user": "deploy" },
+  "remote": { "workdir": "/srv/app" },
+  "timeout_seconds": 1800
+}
+```
+
+Tmux-backed spawn can install tmux non-interactively when the remote host allows
+it and fails closed with copy-pasteable setup guidance when it cannot. Set
+`remote.session=direct` only as an explicit escape hatch for short jobs: stop or
+timeout can terminate the local SSH client but the remote process may still be
+running. See the detailed usage notes for bootstrap policy, watch conditions,
+timeouts, and v1 non-goals.
+
+## Reloads and session switches
+
+Tasks belong to the Pi session that started them. After `/reload`, the same
+session picks every task back up: watches keep polling, remote tmux output keeps
+being collected, and a task that finished during the reload (or exits later) gets
+its completion callback exactly once.
+
+After `/new`, `/resume`, fork, or switching to another session, the previous
+session's tasks keep running but are paused from Pi's side: watches do not poll,
+remote tmux output is not collected, and `timeout_seconds` deadlines are not
+enforced until that session is active again. An overdue deadline is enforced as
+soon as the session resumes, so a timeout can land late but is never skipped.
+While the same Pi process stays open, a local process that exits in the meantime
+is recorded as finished, and its callback is delivered when its session resumes.
+If you quit Pi first, nothing records that exit: when the session is resumed in a
+new Pi process, a task whose process is gone is marked lost.
+
+## Watch conditions
+
+JSON conditions require a root-prefixed path, such as `$.status` or
+`$.terminalFailure`; bare keys such as `status` are rejected before the command
+starts. For a command that emits `{"status":"FAILURE","terminalFailure":true}`,
+use:
+
+```json
+{
+  "success_when": { "type": "json_path_equals", "path": "$.status", "value": "SUCCESS" },
+  "failure_when": { "type": "json_path_equals", "path": "$.terminalFailure", "value": true }
+}
+```
+
+Persisted watchers with unsupported paths fail explicitly on their next poll.
+Missing JSON fields or invalid JSON output remain retryable; task status shows
+the condition evaluation error until a subsequent poll recovers. Keep a finite
+timeout to bound watches whose output never becomes evaluable.
+
+### Writing a watch check
+
+A check that swallows its own errors reports "still pending" forever. Keep
+failures visible:
+
+- Do not end the check with `exit 0` or `|| true`. A check that exits non-zero
+  is recorded as a failure and escalates to the parent session.
+- Map an unknown or unparseable state to failure (a non-zero exit), not to
+  pending.
+- Prefer structured output parsed with `jq -e` over hand-written format
+  strings. `jq -e` exits non-zero when the field is missing, so a broken query
+  shows up at once.
+
+For example, a Cloud Run job execution:
+
+```sh
+status=$(gcloud run jobs executions describe "$EXECUTION" --region="$REGION" --format=json \
+  | jq -er '.status.conditions[] | select(.type == "Completed") | .status') || exit 2
+case "$status" in
+  True) echo TERMINAL_SUCCESS ;;
+  False) echo TERMINAL_FAILURE ;;
+  Unknown) echo STILL_RUNNING ;;
+  *) echo "unexpected Completed status: $status" >&2; exit 2 ;;
+esac
+```
+
+with `success_when: {type: "stdout_contains", value: "TERMINAL_SUCCESS"}` and
+`failure_when: {type: "stdout_contains", value: "TERMINAL_FAILURE"}`.
+
+`bg_task_watch` (and `bg_task` with `action: "watch"`) waits up to 15 seconds
+for the first check and puts its exit code, the newest few lines of stderr and
+of stdout in the tool result, so a broken check is visible at launch. When the
+result is short on room, stdout is cut first. If the first check is still
+running after 15 seconds, or you press Esc during the wait, the result says so
+at once and the watch continues.
+
+A running watch also guards against a blind check. When 3 checks in a row exit
+0, write to stderr, and match neither `success_when` nor `failure_when`, the
+watch records one incident that needs action, with the latest stderr line, and
+wakes the parent session once. The watch keeps running. A later check with
+empty stderr recovers the incident whatever its exit code (a non-zero or
+failed check is then recorded as its own incident), and so does a check that
+matches a condition. A non-zero check that writes stderr restarts the count but
+leaves the incident open. A clean pending check (exit 0, no stderr) never
+counts.
+
+Some tools write to stderr on success (`gcloud … list` prints "Listed 0
+items.", and kubectl and npm print warnings), which can raise a false alarm.
+If the stderr is expected, redirect it (`2>/dev/null`) or set
+`blind_checks: 0`. Set `blind_checks` to another number to change the count.
+
+## Install
+
+Run these commands from the `pi-packages` monorepo root, not from this package directory. This package is local-only; it is not included in the root Git package extension list.
+
+```sh
+pi install ./pi-bg-fusion
+```
+
+Try it for one run:
+
+```sh
+pi -e ./pi-bg-fusion
+```
+
+## Failure observations
+
+Task lifecycle and failure evidence are reported separately. A watch can remain
+`running` while a poll or condition evaluator has failed. Status, list, log, and
+navigator views show unresolved observations before ordinary progress. A success
+match cannot finish a watch while evaluation of its failure condition is broken;
+a definite failure match still terminates it.
+
+Observations live in `failures.jsonl` beside task metadata. Recovery requires a
+successful evaluation of the same operation. Repeated failures are grouped, and
+an explicitly configured nonzero success exit is treated as expected. Verbose
+status includes observation details and the journal path. Corrupt or unreadable
+evidence is reported as **observation incomplete**.
+
+Pass `operation_id` and `expected_exit_codes` on `bg_task_spawn`, `bg_task_watch`,
+or `bg_task` to declare intent before launch; a malformed declaration starts
+nothing. An exit code in `expected_exit_codes` (distinct integers 1-255, such as
+`[1]` for a no-match probe; a `0` is ignored) is recorded as an **Expected failure** that needs no
+action; signals and timeouts never are. When a task with an `operation_id`
+succeeds, earlier failed tasks with the same `operation_id`, kind, cwd, SSH
+target, and owner (the same session id, or for sessionless tasks the same Pi
+process) recover, so a retry with a changed command or timeout
+closes the original incident. Observation gaps are never recovered this way, and
+no command text is compared.
+
+Task failures are labeled **Action required**; the shared labels also include
+**Expected failure** and **Observation incomplete**. Unresolved running failures
+become eligible for attention after 60 seconds; observation gaps are eligible
+immediately. Each notification lists only the incidents it is delivering;
+earlier ones are counted, not repeated. Terminal failures use the normal
+completion notification. A delivery receipt is stored only after handoff;
+notification delivery does not clear the failure. `callback:false` stays quiet
+while all inspection surfaces retain the evidence. Journals follow the task's
+existing retention and explicit-clear behavior.
+
+Status, log, and list count and list only failures that need action (**Action
+required** and **Observation incomplete**). Expected and closed failures are one
+history count line with no incident cursor; pass `history: true` to
+`bg_task_status` (or `action:status`) to page them. Incident rows are compact
+(120-byte excerpt, evidence such as `output.log#poll=3`); the raw log keeps the
+full evidence path.
+
+## When To Use
+
+Use `pi-bg-fusion` for shell commands that need durable logs, status, cancellation, completion notifications, or foreground handoff. A command still running after the configured threshold (120 seconds by default) moves into the background without restarting; in Pi TUI, press Ctrl+B to hand it off sooner.
+
+When multiple foreground `bash` calls overlap, Ctrl+B always selects the most recently started call that is still running; it does not prompt for a different call.
+
+Do not use it for short commands where the foreground session should wait for the result directly; use `remote_bash` from `pi-better-ssh` instead.
+
+## Compatibility
+
+| Requirement | Support |
+|-------------|---------|
+| Pi | Required |
+| Install method | Local source: `pi install ./pi-bg-fusion` |
+| Development runtime | Node.js 22+ |
+
+## Update Or Remove
+
+```sh
+pi remove ./pi-bg-fusion
+```
+
+## More Detail
+
+- Source project: https://github.com/1aboveio/pi-better-harness (base implementation)
+- License: MIT (see [LICENSE](LICENSE))

@@ -1,0 +1,53 @@
+{
+  "name": "pi-bg-fusion",
+  "version": "0.1.0",
+  "description": "Durable Pi background shell tasks with automatic foreground handoff, Ctrl+B, and cross-platform process recovery.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuyaos/pi-packages.git",
+    "directory": "pi-bg-fusion"
+  },
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "background-tasks",
+    "watchers"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/1aboveio/pi-better-harness/main/docs/images/package-gallery/pi-better-background-tasks.png"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "files": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "!src/test-support/**",
+    "!src/shared-ssh-core/test-support/**",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typebox": "^1.1.38",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  }
+}

@@ -1,0 +1,377 @@
+/**
+ * Foreground write-sandbox policy for locally launched background tasks.
+ *
+ * `pi-better-sandbox` owns the foreground policy and publishes an immutable
+ * snapshot of it on `pi.events`. This module is the consumer side of that wire
+ * contract: it mirrors the latest snapshot, and turns it into a confined
+ * command at the moment a local task launches.
+ *
+ * Two rules make the behaviour predictable:
+ *
+ * 1. **Snapshot at launch, never a live reference.** The wrapped executable and
+ *    argv are resolved once, when the task starts, and are what the task keeps
+ *    running. A later `/sandbox off` or deny-rule change therefore reaches only
+ *    tasks launched after it.
+ * 2. **Opt-in, then fail closed.** `inactive` and explicitly `disabled` states
+ *    launch unconfined. Once foreground policy says confinement applies, a
+ *    missing or unusable backend blocks the launch and is never retried
+ *    unconfined behind the operator's back.
+ *
+ * The contract is duplicated here rather than imported: `pi-better-sandbox` is
+ * an optional peer that this package must keep working without. Two channel
+ * names and a payload shape are the entire coupling, and both packages own
+ * tests that pin them.
+ */
+
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname } from "node:path";
+
+import { commandExecution } from "./process.js";
+import { baseDir } from "./registry.js";
+import { compileWritePolicy, describeSandboxSupport, maybeBuildSandboxCommand, type SandboxSeams } from "./shared-sandbox-core.js";
+
+type SandboxPermissions = {
+  /** `write` = read, create and overwrite in place; `read-write` = Write & delete. */
+  projectFiles: "off" | "read" | "write" | "read-write";
+  outsideProject: "off" | "read" | "write" | "read-write";
+  storedCredentials: "off" | "read" | "read-write";
+  commands: boolean;
+  network: boolean;
+};
+import type { CommandSpec } from "./types.js";
+import { SandboxDiagnostics, diagnosticPackageVersion, type DiagnosticResource } from "./shared-sandbox-diagnostics.js";
+
+function backgroundDiagnostics(policy: unknown): SandboxDiagnostics | undefined {
+  try {
+    return new SandboxDiagnostics({ context: "background",
+      version: diagnosticPackageVersion(new URL("../package.json", import.meta.url)),
+      policy: () => policy,
+      backend: () => { const support = describeSandboxSupport(); return support.supported ? support.backend : undefined; },
+      onError: () => { console.error("Sandbox diagnostics collection gap; enforcement unchanged."); },
+    });
+  } catch { return undefined; }
+}
+
+/**
+ * What an operator can do about a missing backend here.
+ *
+ * A background task inherits the session's foreground policy, so its remedy is
+ * the session's: the slash command. `sandbox:false` is the subagent tool's
+ * opt-out and means nothing on this surface. The text is duplicated rather than
+ * imported for the same reason the rest of this contract is — `pi-better-sandbox`
+ * is an optional peer.
+ */
+export const FOREGROUND_SANDBOX_REMEDY =
+  "Run unconfined on purpose with /sandbox off, or work in a session that has a backend.";
+
+/** Channel `pi-better-sandbox` publishes every effective-policy change on. */
+export const FOREGROUND_SANDBOX_POLICY_CHANNEL = "pi-better-sandbox:policy";
+
+/** Channel a consumer emits on to ask for the current policy. */
+export const FOREGROUND_SANDBOX_POLICY_REQUEST_CHANNEL = "pi-better-sandbox:policy-request";
+
+/**
+ * What the foreground sandbox is doing right now.
+ *
+ * - `inactive`    - default-off foreground policy; launch tasks as before.
+ * - `enabled`     - confine locally launched tasks.
+ * - `disabled`    - a human switched protection off; launch tasks as before.
+ * - `unavailable` - no backend on this platform; block protected launches.
+ * - `failed`      - protection cannot be applied here; block protected launches.
+ */
+export type ForegroundSandboxState = "inactive" | "enabled" | "disabled" | "unavailable" | "failed";
+
+/** The published snapshot, narrowed to the fields a task launch needs. */
+export interface ForegroundSandboxPolicy {
+  readonly state: ForegroundSandboxState;
+  /** The only writable subtree while `state` is `enabled`. */
+  readonly writableRoot?: string | undefined;
+  /** Canonical paths that stay non-writable inside the writable root. */
+  readonly denyWrite: readonly string[];
+  /** Human-readable evidence for why `state` is what it is. */
+  readonly reason: string;
+  readonly permissions?: Readonly<SandboxPermissions & { enabled: boolean }>;
+}
+
+/** The minimum `pi.events` surface this module uses. */
+export interface PolicyEventBus {
+  emit(channel: string, data: unknown): void;
+  on(channel: string, handler: (data: unknown) => void): unknown;
+}
+
+/** Thrown instead of launching a local task the foreground policy forbids. */
+export class ForegroundSandboxBlockedError extends Error {
+  readonly policy: ForegroundSandboxPolicy;
+
+  constructor(policy: ForegroundSandboxPolicy, detail?: string) {
+    super(
+      `Foreground sandbox is ${policy.state}; this local background task was blocked rather than launched unconfined. ${detail ?? policy.reason}`,
+    );
+    this.name = "ForegroundSandboxBlockedError";
+    this.policy = policy;
+  }
+}
+
+/** How one local launch should be confined. Resolved before any task state exists. */
+export type ForegroundSandboxPlan =
+  | { readonly confined: false }
+  | {
+      readonly confined: true;
+      readonly writableRoot: string;
+      readonly denyWrite: readonly string[];
+      readonly permissions?: SandboxPermissions;
+    };
+
+const UNCONFINED: ForegroundSandboxPlan = { confined: false };
+
+const VALID_STATES = new Set<string>(["inactive", "enabled", "disabled", "unavailable", "failed"]);
+
+/**
+ * The latest snapshot per event bus.
+ *
+ * Keyed by the bus rather than kept in one module variable so that separate Pi
+ * sessions inside one process (and separate tests) cannot read each other's
+ * policy.
+ */
+const mirrors = new WeakMap<PolicyEventBus, { policy: ForegroundSandboxPolicy | undefined; error?: Error }>();
+
+function eventBusOf(pi: unknown): PolicyEventBus | undefined {
+  const events = (pi as { events?: unknown } | undefined)?.events;
+  if (!events || typeof events !== "object") return undefined;
+  const candidate = events as Partial<PolicyEventBus>;
+  if (typeof candidate.on !== "function" || typeof candidate.emit !== "function") return undefined;
+  return candidate as PolicyEventBus;
+}
+
+/**
+ * Accept a published payload only when it carries a state this module
+ * understands, so an unrelated extension emitting on the channel cannot clear a
+ * real policy or invent one.
+ */
+function readPolicy(data: unknown): ForegroundSandboxPolicy | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const value = data as Record<string, unknown>;
+  if (typeof value.state !== "string" || !VALID_STATES.has(value.state)) return undefined;
+  const writableRoot = typeof value.writableRoot === "string" ? value.writableRoot : undefined;
+  const denyWrite = Array.isArray(value.denyWrite)
+    ? value.denyWrite.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const permissions = value.permissions === undefined ? undefined : readPermissions(value.permissions);
+  if (value.permissions !== undefined && !permissions) {
+    throw new Error("Invalid Main sandbox permission profile; update permissions in the sandbox UI.");
+  }
+  return {
+    state: value.state as ForegroundSandboxState,
+    writableRoot,
+    denyWrite: Object.freeze([...denyWrite]),
+    reason: typeof value.reason === "string" ? value.reason : "No reason was published.",
+    ...(permissions ? { permissions } : {}),
+  };
+}
+
+function readPermissions(value: unknown): ForegroundSandboxPolicy["permissions"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const p = value as Record<string, unknown>;
+  const credential = (v: unknown) => v === "off" || v === "read" || v === "read-write";
+  const access = (v: unknown) => credential(v) || v === "write";
+  if (typeof p.enabled !== "boolean" || typeof p.commands !== "boolean" ||
+      typeof p.network !== "boolean" || !access(p.projectFiles) ||
+      !access(p.outsideProject) || !credential(p.storedCredentials)) return undefined;
+  return Object.freeze({
+    enabled: p.enabled, commands: p.commands, network: p.network,
+    projectFiles: p.projectFiles as SandboxPermissions["projectFiles"],
+    outsideProject: p.outsideProject as SandboxPermissions["outsideProject"],
+    storedCredentials: p.storedCredentials as SandboxPermissions["storedCredentials"],
+  });
+}
+
+/**
+ * Start mirroring foreground policy on this session's event bus.
+ *
+ * Idempotent, and safe in either extension load order. If `pi-better-sandbox`
+ * loaded first, its last publication is already gone (the bus has no replay), so
+ * we ask for a fresh one on the request channel. If it loads later, its own
+ * session-start publication reaches the subscription registered here.
+ */
+export function observeForegroundSandboxPolicy(pi: unknown): void {
+  const events = eventBusOf(pi);
+  if (!events || mirrors.has(events)) return;
+
+  const mirror: { policy: ForegroundSandboxPolicy | undefined; error?: Error } = { policy: undefined };
+  mirrors.set(events, mirror);
+  events.on(FOREGROUND_SANDBOX_POLICY_CHANNEL, (data) => {
+    try {
+      const policy = readPolicy(data);
+      if (policy) { mirror.policy = policy; mirror.error = undefined; }
+    } catch (error) {
+      mirror.error = error as Error;
+    }
+  });
+  events.emit(FOREGROUND_SANDBOX_POLICY_REQUEST_CHANNEL, undefined);
+}
+
+/**
+ * The foreground policy as of right now, or `undefined` when no sandbox
+ * extension is publishing one.
+ *
+ * Asks for a re-publication first. Pi's event bus dispatches synchronously, so
+ * the answer to that request has already been mirrored by the time this
+ * returns; if a future bus were to defer, the last published snapshot is still
+ * returned rather than nothing.
+ */
+export function currentForegroundSandboxPolicy(pi: unknown): ForegroundSandboxPolicy | undefined {
+  observeForegroundSandboxPolicy(pi);
+  const events = eventBusOf(pi);
+  if (!events) return undefined;
+  events.emit(FOREGROUND_SANDBOX_POLICY_REQUEST_CHANNEL, undefined);
+  const mirror = mirrors.get(events);
+  if (mirror?.error) throw mirror.error;
+  return mirror?.policy;
+}
+
+/**
+ * Decide how a local launch must be confined, before the task has an id, a
+ * directory, or a log.
+ *
+ * Throws for every state that is neither confinable nor intentionally
+ * unconfined, which keeps a blocked launch from leaving task state behind.
+ */
+export function resolveForegroundSandboxPlan(pi: unknown, remote = false, operation?: unknown, tool = "bg_task_spawn"): ForegroundSandboxPlan {
+  const policy = currentForegroundSandboxPolicy(pi);
+  if (remote && !policy?.permissions) return UNCONFINED; // Preserve legacy SSH behavior.
+  try {
+    const plan = planFor(policy);
+    if (remote && plan.confined) {
+      throw new ForegroundSandboxBlockedError(policy!, !plan.permissions?.network
+        ? "Main profile disables network. SSH launches are blocked."
+        : "Structured SSH cannot apply local file and credential permissions yet. Use SSH through confined bash, or change Main permissions in /sandbox.");
+    }
+    return plan;
+  } catch (error) {
+    if (error instanceof ForegroundSandboxBlockedError) {
+      const resource: DiagnosticResource = policy?.permissions?.enabled && !policy.permissions.commands ? "command-execution"
+        : remote && policy?.permissions?.network === false ? "network-access" : "sandbox-backend";
+      backgroundDiagnostics(policy)?.observe({ tool, operation, resource, basis: "policy-refusal", outcome: "denied" });
+    }
+    throw error;
+  }
+}
+
+/** The plan for one already-read policy. Exposed for tests and reuse. */
+export function planFor(policy: ForegroundSandboxPolicy | undefined): ForegroundSandboxPlan {
+  // No sandbox extension is publishing: this package is installed on its own and
+  // keeps its historical unsandboxed behaviour.
+  if (!policy) return UNCONFINED;
+  if (policy.permissions?.enabled && !policy.permissions.commands) {
+    throw new ForegroundSandboxBlockedError(policy, "Main profile disables commands. Change permissions in the sandbox UI before launching background tasks.");
+  }
+  if (policy.state === "inactive" || policy.state === "disabled") return UNCONFINED;
+  if (policy.state !== "enabled" || !policy.writableRoot) {
+    throw new ForegroundSandboxBlockedError(policy);
+  }
+  const permissions = policy.permissions?.enabled ? {
+    projectFiles: policy.permissions.projectFiles,
+    outsideProject: policy.permissions.outsideProject,
+    storedCredentials: policy.permissions.storedCredentials,
+    commands: policy.permissions.commands,
+    network: policy.permissions.network,
+  } : undefined;
+  return { confined: true, writableRoot: policy.writableRoot, denyWrite: policy.denyWrite,
+    ...(permissions ? { permissions } : {}) };
+}
+
+/**
+ * Wrap a local command in the platform's write sandbox.
+ *
+ * The result is an ordinary `CommandSpec` whose argv is the backend wrapper
+ * around the exact executable and arguments the unconfined spec would have run,
+ * so spawning, streaming, timeouts, process-group termination, and env handling
+ * all stay on their existing code paths. The generated macOS profile is written
+ * to `profilePath`, which callers put inside the task's own directory so a
+ * resumed watch re-reads the policy it launched with.
+ *
+ * `seams` defaults to the real platform and PATH. It exists so a caller — in
+ * practice a test — can prove the argv this produces for a backend other than
+ * the one the host happens to have.
+ */
+export function confineCommandSpec(
+  spec: CommandSpec,
+  plan: ForegroundSandboxPlan,
+  profilePath: string,
+  seams: SandboxSeams = {},
+  /** Receives lines to show with the launch (e.g. a placeholder left in the user's files). */
+  onNotice: (line: string) => void = () => {},
+  tool = "bg_task_spawn",
+): CommandSpec {
+  if (!plan.confined) return spec;
+
+  const { execPath, execArgs } = commandExecution(spec);
+  // The generated profile is written here, so its directory must exist before
+  // the backend builds the command.
+  mkdirSync(dirname(profilePath), { recursive: true });
+  // Task state is this package's control plane: `meta.json` carries the launch
+  // vector a resumed watch re-runs verbatim, and `sandbox.sb` is the profile the
+  // launch is confined by. It lives under the system temp directory, which both
+  // backends leave writable by design, so a confined task could otherwise
+  // rewrite what its own next poll executes and choose its own confinement.
+  //
+  // Denying the whole registry closes that without moving any state, and without
+  // costing the task anything it actually needs: pi writes the registry from
+  // outside the sandbox, and the task's log reaches it through a descriptor
+  // opened before the launch, which no later mount or profile can revoke.
+  //
+  // Created here rather than assumed, because the Linux backend materializes an
+  // absent denied path as an empty *file* and this one has to be a directory.
+  const controlPlane = baseDir();
+  mkdirSync(controlPlane, { recursive: true });
+  const denyWrite = [...plan.denyWrite, controlPlane];
+  const policy = {
+    writableRoot: plan.writableRoot,
+    denyWrite,
+    home: homedir(),
+    ...(plan.permissions ? { permissions: plan.permissions } : {}),
+  };
+  let command;
+  try {
+    if (plan.permissions && !("permissions" in compileWritePolicy(policy))) {
+      throw new Error("permission-aware sandbox core is unavailable; update the sandbox packages before launching");
+    }
+    command = maybeBuildSandboxCommand(
+      {
+        profilePath,
+        policy,
+        execPath,
+        execArgs,
+      },
+      // `explicitSandbox` because the foreground state already said a sandbox
+      // applies: an absent or unusable backend must throw here rather than hand
+      // back an unwrapped command. The remedy is the foreground one: this policy
+      // came from the session, and the session is where it is switched off.
+      { sandboxEnabled: true, explicitSandbox: true, remedy: FOREGROUND_SANDBOX_REMEDY },
+      seams,
+    );
+  } catch (error) {
+    backgroundDiagnostics(plan)?.observe({ tool, operation: spec, resource: "sandbox-backend", basis: "policy-refusal", outcome: "denied" });
+    throw blocked(plan, error instanceof Error ? error.message : String(error));
+  }
+  if (!command) {
+    backgroundDiagnostics(plan)?.observe({ tool, operation: spec, resource: "sandbox-backend", basis: "policy-refusal", outcome: "denied" });
+    throw blocked(plan, "no sandbox backend was applied");
+  }
+  for (const line of command.notices ?? []) onNotice(line);
+
+  return { ...spec, argv: [command.file, ...command.fileArgs], shell: false };
+}
+
+function blocked(plan: ForegroundSandboxPlan & { confined: true }, detail: string): Error {
+  return new ForegroundSandboxBlockedError(
+    {
+      state: "failed",
+      writableRoot: plan.writableRoot,
+      denyWrite: plan.denyWrite,
+      reason: detail,
+    },
+    detail,
+  );
+}
